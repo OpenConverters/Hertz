@@ -6,3 +6,9 @@ build/
 dist/
 .venv/
 cpp/build/
+web/node_modules/
+web/dist/
+web/public/hertz.js
+web/public/hertz.wasm
+web/test-results/
+web/playwright-report/

@@ -1,0 +1,45 @@
+import { test, expect } from '@playwright/test'
+
+test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer', async ({ page }) => {
+  const consoleErrors = []
+  page.on('pageerror', (e) => consoleErrors.push(String(e)))
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+
+  await page.getByTestId('load-demo').click()
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('offenders').locator('tbody tr')).not.toHaveCount(0)
+  const aReq = await page.getByTestId('areq').textContent()
+  expect(parseFloat(aReq)).toBeGreaterThan(10)
+
+  await page.getByTestId('design-fix').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await expect(page.getByTestId('netlist')).toContainText('.subckt LISN')
+  expect(consoleErrors).toEqual([])
+})
+
+test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('areq-cm').fill('40')
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toContainText('3.3 mH')
+  await expect(page.getByTestId('il-cm')).toContainText('40.8')
+})
+
+test('receiver: demo signal separates the three detectors', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.getByTestId('run-demo').click()
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 45_000 })
+})
+
+test('lisn: subckt export present', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-lisn').click()
+  await expect(page.getByTestId('subckt')).toContainText('L1 eut mains 5e-05')
+})

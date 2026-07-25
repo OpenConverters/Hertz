@@ -1,0 +1,218 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Hertz — design system
+   Third instrument on the OpenConverters bench. Heaviside is the CRT
+   oscilloscope (aqua on teal-black); Kirchhoff is the schematic workstation
+   (amber plotter phosphor on warm carbon); Hertz is the EMI receiver — green
+   measurement phosphor on cold graphite, engraved front-panel keys, and the
+   amber pen reserved for the one thing a receiver overlays: the limit line.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* chassis — cold graphite with a green cast */
+  --bg:        #060907;
+  --bg-deep:   #040605;
+  --panel:     #0c120d;
+  --panel-hi:  #111a13;
+  --line:      #1e3325;
+  --line-soft: #142117;
+  --ink:       #dde8d9;
+  --ink-dim:   #74907a;
+
+  /* phosphor — UI accent (chrome, keys, focus), brighter than chart marks */
+  --phos:      #3fe27f;
+  --phos-hi:   #8af0ae;
+  --phos-deep: #1c8f4e;
+
+  /* chart series — validated categorical set on --panel (dark), fixed order */
+  --s-1: #13aa51;   /* measured / QP */
+  --s-2: #3987e5;   /* second trace / AVG */
+  --s-3: #d4548e;   /* third series */
+  --s-limit: #c07f28;   /* limit reference lines — the family amber, stepped into band */
+
+  /* status — reserved */
+  --fault: #ff5d55;
+  --ok:    #3fe27f;
+
+  --grat:        rgba(63, 226, 127, 0.045);
+  --grat-strong: rgba(63, 226, 127, 0.12);
+
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --disp: 'Rajdhani', 'IBM Plex Sans', sans-serif;
+  --body: 'IBM Plex Sans', system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+* { scrollbar-width: thin; scrollbar-color: var(--phos-deep) transparent; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.25); }
+::-webkit-scrollbar-thumb { background: var(--phos-deep); border: 2px solid var(--bg); border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: var(--phos); }
+
+body {
+  font-family: var(--body);
+  color: var(--ink);
+  background:
+    linear-gradient(var(--grat) 1px, transparent 1px) 0 0 / 26px 26px,
+    linear-gradient(90deg, var(--grat) 1px, transparent 1px) 0 0 / 26px 26px,
+    radial-gradient(820px 400px at 88% -8%, rgba(63, 226, 127, 0.08), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.wrap { max-width: 1560px; margin: 0 auto; padding: 0 1.1rem 2rem; }
+
+/* ── header: receiver front panel top rail ─────────────────────────────── */
+header.bar {
+  display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+  padding: 0.85rem 0 0.6rem; border-bottom: 1px solid var(--line);
+  margin-bottom: 1rem;
+}
+.brand {
+  font-family: var(--disp); font-weight: 700; font-size: 1.7rem;
+  letter-spacing: 0.14em; color: var(--phos);
+  text-shadow: 0 0 18px rgba(63, 226, 127, 0.35);
+}
+.brand small { color: var(--ink-dim); font-size: 0.62em; letter-spacing: 0.08em; font-weight: 600; }
+.tagline { color: var(--ink-dim); font-size: 0.85rem; }
+.bar .spacer { flex: 1; }
+.engine-led {
+  font-family: var(--mono); font-size: 0.74rem; color: var(--ink-dim);
+  display: inline-flex; align-items: center; gap: 0.45em;
+}
+.engine-led i {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--ink-dim); display: inline-block;
+}
+.engine-led.ready i { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.engine-led.fault i { background: var(--fault); box-shadow: 0 0 8px var(--fault); }
+
+/* ── mode keys: engraved instrument buttons ────────────────────────────── */
+.modes { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.05rem; }
+.mode-key {
+  font-family: var(--disp); font-weight: 600; font-size: 0.95rem; letter-spacing: 0.12em;
+  padding: 0.4rem 1.05rem; cursor: pointer;
+  color: var(--ink-dim); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 4px; border-bottom-width: 3px;
+}
+.mode-key:hover { color: var(--ink); }
+.mode-key.active {
+  color: var(--phos-hi); border-color: var(--phos-deep);
+  background: linear-gradient(180deg, rgba(63, 226, 127, 0.10), rgba(63, 226, 127, 0.02));
+  text-shadow: 0 0 10px rgba(63, 226, 127, 0.5);
+}
+.mode-key:focus-visible, button:focus-visible, a:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--phos); outline-offset: 2px;
+}
+
+/* ── panels ────────────────────────────────────────────────────────────── */
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  padding: 1rem 1.1rem; margin-bottom: 1rem;
+}
+.panel-hi { background: var(--panel-hi); }
+.section-label {
+  font-family: var(--disp); font-weight: 600; font-size: 0.8rem; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--ink-dim); margin: 0 0 0.6rem;
+}
+.grid2 { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 1rem; align-items: start; }
+@media (max-width: 940px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* ── forms ─────────────────────────────────────────────────────────────── */
+label.field { display: block; margin-bottom: 0.65rem; font-size: 0.85rem; color: var(--ink-dim); }
+label.field span { display: block; margin-bottom: 0.2rem; }
+input[type="text"], input[type="number"], select, textarea {
+  width: 100%; font-family: var(--mono); font-size: 0.9rem;
+  color: var(--ink); background: var(--bg-deep); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0.42rem 0.55rem;
+}
+textarea { resize: vertical; }
+.row { display: flex; gap: 0.7rem; }
+.row > * { flex: 1; min-width: 0; }
+
+button.act {
+  font-family: var(--disp); font-weight: 600; letter-spacing: 0.1em; font-size: 0.95rem;
+  color: var(--bg-deep); background: var(--phos); border: none; border-radius: 4px;
+  padding: 0.5rem 1.2rem; cursor: pointer;
+}
+button.act:hover { background: var(--phos-hi); }
+button.act:disabled { background: var(--ink-dim); cursor: not-allowed; }
+button.ghost {
+  font-family: var(--disp); font-weight: 600; letter-spacing: 0.08em; font-size: 0.88rem;
+  color: var(--phos); background: transparent; border: 1px solid var(--phos-deep);
+  border-radius: 4px; padding: 0.45rem 1rem; cursor: pointer;
+}
+button.ghost:hover { border-color: var(--phos); }
+
+/* ── drop zone ─────────────────────────────────────────────────────────── */
+.drop {
+  border: 1.5px dashed var(--line); border-radius: 6px; padding: 1.2rem 1rem;
+  text-align: center; color: var(--ink-dim); font-size: 0.88rem; cursor: pointer;
+}
+.drop.over { border-color: var(--phos); color: var(--ink); background: rgba(63, 226, 127, 0.05); }
+
+/* ── the receiver screen (chart bezel) — the signature surface ─────────── */
+.screen {
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: inset 0 0 42px rgba(0, 0, 0, 0.55), inset 0 0 3px rgba(63, 226, 127, 0.12);
+  padding: 0.5rem 0.4rem 0.2rem;
+}
+
+/* ── measurement bar: receiver readout strip ───────────────────────────── */
+.readout {
+  display: flex; gap: 1.4rem; flex-wrap: wrap; align-items: stretch;
+  font-family: var(--mono); margin-top: 0.8rem;
+}
+.readout .cell { min-width: 120px; }
+.readout .cell b {
+  display: block; font-family: var(--disp); font-weight: 600; font-size: 0.68rem;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-dim);
+}
+.readout .cell span { font-size: 1.25rem; color: var(--ink); }
+.readout .cell span.unit { font-size: 0.8rem; color: var(--ink-dim); margin-left: 0.2em; }
+
+.chip {
+  display: inline-block; font-family: var(--disp); font-weight: 700; letter-spacing: 0.14em;
+  padding: 0.12rem 0.7rem; border-radius: 4px; font-size: 1.05rem;
+}
+.chip.pass { color: var(--bg-deep); background: var(--ok); }
+.chip.fail { color: var(--bg-deep); background: var(--fault); }
+
+/* ── tables ────────────────────────────────────────────────────────────── */
+table.data { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 0.83rem; }
+table.data th {
+  font-family: var(--disp); font-weight: 600; letter-spacing: 0.1em; font-size: 0.78rem;
+  color: var(--ink-dim); text-align: left;
+  border-bottom: 1px solid var(--line); padding: 0.3rem 0.6rem 0.3rem 0;
+}
+table.data td { padding: 0.28rem 0.6rem 0.28rem 0; border-bottom: 1px solid var(--line-soft); }
+td.neg { color: var(--fault); }
+td.pos { color: var(--ok); }
+
+/* ── code block (SPICE export) ─────────────────────────────────────────── */
+pre.code {
+  font-family: var(--mono); font-size: 0.78rem; line-height: 1.45; color: var(--ink);
+  background: var(--bg-deep); border: 1px solid var(--line); border-radius: 6px;
+  padding: 0.8rem 0.9rem; overflow-x: auto; max-height: 340px;
+}
+
+.err {
+  color: var(--fault); font-family: var(--mono); font-size: 0.83rem;
+  border: 1px solid rgba(255, 93, 85, 0.4); border-radius: 4px;
+  padding: 0.5rem 0.7rem; margin-top: 0.7rem; background: rgba(255, 93, 85, 0.06);
+}
+.note { color: var(--ink-dim); font-size: 0.8rem; }
+.footnote {
+  color: var(--ink-dim); font-size: 0.75rem; border-top: 1px solid var(--line-soft);
+  margin-top: 1.4rem; padding-top: 0.6rem;
+}
+.footnote a { color: var(--phos-deep); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

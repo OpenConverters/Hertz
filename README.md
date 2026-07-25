@@ -53,6 +53,22 @@ ninja -C cpp/build -j4
 ./cpp/build/test_hertz
 ```
 
+## Web GUI (`web/`)
+
+The full engine is exposed as a browser instrument — Vue 3 + Vite + the WASM
+engine, zero server compute — deployed at **hertz.openconverters.com**. Four
+screens: **Spectrum** (scan vs limit verdict, worst offenders, required
+attenuation, handoff to the designer), **Filter** (ANP015 designer with any
+manufacturer's candidate lists + SPICE export), **Receiver** (CISPR 16-1-1
+peak/quasi-peak/average emulation of uploaded waveforms), **LISN** (impedance
+explorer + SPICE model).
+
+```bash
+scripts/build_wasm.sh        # engine → web/public/ (needs emsdk + WebLibMKF)
+cd web && npm install && npm run dev    # develop
+npm run build && npm test               # dist/ + Playwright e2e (headless)
+```
+
 ## Roadmap
 
 - Harmonic-comb detection / switching-frequency estimation from measured spectra
