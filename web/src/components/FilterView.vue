@@ -28,8 +28,21 @@ const ilDm = ref(null)
 const vInMin = ref(207)
 const pIn = ref(25)
 const interaction = ref(null)
+const lCmSource = ref('manual')      // 'manual' | 'catalog'
+const catalog = ref(null)            // {count, parts:[{mpn,manufacturer,family,inductanceH,ratedCurrentA,dcrOhm}]}
+const catalogState = ref('loading')  // 'loading' | 'ready' | 'unavailable'
+const mfrFilter = ref('')
+const minRatedA = ref(1)
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    const response = await fetch('/kelvin/hertz-cmc.v1.json')
+    if (!response.ok) throw new Error(String(response.status))
+    catalog.value = await response.json()
+    catalogState.value = 'ready'
+  } catch {
+    catalogState.value = 'unavailable'
+  }
   if (store.handoff) {
     aReqCm.value = store.handoff.aReqDb
     aReqDm.value = store.handoff.aReqDb
@@ -38,6 +51,27 @@ onMounted(() => {
     compute()
   }
 })
+
+const manufacturers = () =>
+  [...new Set(catalog.value.parts.map((p) => p.manufacturer))].sort()
+
+function catalogParts() {
+  return catalog.value.parts.filter((p) =>
+    (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
+    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)) &&
+    p.inductanceH > 0)
+}
+
+function catalogCandidates() {
+  const parts = catalogParts()
+  if (!parts.length) throw new Error('no catalog parts match the manufacturer/current filter')
+  return [...new Set(parts.map((p) => p.inductanceH))].sort((a, b) => a - b)
+}
+
+const matchedParts = () => catalogParts()
+  .filter((p) => Math.abs(p.inductanceH - design.value.lCmSelectedH) < 1e-3 * design.value.lCmSelectedH)
+  .sort((a, b) => (b.ratedCurrentA ?? 0) - (a.ratedCurrentA ?? 0))
+  .slice(0, 6)
 
 function parseList(text, scale) {
   const values = text.split(/[,;\s]+/).filter(Boolean).map(Number)
@@ -59,7 +93,8 @@ async function compute() {
       aReqDmDb: Number(aReqDm.value),
       cYPerLineF: cYnF.value * 1e-9,
       stages: Number(stages.value),
-      lCmCandidatesH: parseList(lCandidatesMh.value, 1e-3),
+      lCmCandidatesH: lCmSource.value === 'catalog' && catalogState.value === 'ready'
+        ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
       cXCandidatesF: parseList(cxCandidatesUf.value, 1e-6),
       grid: { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 },
     }
@@ -143,8 +178,22 @@ function downloadNetlist() {
         </div>
         <label v-else class="field"><span>Leakage inductance (µH)</span>
           <input v-model.number="lDmUh" type="number" /></label>
-        <label class="field"><span>CM choke candidates (mH) — your catalog, any manufacturer</span>
+        <label class="field"><span>CM choke source</span>
+          <select v-model="lCmSource" data-test="lcm-source">
+            <option value="manual">manual value list</option>
+            <option value="catalog" :disabled="catalogState !== 'ready'">
+              parts catalog{{ catalogState === 'ready' ? ` (${catalog.count} chokes)` : catalogState === 'loading' ? ' (loading…)' : ' (unavailable here)' }}
+            </option>
+          </select></label>
+        <label v-if="lCmSource === 'manual'" class="field"><span>CM choke candidates (mH) — any manufacturer</span>
           <input v-model="lCandidatesMh" type="text" /></label>
+        <div v-else class="row">
+          <label class="field"><span>Manufacturer</span>
+            <select v-model="mfrFilter" data-test="mfr-filter"><option value="">all manufacturers</option>
+              <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
+          <label class="field"><span>Min. rated current (A)</span>
+            <input v-model.number="minRatedA" type="number" min="0" /></label>
+        </div>
         <label class="field"><span>X capacitor candidates (µF)</span>
           <input v-model="cxCandidatesUf" type="text" /></label>
         <div class="row">
@@ -188,6 +237,20 @@ function downloadNetlist() {
             <tr><td>C<sub>X</sub> selected</td><td><strong>{{ fmtSi(design.cXSelectedF, 'F') }}</strong> (per stage)</td></tr>
             <tr><td>Achieved DM attenuation</td>
               <td :class="design.attenuationDmDb >= aReqDm ? 'pos' : 'neg'">{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel" v-if="lCmSource === 'catalog' && matchedParts().length">
+        <p class="section-label">Catalog parts at {{ fmtSi(design.lCmSelectedH, 'H') }}</p>
+        <table class="data" data-test="catalog-parts">
+          <thead><tr><th>Part</th><th>Manufacturer</th><th>Family</th><th>Rated A</th><th>DCR</th></tr></thead>
+          <tbody>
+            <tr v-for="p in matchedParts()" :key="p.mpn">
+              <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td><td>{{ p.family || '—' }}</td>
+              <td>{{ p.ratedCurrentA !== null ? p.ratedCurrentA.toFixed(1) : '—' }}</td>
+              <td>{{ p.dcrOhm !== null ? fmtSi(p.dcrOhm, 'Ω') : '—' }}</td>
+            </tr>
           </tbody>
         </table>
       </div>
