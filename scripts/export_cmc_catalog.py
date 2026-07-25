@@ -13,6 +13,10 @@ candidate, and inventing one would poison the design.
 import json
 import sys
 
+# ABT #279: the Würth .mdb import tags CMC families as subtype "inductor";
+# until that is fixed upstream, these family prefixes are included explicitly.
+WE_CMC_FAMILY_PREFIXES = ("WE-CMB", "WE-CNSW", "WE-SL", "WE-LF", "WE-FC")
+
 
 def resolve_dimensional(value):
     """PEAS resolve_dimensional_values rule: nominal -> (min+max)/2 -> max -> min."""
@@ -43,7 +47,10 @@ def main(source_path, output_path):
             except (KeyError, IndexError, json.JSONDecodeError):
                 continue
             subtype = str(electrical.get("subtype", "")).lower().replace("_", "").replace("-", "")
-            if subtype != "commonmodechoke":
+            family_upper = str(info.get("family") or "").upper()
+            is_cmc = subtype == "commonmodechoke" or any(
+                family_upper.startswith(prefix) for prefix in WE_CMC_FAMILY_PREFIXES)
+            if not is_cmc:
                 continue
             inductance = electrical.get("inductance")
             if inductance is None:
