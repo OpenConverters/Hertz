@@ -15,6 +15,7 @@ onMounted(async () => {
     engineState.value = 'ready'
   } catch (e) {
     engineState.value = 'fault'
+    console.error('Hertz engine failed to load:', e)
   }
 })
 

@@ -22,7 +22,7 @@ em++ -O2 -std=c++20 -fwasm-exceptions --bind \
   cpp/bindings/wasm_bindings.cpp \
   "${MKF_WASM_LIBS[@]}" \
   -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createHertz \
-  -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=web,worker \
+  -sALLOW_MEMORY_GROWTH=1 -sDYNAMIC_EXECUTION=0 -sENVIRONMENT=web,worker \
   -o web/public/hertz.js
 
 ls -la web/public/hertz.js web/public/hertz.wasm
