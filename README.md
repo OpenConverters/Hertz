@@ -23,11 +23,34 @@ manufacturer's component catalog supplied as candidate lists.
 | `hertz.filter_design` | Single-phase line-filter synthesis per Würth Elektronik's public application note ANP015: 1- and 2-stage CM+DM sizing, component rounding onto explicit candidate lists, Y-cap leakage current, X-cap discharge resistor. Validated against the app note's worked example. |
 | `hertz.traces` | Spectrum-analyzer CSV ingestion with unit detection; ambiguous units raise instead of guessing. |
 
+## Architecture
+
+Two implementations of the same engine, sharing one set of golden test vectors:
+
+- **`cpp/` — the product core** (C++20, header-only): compiles natively, to
+  **WASM** (browser tools run entirely client-side — no simulation servers),
+  and later to Python bindings via pybind11. Reuses the OpenMagnetics **MKF**
+  library (its radix-2 FFT today; its wideband choke impedance model next), so
+  build MKF first and point `HERTZ_MKF_ROOT` at the checkout.
+- **`src/hertz/` — the Python reference** (numpy): the readable spec and
+  cross-validation implementation; every C++ behavior is asserted against the
+  same numbers here.
+
+CSV parsing is string-based in the C++ core by design: the host (browser `File`
+API, Python `open()`) reads the file and passes its content — the WASM-native
+pattern.
+
 ## Install & test
 
 ```bash
+# Python reference
 pip install -e ".[dev]"
 pytest
+
+# C++ core (Catch2 binary, run it directly — no ctest)
+cmake -S cpp -B cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C cpp/build -j4
+./cpp/build/test_hertz
 ```
 
 ## Roadmap

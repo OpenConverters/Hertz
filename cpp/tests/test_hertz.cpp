@@ -1,0 +1,270 @@
+// Golden vectors are shared with the Python reference implementation
+// (../../tests): the ANP015 worked example, CISPR 32 breakpoints, and the
+// CW / pulsed receiver-calibration cases.
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
+
+#include <cmath>
+#include <complex>
+#include <numbers>
+#include <vector>
+
+#include "hertz/Detector.hpp"
+#include "hertz/FilterDesign.hpp"
+#include "hertz/Limits.hpp"
+#include "hertz/Lisn.hpp"
+#include "hertz/Separation.hpp"
+#include "hertz/Traces.hpp"
+#include "hertz/Utils.hpp"
+
+using Catch::Approx;
+
+TEST_CASE("CISPR 32 Class B QP breakpoints", "[limits]") {
+    const auto& line = Hertz::cispr32_class_b_mains_qp();
+    CHECK(line.level(150e3) == Approx(66.0));
+    CHECK(line.level(500e3) == Approx(56.0));
+    CHECK(line.level(4.9e6) == Approx(56.0));
+    CHECK(line.level(5.1e6) == Approx(60.0));
+    CHECK(line.level(30e6) == Approx(60.0));
+}
+
+TEST_CASE("CISPR 32 log-frequency interpolation", "[limits]") {
+    double fMid = std::sqrt(150e3 * 500e3);
+    CHECK(Hertz::cispr32_class_b_mains_qp().level(fMid) == Approx(61.0));
+    CHECK(Hertz::cispr32_class_b_mains_avg().level(fMid) == Approx(51.0));
+}
+
+TEST_CASE("Outside coverage throws", "[limits]") {
+    CHECK_THROWS_AS(Hertz::cispr32_class_b_mains_qp().level(100e3), Hertz::OutsideCoverage);
+    CHECK_THROWS_AS(Hertz::cispr32_class_b_mains_qp().level(50e6), Hertz::OutsideCoverage);
+}
+
+TEST_CASE("CISPR 25 class 5 LW band and detector offsets", "[limits]") {
+    auto qp = Hertz::cispr25_conducted_voltage(5, Hertz::Detector::QUASI_PEAK);
+    CHECK(qp.level(200e3) == Approx(57.0));
+    CHECK(Hertz::cispr25_conducted_voltage(5, Hertz::Detector::PEAK).level(200e3) == Approx(70.0));
+    CHECK(Hertz::cispr25_conducted_voltage(5, Hertz::Detector::AVERAGE).level(200e3) == Approx(50.0));
+    CHECK_THROWS_AS(qp.level(400e3), Hertz::OutsideCoverage);  // gap between LW and MW
+    for (int cls = 1; cls <= 4; ++cls) {
+        double step = Hertz::cispr25_conducted_voltage(cls, Hertz::Detector::QUASI_PEAK).level(1e6) -
+                      Hertz::cispr25_conducted_voltage(cls + 1, Hertz::Detector::QUASI_PEAK).level(1e6);
+        CHECK(step == Approx(10.0));
+    }
+}
+
+TEST_CASE("Margin sign convention", "[limits]") {
+    CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
+    CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);
+}
+
+TEST_CASE("LISN impedance", "[lisn]") {
+    auto lisn50 = Hertz::cispr16_lisn();
+    CHECK(std::abs(lisn50.eut_impedance(30e6)) == Approx(50.0).epsilon(0.03));
+    double zBandEdge = std::abs(lisn50.eut_impedance(150e3));
+    CHECK(zBandEdge > 30.0);
+    CHECK(zBandEdge < 45.0);
+
+    auto lisn5 = Hertz::cispr25_lisn();
+    CHECK(std::abs(lisn5.eut_impedance(150e3)) < zBandEdge);
+    CHECK(std::abs(lisn5.eut_impedance(108e6)) == Approx(50.0).epsilon(0.03));
+
+    CHECK_THROWS_AS(lisn50.eut_impedance(0.0), std::invalid_argument);
+}
+
+TEST_CASE("LISN SPICE subcircuit", "[lisn]") {
+    std::string text = Hertz::cispr16_lisn().to_spice_subckt("LISN50");
+    CHECK(text.find(".subckt LISN50 eut mains meas") != std::string::npos);
+    CHECK(text.find("L1 eut mains 5e-05") != std::string::npos);
+    CHECK(text.find("C1 eut meas 1e-07") != std::string::npos);
+    CHECK(text.find("R1 meas 0 50") != std::string::npos);
+    std::string open = Hertz::cispr25_lisn().to_spice_subckt("LISN5", false);
+    CHECK(open.find("R1") == std::string::npos);
+}
+
+TEST_CASE("ANP015 design frequency", "[filter]") {
+    CHECK(Hertz::design_frequency(300e3) == Approx(300e3));
+    CHECK(Hertz::design_frequency(100e3) == Approx(200e3));
+    CHECK(Hertz::design_frequency(150e3) == Approx(150e3));
+    CHECK_THROWS_AS(Hertz::design_frequency(0.0), std::invalid_argument);
+}
+
+TEST_CASE("ANP015 single-stage worked example", "[filter]") {
+    auto design = Hertz::design_line_filter(
+        300e3, 40.0, 40.0, 4.7e-9, Hertz::leakage_inductance_from_impedance(92.0, 1e6), 1,
+        {1e-3, 1.5e-3, 2.2e-3, 3.3e-3, 4.7e-3}, {1e-6, 1.5e-6, 2.2e-6, 3.3e-6});
+    CHECK(design.fCutoffTargetHz == Approx(30e3));
+    CHECK(design.cYgF == Approx(9.4e-9));
+    CHECK(design.lCmRequiredH == Approx(2.994e-3).epsilon(1e-3));
+    CHECK(design.lCmSelectedH == Approx(3.3e-3));
+    CHECK(design.attenuationCmDb == Approx(40.85).margin(0.05));  // note: "41 dB"
+    CHECK(design.lDmH == Approx(14.64e-6).epsilon(1e-3));
+    CHECK(design.cXRequiredF == Approx(1.922e-6).epsilon(1e-3));
+    CHECK(design.cXSelectedF == Approx(2.2e-6));
+    CHECK(design.attenuationDmDb == Approx(41.2).margin(0.1));  // note: "41 dB"
+}
+
+TEST_CASE("ANP015 two-stage worked example", "[filter]") {
+    auto design = Hertz::design_line_filter(
+        300e3, 40.0, 40.0, 2.2e-9, Hertz::leakage_inductance_from_impedance(41.0, 1e6), 2,
+        {1e-3, 2.2e-3, 3.3e-3}, {560e-9, 1e-6});
+    CHECK(design.fCutoffTargetHz == Approx(94868.3).epsilon(1e-4));
+    CHECK(design.lCmRequiredH == Approx(0.6396e-3).epsilon(1e-3));
+    CHECK(design.lCmSelectedH == Approx(1e-3));
+    CHECK(design.attenuationCmDb == Approx(47.8).margin(0.1));  // note: "48 dB"
+    CHECK(design.cXRequiredF == Approx(431e-9).epsilon(1e-2));
+    CHECK(design.cXSelectedF == Approx(560e-9));
+    CHECK(design.attenuationDmDb == Approx(44.5).margin(0.1));  // note: "45 dB"
+}
+
+TEST_CASE("ANP015 already-passing input throws", "[filter]") {
+    CHECK_THROWS_AS(Hertz::design_line_filter(300e3, -3.0, -5.0, 4.7e-9, 14.6e-6, 1, {3.3e-3}, {2.2e-6}),
+                    std::invalid_argument);
+}
+
+TEST_CASE("ANP015 leakage current and discharge resistor", "[filter]") {
+    double current = Hertz::y_capacitor_leakage_current(253.0, 50.0, 5.6e-9, 5.6e-9, 2.4e-6);
+    CHECK(current == Approx(0.889e-3).epsilon(0.01));
+    CHECK(current < 3.5e-3);
+
+    double rMax = Hertz::max_discharge_resistance(2.52e-6, 200.0 * std::numbers::sqrt2, 60.0, 1.0);
+    CHECK(rMax == Approx(255.9e3).epsilon(0.01));
+    CHECK(Hertz::round_down_to_series(rMax, Hertz::E24) == Approx(240e3));
+    CHECK(Hertz::discharge_resistor_power(253.0, 240e3) == Approx(0.267).epsilon(0.01));
+    CHECK_THROWS_AS(Hertz::max_discharge_resistance(2.52e-6, 60.0, 60.0, 1.0), std::invalid_argument);
+}
+
+TEST_CASE("Rounding helpers", "[utils]") {
+    CHECK(Hertz::round_up_to_series(2.994e-3, Hertz::E6) == Approx(3.3e-3));
+    CHECK(Hertz::round_up_to_series(1.922e-6, Hertz::E6) == Approx(2.2e-6));
+    CHECK(Hertz::round_up_to(0.64e-3, {1e-3, 2.2e-3}) == Approx(1e-3));
+    CHECK(Hertz::round_down_to(255.9e3, {220e3, 240e3, 270e3}) == Approx(240e3));
+    CHECK_THROWS_AS(Hertz::round_up_to(5.0, {1.0, 2.0}), std::invalid_argument);
+    CHECK_THROWS_AS(Hertz::round_up_to(-1.0, {1.0}), std::invalid_argument);
+}
+
+TEST_CASE("dB conversions", "[utils]") {
+    CHECK(Hertz::dbuv_from_vrms(1.0) == Approx(120.0));
+    CHECK(Hertz::vrms_from_dbuv(120.0) == Approx(1.0));
+    CHECK(Hertz::dbuv_from_dbm(0.0) == Approx(106.99).margin(0.01));
+    CHECK(std::isinf(Hertz::dbuv_from_vrms(0.0)));
+}
+
+TEST_CASE("CM/DM separation", "[separation]") {
+    std::vector<double> cmTrue, dmTrue, vLine, vNeutral;
+    for (int i = 0; i < 1000; ++i) {
+        double t = i / 1000.0;
+        cmTrue.push_back(0.3 * std::sin(2.0 * std::numbers::pi * 5.0 * t));
+        dmTrue.push_back(0.1 * std::sin(2.0 * std::numbers::pi * 9.0 * t));
+        vLine.push_back(cmTrue.back() + dmTrue.back());
+        vNeutral.push_back(cmTrue.back() - dmTrue.back());
+    }
+    auto [cm, dm] = Hertz::separate(vLine, vNeutral);
+    for (size_t i = 0; i < cm.size(); ++i) {
+        CHECK(cm[i] == Approx(cmTrue[i]).margin(1e-12));
+        CHECK(dm[i] == Approx(dmTrue[i]).margin(1e-12));
+    }
+    CHECK_THROWS_AS(Hertz::separate<double>({1.0}, {1.0, 2.0}), std::invalid_argument);
+}
+
+TEST_CASE("CSV parsing with units in header", "[traces]") {
+    auto trace = Hertz::parse_spectrum_csv("Frequency [MHz];Level [dB\xC2\xB5V]\n0.15;62.1\n0.5;55.0\n1.0;48.3\n");
+    REQUIRE(trace.frequenciesHz.size() == 3);
+    CHECK(trace.frequenciesHz[0] == Approx(150e3));
+    CHECK(trace.frequenciesHz[2] == Approx(1e6));
+    CHECK(trace.levelsDbuv[0] == Approx(62.1));
+}
+
+TEST_CASE("CSV dBm conversion and sorting", "[traces]") {
+    auto trace = Hertz::parse_spectrum_csv("Freq (Hz),Amplitude (dBm)\n2000000,-70\n1000000,-60\n");
+    CHECK(trace.frequenciesHz[0] == Approx(1e6));
+    CHECK(trace.levelsDbuv[0] == Approx(46.99).margin(0.01));
+}
+
+TEST_CASE("CSV ambiguous units throw, explicit units work", "[traces]") {
+    std::string content = "col1,col2\n0.15,62.1\n0.5,55.0\n";
+    CHECK_THROWS_AS(Hertz::parse_spectrum_csv(content), Hertz::TraceFormatError);
+    auto trace = Hertz::parse_spectrum_csv(content, "MHz", "dBuV");
+    CHECK(trace.frequenciesHz[0] == Approx(150e3));
+}
+
+namespace {
+std::vector<double> make_tone(double durationS, double fsHz, double toneHz, double amplitude,
+                              bool gated = false) {
+    std::vector<double> x(static_cast<size_t>(durationS * fsHz));
+    for (size_t i = 0; i < x.size(); ++i) {
+        double t = static_cast<double>(i) / fsHz;
+        double sample = amplitude * std::sin(2.0 * std::numbers::pi * toneHz * t);
+        if (gated && std::fmod(t * 100.0, 1.0) >= 0.1) {
+            sample = 0.0;  // 100 Hz PRF, 10 % duty
+        }
+        x[i] = sample;
+    }
+    return x;
+}
+constexpr double TONE_HZ = 300e3;
+constexpr double FS_HZ = 1e6;
+constexpr double AMPLITUDE = 1e-3;
+const double CW_DBUV = 20.0 * std::log10(AMPLITUDE / std::numbers::sqrt2 / 1e-6);  // 56.99
+}  // namespace
+
+TEST_CASE("Band lookup", "[detector]") {
+    CHECK(&Hertz::band_for_frequency(TONE_HZ) == &Hertz::BAND_B);
+    CHECK_THROWS_AS(Hertz::band_for_frequency(2e9), std::invalid_argument);
+}
+
+TEST_CASE("Envelope calibration on CW", "[detector]") {
+    std::vector<double> freqs;
+    auto envelope = Hertz::stft_envelope(make_tone(0.02, FS_HZ, TONE_HZ, AMPLITUDE), FS_HZ,
+                                         Hertz::BAND_B, &freqs);
+    double maxEnvelope = 0.0;
+    size_t peakBin = 0;
+    for (const auto& row : envelope) {
+        for (size_t k = 0; k < row.size(); ++k) {
+            if (row[k] > maxEnvelope) {
+                maxEnvelope = row[k];
+                peakBin = k;
+            }
+        }
+    }
+    CHECK(maxEnvelope == Approx(AMPLITUDE).epsilon(0.03));
+    CHECK(freqs[peakBin] == Approx(TONE_HZ).margin(freqs[1] - freqs[0]));
+}
+
+TEST_CASE("CW reads its RMS on all detectors", "[detector]") {
+    auto reading = Hertz::measure(make_tone(1.0, FS_HZ, TONE_HZ, AMPLITUDE), FS_HZ, Hertz::BAND_B);
+    auto maxOf = [](const std::vector<double>& v) {
+        double m = v[0];
+        for (double value : v) m = std::max(m, value);
+        return m;
+    };
+    CHECK(maxOf(reading.peakDbuv) == Approx(CW_DBUV).margin(0.45));
+    CHECK(maxOf(reading.quasiPeakDbuv) == Approx(CW_DBUV).margin(0.45));
+    CHECK(maxOf(reading.averageDbuv) == Approx(CW_DBUV).margin(0.45));
+}
+
+TEST_CASE("Pulsed signal orders detectors", "[detector]") {
+    auto reading =
+        Hertz::measure(make_tone(1.0, FS_HZ, TONE_HZ, AMPLITUDE, true), FS_HZ, Hertz::BAND_B);
+    size_t binAtTone = 0;
+    double best = 1e18;
+    for (size_t k = 0; k < reading.frequenciesHz.size(); ++k) {
+        double distance = std::abs(reading.frequenciesHz[k] - TONE_HZ);
+        if (distance < best) {
+            best = distance;
+            binAtTone = k;
+        }
+    }
+    double pk = reading.peakDbuv[binAtTone];
+    double qp = reading.quasiPeakDbuv[binAtTone];
+    double avg = reading.averageDbuv[binAtTone];
+    CHECK(avg < qp);
+    CHECK(qp < pk);
+    CHECK(pk - avg == Approx(20.0).margin(1.5));  // envelope mean = duty cycle
+    CHECK(pk - qp < 3.0);  // 1 ms charge vs 160 ms discharge holds QP near peak
+}
+
+TEST_CASE("Signal too short throws", "[detector]") {
+    CHECK_THROWS_AS(Hertz::measure(make_tone(0.0001, FS_HZ, TONE_HZ, AMPLITUDE), FS_HZ, Hertz::BAND_B),
+                    std::invalid_argument);
+}
