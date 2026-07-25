@@ -53,9 +53,10 @@ onMounted(async () => {
 })
 
 const manufacturers = () =>
-  [...new Set(catalog.value.parts.map((p) => p.manufacturer))].sort()
+  catalog.value ? [...new Set(catalog.value.parts.map((p) => p.manufacturer))].sort() : []
 
 function catalogParts() {
+  if (!catalog.value) return []
   return catalog.value.parts.filter((p) =>
     (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
     (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)) &&
@@ -68,7 +69,7 @@ function catalogCandidates() {
   return [...new Set(parts.map((p) => p.inductanceH))].sort((a, b) => a - b)
 }
 
-const matchedParts = () => catalogParts()
+const matchedParts = () => (!design.value || !catalog.value) ? [] : catalogParts()
   .filter((p) => Math.abs(p.inductanceH - design.value.lCmSelectedH) < 1e-3 * design.value.lCmSelectedH)
   .sort((a, b) => (b.ratedCurrentA ?? 0) - (a.ratedCurrentA ?? 0))
   .slice(0, 6)
