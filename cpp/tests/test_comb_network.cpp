@@ -149,6 +149,27 @@ TEST_CASE("Network: curves are consistent with point evaluation", "[network]") {
           Approx(Hertz::insertion_loss_db(network, {100.0, 0.0}, {100.0, 0.0})).margin(1e-9));
 }
 
+TEST_CASE("Network: tabulated curve of an ideal inductor matches ideal LC exactly", "[network]") {
+    const double l = 14.64e-6, c = 2.2e-6;
+    std::vector<double> freqs, zRe, zIm;
+    for (int i = 0; i < 40; ++i) {
+        double f = std::pow(10.0, 5.2 + 2.2 * i / 39.0);
+        freqs.push_back(f);
+        zRe.push_back(0.0);
+        zIm.push_back(2.0 * std::numbers::pi * f * l);
+    }
+    auto curves = Hertz::tabulated_series_il_curves(freqs, zRe, zIm, c, 2, 25.0);
+    for (size_t i = 0; i < freqs.size(); ++i) {
+        auto network = Hertz::lc_filter_abcd(freqs[i], l, c, 2);
+        CHECK(curves.standardDb[i] ==
+              Approx(Hertz::insertion_loss_db(network, {25.0, 0.0}, {25.0, 0.0})).margin(1e-9));
+        CHECK(curves.worstCaseDb[i] ==
+              Approx(Hertz::insertion_loss_worst_case_db(network)).margin(1e-9));
+    }
+    CHECK_THROWS_AS(Hertz::tabulated_series_il_curves({2e6, 1e6}, {0, 0}, {1, 1}, c, 1, 25.0),
+                    std::invalid_argument);
+}
+
 TEST_CASE("Middlebrook: interaction check", "[middlebrook]") {
     // ANP015 single-stage DM values feeding a 25 W flyback from 230 V mains:
     // R0 = sqrt(14.64u/2.2u) = 2.58 Ohm, Zin = 207²/25 = 1714 Ohm -> huge margin.

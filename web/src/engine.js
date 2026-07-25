@@ -44,6 +44,8 @@ export async function api() {
     insertionLossCurves: (params) => unwrap(mod.insertionLossCurves(JSON.stringify(params))),
     inputFilterInteraction: (lH, cF, vInMin, pIn) =>
       unwrap(mod.inputFilterInteraction(lH, cF, vInMin, pIn)),
+    measuredIlCurves: (freqs, zRe, zIm, cShuntF, stages, refZ) =>
+      unwrap(mod.measuredIlCurves(JSON.stringify(freqs), JSON.stringify(zRe), JSON.stringify(zIm), cShuntF, stages, refZ)),
   }
 }
 

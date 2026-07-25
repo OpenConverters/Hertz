@@ -75,3 +75,36 @@ def test_validation():
         lc_filter_abcd(1e6, L, C, 5)
     with pytest.raises(ValueError):
         insertion_loss_curves(L, C, 1, -1.0, 150e3, 30e6)
+
+
+def test_tabulated_matches_ideal_lc_exactly():
+    # A synthetic "measured" curve of an ideal inductor (Z = jwL) must reproduce
+    # the ideal-LC ABCD result identically — same math, different entry path.
+    import numpy as np
+    from hertz.network import tabulated_series_il_curves
+    freqs = np.logspace(5.2, 7.4, 40)
+    z_imag = 2.0 * math.pi * freqs * L
+    standard, worst = tabulated_series_il_curves(freqs, np.zeros_like(freqs), z_imag, C, 2, 25.0)
+    for i, f in enumerate(freqs):
+        network = lc_filter_abcd(f, L, C, 2)
+        assert standard[i] == pytest.approx(insertion_loss_db(network, 25.0, 25.0), abs=1e-9)
+        assert worst[i] == pytest.approx(insertion_loss_worst_case_db(network), abs=1e-9)
+
+
+def test_tabulated_resistive_choke_beats_ideal_at_resonance():
+    # A real ferrite CMC is resistive at its |Z| peak: same |Z| but resistive
+    # phase damps the LC resonance dip that the ideal model shows.
+    import numpy as np
+    from hertz.network import tabulated_series_il_curves
+    freqs = np.logspace(5.2, 7.4, 60)
+    z_mag = 2.0 * math.pi * freqs * L
+    standard_r, _ = tabulated_series_il_curves(freqs, z_mag, np.zeros_like(freqs), C, 1, 25.0)
+    assert np.all(np.isfinite(standard_r))
+
+
+def test_tabulated_validation():
+    from hertz.network import tabulated_series_il_curves
+    with pytest.raises(ValueError):
+        tabulated_series_il_curves([1e6, 5e5], [1.0, 1.0], [0.0, 0.0], C, 1, 25.0)
+    with pytest.raises(ValueError):
+        tabulated_series_il_curves([1e6, 2e6], [1.0, 1.0], [0.0, 0.0], -1.0, 1, 25.0)

@@ -70,3 +70,20 @@ test('filter: bind parts via the schematic and export CIAS', async ({ page }) =>
   const download = await downloadPromise
   expect(download.suggestedFilename()).toContain('.cias.json')
 })
+
+test('filter: binding a curve-carrying CMC overlays measured-impedance IL', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('areq-cm').fill('15')
+  await page.getByTestId('areq-dm').fill('15')
+  await page.getByTestId('lcm-source').selectOption('catalog')
+  await page.getByTestId('mfr-filter').selectOption('Murata')
+  await page.getByTestId('min-rated').fill('0')
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('bom')).toBeVisible()
+  await page.getByTestId('sch-CMC1').click()
+  await expect(page.getByTestId('part-panel')).toContainText('DLW32MH201XK2')
+  await page.getByTestId('bind-part').first().click()
+  await expect(page.getByTestId('measured-note')).toContainText('DLW32MH201XK2')
+})

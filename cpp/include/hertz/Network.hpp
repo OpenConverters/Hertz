@@ -99,4 +99,47 @@ inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capa
     return curves;
 }
 
+// Insertion loss using a MEASURED complex series impedance per stage (the
+// bound part's impedance curve) against the shunt capacitor — evaluated AT the
+// measured frequencies only: no interpolation, no extrapolation, no invented
+// points. Outputs align with the input frequency vector.
+inline InsertionLossCurves tabulated_series_il_curves(const std::vector<double>& freqsHz,
+                                                      const std::vector<double>& zRealOhm,
+                                                      const std::vector<double>& zImagOhm,
+                                                      double cShuntF, int stages,
+                                                      double referenceImpedanceOhm) {
+    if (freqsHz.size() != zRealOhm.size() || freqsHz.size() != zImagOhm.size()) {
+        throw std::invalid_argument("frequency and impedance arrays differ in length");
+    }
+    if (freqsHz.size() < 2) {
+        throw std::invalid_argument("need >= 2 measured points");
+    }
+    for (size_t i = 1; i < freqsHz.size(); ++i) {
+        if (freqsHz[i] <= freqsHz[i - 1]) {
+            throw std::invalid_argument("frequencies must be strictly increasing");
+        }
+    }
+    if (cShuntF <= 0.0 || referenceImpedanceOhm <= 0.0) {
+        throw std::invalid_argument("shunt capacitance and reference impedance must be positive");
+    }
+    if (stages < 1 || stages > 4) {
+        throw std::invalid_argument("stages must be 1..4");
+    }
+    InsertionLossCurves curves;
+    Complex reference(referenceImpedanceOhm, 0.0);
+    for (size_t i = 0; i < freqsHz.size(); ++i) {
+        double w = 2.0 * std::numbers::pi * freqsHz[i];
+        Abcd stage = cascade(series_impedance(Complex(zRealOhm[i], zImagOhm[i])),
+                             shunt_admittance(Complex(0.0, w * cShuntF)));
+        Abcd network;
+        for (int s = 0; s < stages; ++s) {
+            network = cascade(network, stage);
+        }
+        curves.frequenciesHz.push_back(freqsHz[i]);
+        curves.standardDb.push_back(insertion_loss_db(network, reference, reference));
+        curves.worstCaseDb.push_back(insertion_loss_worst_case_db(network));
+    }
+    return curves;
+}
+
 }  // namespace Hertz

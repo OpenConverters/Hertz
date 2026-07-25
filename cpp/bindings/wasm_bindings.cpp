@@ -361,6 +361,21 @@ std::string insertion_loss_curves_js(const std::string& paramsJson) {
     });
 }
 
+std::string measured_il_curves_js(const std::string& freqsJson, const std::string& zReJson,
+                                  const std::string& zImJson, double cShuntF, int stages,
+                                  double referenceImpedanceOhm) {
+    return guarded([&]() -> std::string {
+        auto curves = Hertz::tabulated_series_il_curves(
+            json::parse(freqsJson).get<std::vector<double>>(),
+            json::parse(zReJson).get<std::vector<double>>(),
+            json::parse(zImJson).get<std::vector<double>>(), cShuntF, stages,
+            referenceImpedanceOhm);
+        return json{{"frequenciesHz", curves.frequenciesHz},
+                    {"standardDb", curves.standardDb},
+                    {"worstCaseDb", curves.worstCaseDb}}.dump();
+    });
+}
+
 std::string input_filter_interaction_js(double inductanceH, double capacitanceF, double vInMinV,
                                         double pInW) {
     return guarded([&]() -> std::string {
@@ -390,4 +405,5 @@ EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("detectComb", &detect_comb_js);
     emscripten::function("insertionLossCurves", &insertion_loss_curves_js);
     emscripten::function("inputFilterInteraction", &input_filter_interaction_js);
+    emscripten::function("measuredIlCurves", &measured_il_curves_js);
 }

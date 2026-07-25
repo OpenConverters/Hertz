@@ -38,6 +38,8 @@ const minRatedA = ref(1)
 const capsCatalog = ref(null)
 const selectedRef = ref('')
 const bindings = ref({})
+const curvesFile = ref(null)     // /kelvin/hertz-cmc-curves.v1.json, fetched on first need
+const measured = ref(null)       // {mpn, cm?: {f, db}, dm?: {f, db}} — bound part's measured-Z IL
 
 onMounted(async () => {
   try {
@@ -116,6 +118,7 @@ async function compute() {
     }
     bindings.value = {}
     selectedRef.value = ''
+    measured.value = null
     design.value = engine.designFilter(params)
     netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16')
     const d = design.value
@@ -132,6 +135,10 @@ async function compute() {
 }
 
 const ilSeries = () => [
+  ...(measured.value?.cm ? [{ id: 'cmm', label: `CM measured (${measured.value.mpn})`, color: 'var(--s-1)', dash: '1 4',
+    points: measured.value.cm.f.map((f, i) => ({ f, v: measured.value.cm.db[i] })) }] : []),
+  ...(measured.value?.dm ? [{ id: 'dmm', label: `DM measured (${measured.value.mpn})`, color: 'var(--s-2)', dash: '1 4',
+    points: measured.value.dm.f.map((f, i) => ({ f, v: measured.value.dm.db[i] })) }] : []),
   { id: 'cm', label: 'CM in-circuit (25 Ω)', color: 'var(--s-1)',
     points: ilCm.value.frequenciesHz.map((f, i) => ({ f, v: ilCm.value.standardDb[i] })) },
   { id: 'cmw', label: 'CM worst case (CISPR 17)', color: 'var(--s-1)', dash: '3 4',
@@ -184,12 +191,48 @@ const recommendations = () => {
   return { kind, target, parts, unavailable: false }
 }
 
-function bindPart(part) {
+async function bindPart(part) {
   const kind = kindOf(selectedRef.value)
   for (const c of filterComponents(design.value.stages)) {
     if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer }
   }
   bindings.value = { ...bindings.value }
+  if (kind !== 'cmc') return
+  measured.value = null
+  if (!part.hasMeasuredCmCurve && !part.hasMeasuredDmCurve) return
+  try {
+    if (!curvesFile.value) {
+      const response = await fetch('/kelvin/hertz-cmc-curves.v1.json')
+      if (!response.ok) throw new Error(String(response.status))
+      curvesFile.value = await response.json()
+    }
+    const curve = curvesFile.value.curves[part.mpn]
+    if (!curve) return
+    const engine = await api()
+    // trim measured points to the chart span — subsetting, never extending
+    const trim = (mode) => {
+      const keep = mode.f.map((f, i) => [f, i]).filter(([f]) => f >= 150e3 && f <= 30e6)
+      return { f: keep.map(([f]) => f), re: keep.map(([, i]) => mode.re[i]), im: keep.map(([, i]) => mode.im[i]) }
+    }
+    const result = { mpn: part.mpn }
+    if (curve.cm) {
+      const t = trim(curve.cm)
+      if (t.f.length >= 2) {
+        const il = engine.measuredIlCurves(t.f, t.re, t.im, design.value.cYgF, design.value.stages, 25)
+        result.cm = { f: il.frequenciesHz, db: il.standardDb }
+      }
+    }
+    if (curve.dm) {
+      const t = trim(curve.dm)
+      if (t.f.length >= 2) {
+        const il = engine.measuredIlCurves(t.f, t.re, t.im, design.value.cXSelectedF, design.value.stages, 100)
+        result.dm = { f: il.frequenciesHz, db: il.standardDb }
+      }
+    }
+    if (result.cm || result.dm) measured.value = result
+  } catch (e) {
+    error.value = 'measured-curve overlay unavailable: ' + e.message
+  }
 }
 
 const bomRows = () => filterComponents(design.value.stages).map((c) => ({
@@ -234,7 +277,7 @@ function downloadNetlist() {
           <label class="field"><span>Required CM attenuation (dB)</span>
             <input v-model.number="aReqCm" type="number" data-test="areq-cm" /></label>
           <label class="field"><span>Required DM attenuation (dB)</span>
-            <input v-model.number="aReqDm" type="number" /></label>
+            <input v-model.number="aReqDm" type="number" data-test="areq-dm" /></label>
         </div>
         <p class="note">Below 150 kHz the design moves to the first harmonic inside the measured band, as ANP015 prescribes.</p>
       </div>
@@ -268,7 +311,7 @@ function downloadNetlist() {
             <select v-model="mfrFilter" data-test="mfr-filter"><option value="">all manufacturers</option>
               <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
           <label class="field"><span>Min. rated current (A)</span>
-            <input v-model.number="minRatedA" type="number" min="0" /></label>
+            <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
         </div>
         <label class="field"><span>X capacitor candidates (µF)</span>
           <input v-model="cxCandidatesUf" type="text" /></label>
@@ -378,6 +421,9 @@ function downloadNetlist() {
         <p class="section-label">In-circuit insertion loss — solid: nominal terminations · dashed: CISPR 17 worst case (0.1 Ω/100 Ω) · dot: your requirement</p>
         <LogChart :series="ilSeries()" :violations="requirementMarkers()" y-label="dB" :height="300" data-test="il-chart" />
         <p class="note">If the dashed worst-case curve still clears your requirement at the design frequency, termination uncertainty cannot eat the margin.</p>
+        <p v-if="measured" class="note" data-test="measured-note">
+          Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
+          (complex Z, manufacturer data via the TAS catalog) — shown only over the measured frequency span.</p>
       </div>
 
       <div class="panel" v-if="interaction">

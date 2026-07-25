@@ -76,3 +76,32 @@ def insertion_loss_curves(inductance_h, capacitance_f, stages, reference_impedan
         standard[i] = insertion_loss_db(network, reference_impedance_ohm, reference_impedance_ohm)
         worst[i] = insertion_loss_worst_case_db(network)
     return freqs, standard, worst
+
+
+def tabulated_series_il_curves(freqs_hz, z_real_ohm, z_imag_ohm, c_shunt_f, stages,
+                               reference_impedance_ohm):
+    """Insertion loss using a MEASURED complex series impedance per stage (the
+    bound part's impedance curve) against the shunt capacitor — evaluated AT the
+    measured frequencies only: no interpolation, no extrapolation, no invented
+    points. Returns (standard_db, worst_case_db) arrays aligned with freqs_hz."""
+    freqs = np.asarray(freqs_hz, dtype=float)
+    z = np.asarray(z_real_ohm, dtype=float) + 1j * np.asarray(z_imag_ohm, dtype=float)
+    if freqs.shape != z.shape or freqs.ndim != 1:
+        raise ValueError("frequency and impedance arrays must be one-dimensional and equal length")
+    if freqs.size < 2 or np.any(np.diff(freqs) <= 0.0):
+        raise ValueError("frequencies must be strictly increasing (>= 2 points)")
+    if c_shunt_f <= 0.0 or reference_impedance_ohm <= 0.0:
+        raise ValueError("shunt capacitance and reference impedance must be positive")
+    if stages not in (1, 2, 3, 4):
+        raise ValueError("stages must be 1..4")
+    standard = np.empty_like(freqs)
+    worst = np.empty_like(freqs)
+    for i, f in enumerate(freqs):
+        w = 2.0 * math.pi * f
+        stage = cascade(series_impedance(z[i]), shunt_admittance(1j * w * c_shunt_f))
+        network = Abcd()
+        for _ in range(stages):
+            network = cascade(network, stage)
+        standard[i] = insertion_loss_db(network, reference_impedance_ohm, reference_impedance_ohm)
+        worst[i] = insertion_loss_worst_case_db(network)
+    return standard, worst
