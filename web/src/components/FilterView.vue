@@ -3,7 +3,9 @@
 // with the safety checks (Y-cap leakage, X-cap discharge) and SPICE export.
 import { onMounted, ref } from 'vue'
 import LogChart from './LogChart.vue'
+import FilterSchematic from './FilterSchematic.vue'
 import { api } from '../engine.js'
+import { buildFilterCias, filterComponents } from '../ciasFilter.js'
 import { store } from '../store.js'
 import { fmtHz, fmtDb, fmtSi } from '../format.js'
 
@@ -33,6 +35,9 @@ const catalog = ref(null)            // {count, parts:[{mpn,manufacturer,family,
 const catalogState = ref('loading')  // 'loading' | 'ready' | 'unavailable'
 const mfrFilter = ref('')
 const minRatedA = ref(1)
+const capsCatalog = ref(null)
+const selectedRef = ref('')
+const bindings = ref({})
 
 onMounted(async () => {
   try {
@@ -43,6 +48,10 @@ onMounted(async () => {
   } catch {
     catalogState.value = 'unavailable'
   }
+  try {
+    const response = await fetch('/kelvin/hertz-safety-caps.v1.json')
+    if (response.ok) capsCatalog.value = await response.json()
+  } catch { /* caps panel shows its own unavailable state */ }
   if (store.handoff) {
     aReqCm.value = store.handoff.aReqDb
     aReqDm.value = store.handoff.aReqDb
@@ -105,6 +114,8 @@ async function compute() {
     } else {
       params.lDmH = lDmUh.value * 1e-6
     }
+    bindings.value = {}
+    selectedRef.value = ''
     design.value = engine.designFilter(params)
     netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16')
     const d = design.value
@@ -133,6 +144,70 @@ const ilSeries = () => [
 const requirementMarkers = () => [
   { f: design.value.fDesignHz, v: Number(aReqCm.value) },
 ]
+
+const schematicLabels = () => {
+  const labels = {}
+  for (let s = 1; s <= design.value.stages; s += 1) {
+    labels[`CMC${s}`] = fmtSi(design.value.lCmSelectedH, 'H')
+    labels[`C_X${s}`] = fmtSi(design.value.cXSelectedF, 'F')
+    labels[`C_YL${s}`] = fmtSi(design.value.cYPerLineF, 'F')
+    labels[`C_YN${s}`] = fmtSi(design.value.cYPerLineF, 'F')
+  }
+  return labels
+}
+
+const kindOf = (ref) => ref.startsWith('CMC') ? 'cmc' : ref.startsWith('C_X') ? 'cx' : 'cy'
+const targetValueOf = (kind) => kind === 'cmc' ? design.value.lCmSelectedH
+  : kind === 'cx' ? design.value.cXSelectedF : design.value.cYPerLineF
+
+// Catalog recommendations for the selected component: closest values first,
+// exact matches naturally leading. Identical stages share bindings, so binding
+// one CMC binds them all (and Y caps bind as the full set).
+const recommendations = () => {
+  if (!selectedRef.value || !design.value) return null
+  const kind = kindOf(selectedRef.value)
+  const target = targetValueOf(kind)
+  let pool
+  if (kind === 'cmc') {
+    pool = (catalog.value?.parts ?? []).map((p) => ({ ...p, valueF: p.inductanceH }))
+  } else {
+    const cls = kind === 'cx' ? 'X2' : 'Y2'
+    pool = (capsCatalog.value?.parts ?? [])
+      .filter((p) => p.safetyClass === cls)
+      .map((p) => ({ ...p, valueF: p.capacitanceF }))
+  }
+  if (!pool.length) return { kind, target, parts: [], unavailable: true }
+  const parts = pool
+    .map((p) => ({ ...p, deviation: Math.abs(p.valueF - target) / target }))
+    .sort((a, b) => a.deviation - b.deviation || (b.ratedCurrentA ?? b.ratedVoltageV ?? 0) - (a.ratedCurrentA ?? a.ratedVoltageV ?? 0))
+    .slice(0, 8)
+  return { kind, target, parts, unavailable: false }
+}
+
+function bindPart(part) {
+  const kind = kindOf(selectedRef.value)
+  for (const c of filterComponents(design.value.stages)) {
+    if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer }
+  }
+  bindings.value = { ...bindings.value }
+}
+
+const bomRows = () => filterComponents(design.value.stages).map((c) => ({
+  ref: c.ref,
+  value: schematicLabels()[c.ref],
+  binding: bindings.value[c.ref] ?? null,
+}))
+const allBound = () => filterComponents(design.value.stages).every((c) => bindings.value[c.ref]?.mpn)
+
+function downloadCias() {
+  const brick = buildFilterCias(design.value.stages, bindings.value)
+  const blob = new Blob([JSON.stringify(brick, null, 2)], { type: 'application/json' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = brick.name + '.cias.json'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 
 function downloadNetlist() {
   const blob = new Blob([netlist.value], { type: 'text/plain' })
@@ -213,6 +288,49 @@ function downloadNetlist() {
           <div class="cell"><b>Design frequency</b><span>{{ fmtHz(design.fDesignHz) }}</span></div>
           <div class="cell"><b>Target cutoff</b><span>{{ fmtHz(design.fCutoffTargetHz) }}</span></div>
           <div class="cell"><b>Stages</b><span>{{ design.stages }}</span></div>
+        </div>
+      </div>
+
+      <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
+                       :selected="selectedRef" @select="selectedRef = $event" />
+
+      <div v-if="selectedRef && recommendations()" class="panel" data-test="part-panel">
+        <p class="section-label">Catalog parts for {{ selectedRef.replace('C_YL', 'C_Y (pair) ').replace('C_YN', 'C_Y (pair) ') }}
+          — target {{ fmtSi(recommendations().target, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}</p>
+        <p v-if="recommendations().unavailable" class="note">Parts catalog not reachable from this deployment — bind manually via the BOM later, or design on values only.</p>
+        <table v-else class="data">
+          <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th><th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="p in recommendations().parts" :key="p.mpn">
+              <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td>
+              <td>{{ fmtSi(p.valueF, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}
+                <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></td>
+              <td>{{ kindOf(selectedRef) === 'cmc'
+                ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : '—')
+                : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V' : '') }}</td>
+              <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <p class="section-label">Bill of materials</p>
+        <table class="data" data-test="bom">
+          <thead><tr><th>Ref</th><th>Value</th><th>Bound part</th></tr></thead>
+          <tbody>
+            <tr v-for="row in bomRows()" :key="row.ref">
+              <td>{{ row.ref }}</td><td>{{ row.value }}</td>
+              <td v-if="row.binding"><strong>{{ row.binding.mpn }}</strong> <span class="note">{{ row.binding.manufacturer }}</span></td>
+              <td v-else class="note">unbound — click the part in the schematic</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="row" style="margin-top: 0.6rem">
+          <button class="ghost" data-test="download-cias" :disabled="!allBound()" @click="downloadCias()"
+                  :title="allBound() ? 'Download the CIAS circuit brick' : 'Bind every component first — a CIAS with placeholder parts is never produced'">
+            Download CIAS brick
+          </button>
         </div>
       </div>
 

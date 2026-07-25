@@ -48,3 +48,25 @@ test('lisn: subckt export present', async ({ page }) => {
   await page.getByTestId('mode-lisn').click()
   await expect(page.getByTestId('subckt')).toContainText('L1 eut mains 5e-05')
 })
+
+test('filter: bind parts via the schematic and export CIAS', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('bom')).toBeVisible()
+  await expect(page.getByTestId('download-cias')).toBeDisabled()
+
+  for (const hotspot of ['sch-CMC1', 'sch-CX1', 'sch-CY1']) {
+    await page.getByTestId(hotspot).click()
+    await expect(page.getByTestId('part-panel')).toBeVisible()
+    await page.getByTestId('bind-part').first().click()
+  }
+  await expect(page.getByTestId('bom').locator('tbody tr td:has-text("unbound")')).toHaveCount(0)
+  await expect(page.getByTestId('download-cias')).toBeEnabled()
+
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByTestId('download-cias').click()
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toContain('.cias.json')
+})
