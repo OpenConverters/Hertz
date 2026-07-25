@@ -176,7 +176,9 @@ const recommendations = () => {
   const target = targetValueOf(kind)
   let pool
   if (kind === 'cmc') {
-    pool = (catalog.value?.parts ?? []).map((p) => ({ ...p, valueF: p.inductanceH }))
+    // honor the catalog-mode manufacturer/current filters the user set
+    const base = lCmSource.value === 'catalog' ? catalogParts() : (catalog.value?.parts ?? [])
+    pool = base.map((p) => ({ ...p, valueF: p.inductanceH }))
   } else {
     const cls = kind === 'cx' ? 'X2' : 'Y2'
     pool = (capsCatalog.value?.parts ?? [])
