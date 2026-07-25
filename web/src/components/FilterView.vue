@@ -2,6 +2,7 @@
 // ANP015 line-filter designer: attenuation target in, component values out,
 // with the safety checks (Y-cap leakage, X-cap discharge) and SPICE export.
 import { onMounted, ref } from 'vue'
+import LogChart from './LogChart.vue'
 import { api } from '../engine.js'
 import { store } from '../store.js'
 import { fmtHz, fmtDb, fmtSi } from '../format.js'
@@ -22,11 +23,17 @@ const gridHz = ref(50)
 const design = ref(null)
 const netlist = ref('')
 const error = ref('')
+const ilCm = ref(null)
+const ilDm = ref(null)
+const vInMin = ref(207)
+const pIn = ref(25)
+const interaction = ref(null)
 
 onMounted(() => {
   if (store.handoff) {
     aReqCm.value = store.handoff.aReqDb
     aReqDm.value = store.handoff.aReqDb
+    if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
     store.handoff = null
     compute()
   }
@@ -64,10 +71,32 @@ async function compute() {
     }
     design.value = engine.designFilter(params)
     netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16')
+    const d = design.value
+    const span = { fMinHz: 150e3, fMaxHz: 30e6, pointsPerDecade: 30 }
+    ilCm.value = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
+      stages: d.stages, referenceImpedanceOhm: 25, ...span })
+    ilDm.value = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
+      stages: d.stages, referenceImpedanceOhm: 100, ...span })
+    interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF,
+      Number(vInMin.value), Number(pIn.value))
   } catch (e) {
     error.value = e.message
   }
 }
+
+const ilSeries = () => [
+  { id: 'cm', label: 'CM in-circuit (25 Ω)', color: 'var(--s-1)',
+    points: ilCm.value.frequenciesHz.map((f, i) => ({ f, v: ilCm.value.standardDb[i] })) },
+  { id: 'cmw', label: 'CM worst case (CISPR 17)', color: 'var(--s-1)', dash: '3 4',
+    points: ilCm.value.frequenciesHz.map((f, i) => ({ f, v: ilCm.value.worstCaseDb[i] })) },
+  { id: 'dm', label: 'DM in-circuit (100 Ω)', color: 'var(--s-2)',
+    points: ilDm.value.frequenciesHz.map((f, i) => ({ f, v: ilDm.value.standardDb[i] })) },
+  { id: 'dmw', label: 'DM worst case (CISPR 17)', color: 'var(--s-2)', dash: '3 4',
+    points: ilDm.value.frequenciesHz.map((f, i) => ({ f, v: ilDm.value.worstCaseDb[i] })) },
+]
+const requirementMarkers = () => [
+  { f: design.value.fDesignHz, v: Number(aReqCm.value) },
+]
 
 function downloadNetlist() {
   const blob = new Blob([netlist.value], { type: 'text/plain' })
@@ -159,6 +188,35 @@ function downloadNetlist() {
             <tr><td>C<sub>X</sub> selected</td><td><strong>{{ fmtSi(design.cXSelectedF, 'F') }}</strong> (per stage)</td></tr>
             <tr><td>Achieved DM attenuation</td>
               <td :class="design.attenuationDmDb >= aReqDm ? 'pos' : 'neg'">{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel" v-if="ilCm && ilDm">
+        <p class="section-label">In-circuit insertion loss — solid: nominal terminations · dashed: CISPR 17 worst case (0.1 Ω/100 Ω) · dot: your requirement</p>
+        <LogChart :series="ilSeries()" :violations="requirementMarkers()" y-label="dB" :height="300" data-test="il-chart" />
+        <p class="note">If the dashed worst-case curve still clears your requirement at the design frequency, termination uncertainty cannot eat the margin.</p>
+      </div>
+
+      <div class="panel" v-if="interaction">
+        <p class="section-label">Input-filter interaction (Middlebrook)</p>
+        <div class="row">
+          <label class="field"><span>Converter min. input voltage (V)</span>
+            <input v-model.number="vInMin" type="number" @change="compute" /></label>
+          <label class="field"><span>Input power (W)</span>
+            <input v-model.number="pIn" type="number" @change="compute" /></label>
+        </div>
+        <table class="data">
+          <tbody>
+            <tr><td>Filter resonance</td><td>{{ fmtHz(interaction.resonanceHz) }}</td></tr>
+            <tr><td>Filter peak output impedance R₀</td><td>{{ fmtSi(interaction.characteristicImpedanceOhm, 'Ω') }}</td></tr>
+            <tr><td>Converter input impedance V²/P</td><td>{{ fmtSi(interaction.converterInputImpedanceOhm, 'Ω') }}</td></tr>
+            <tr><td>Stability margin</td>
+              <td :class="interaction.marginDb >= 12 ? 'pos' : interaction.marginDb >= 6 ? '' : 'neg'" data-test="middlebrook-margin">
+                {{ fmtDb(interaction.marginDb) }} dB
+                <span class="note">(≥ 12 dB comfortable, &lt; 6 dB add damping: R<sub>d</sub> = {{ fmtSi(interaction.dampingResistorOhm, 'Ω') }},
+                C<sub>d</sub> = {{ fmtSi(interaction.dampingCapacitorMinF, 'F') }}–{{ fmtSi(interaction.dampingCapacitorMaxF, 'F') }})</span>
+              </td></tr>
           </tbody>
         </table>
       </div>

@@ -28,7 +28,7 @@ if(HERTZ_BUILD_TESTS)
         GIT_TAG v3.8.1)
     FetchContent_MakeAvailable(Catch2)
 
-    add_executable(test_hertz tests/test_hertz.cpp)
+    add_executable(test_hertz tests/test_hertz.cpp tests/test_comb_network.cpp)
     target_link_libraries(test_hertz PRIVATE hertz Catch2::Catch2WithMain)
     get_filename_component(_mkf_libdir "${MKF_LIBRARY}" DIRECTORY)
     set_target_properties(test_hertz PROPERTIES BUILD_RPATH "${_mkf_libdir}")

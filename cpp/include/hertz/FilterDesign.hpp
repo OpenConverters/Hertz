@@ -163,4 +163,39 @@ inline double discharge_resistor_power(double vGridRms, double resistanceOhm) {
     return vGridRms * vGridRms / resistanceOhm;
 }
 
+// Middlebrook input-filter interaction: the filter's output impedance peak
+// (characteristic impedance at resonance, undamped) must sit well below the
+// converter's negative-incremental input impedance |Z_in| = V_in(min)²/P_in.
+// Damping per the Trilogy: R_d = √(L/C) (Q = 1), C_d = 5–10 × C.
+struct FilterInteraction {
+    double resonanceHz;
+    double characteristicImpedanceOhm;
+    double converterInputImpedanceOhm;
+    double marginDb;                       // 20·log10(Zin/R0): >= 12 dB comfortable, < 6 dB critical
+    double dampingResistorOhm;
+    double dampingCapacitorMinF;
+    double dampingCapacitorMaxF;
+};
+
+inline FilterInteraction input_filter_interaction(double inductanceH, double capacitanceF,
+                                                  double vInMinV, double pInW) {
+    if (inductanceH <= 0.0 || capacitanceF <= 0.0) {
+        throw std::invalid_argument("inductance and capacitance must be positive");
+    }
+    if (vInMinV <= 0.0 || pInW <= 0.0) {
+        throw std::invalid_argument("minimum input voltage and input power must be positive");
+    }
+    double characteristic = std::sqrt(inductanceH / capacitanceF);
+    double converterInput = vInMinV * vInMinV / pInW;
+    return FilterInteraction{
+        resonant_cutoff(inductanceH, capacitanceF),
+        characteristic,
+        converterInput,
+        20.0 * std::log10(converterInput / characteristic),
+        characteristic,
+        5.0 * capacitanceF,
+        10.0 * capacitanceF,
+    };
+}
+
 }  // namespace Hertz

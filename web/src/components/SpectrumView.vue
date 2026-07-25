@@ -8,6 +8,7 @@ import { demoScanCsv } from '../demo.js'
 import { fmtHz, fmtDb } from '../format.js'
 
 const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis}
+const comb = ref(null)
 const standardId = ref('cispr32_class_b')
 const detector = ref('quasi_peak')
 const freqUnit = ref('')        // '' = read from header
@@ -54,6 +55,8 @@ async function analyze() {
       fMax = Math.max(fMax, t.frequenciesHz[t.frequenciesHz.length - 1])
     }
     limitRuns.value = engine.limitPolyline(standardId.value, detector.value, fMin, fMax)
+    const first = traces.value[0]
+    comb.value = engine.detectComb(first.frequenciesHz, first.levelsDbuv)
     traces.value = [...traces.value]
   } catch (e) {
     error.value = e.message
@@ -108,7 +111,10 @@ const chartViolations = computed(() => {
 })
 
 function designTheFix() {
-  store.handoff = { aReqDb: Math.ceil((requiredAttenuation.value ?? 40) / 5) * 5 }
+  store.handoff = {
+    aReqDb: Math.ceil((requiredAttenuation.value ?? 40) / 5) * 5,
+    fSwHz: comb.value?.found ? comb.value.fSwHz : null,
+  }
   store.mode = 'filter'
 }
 
@@ -180,6 +186,11 @@ function onDrop(event) {
           </div>
           <div class="cell"><b>Required attenuation (+10 dB buffer)</b>
             <span data-test="areq">{{ fmtDb(requiredAttenuation) }}</span><span class="unit">dB</span>
+          </div>
+          <div v-if="comb" class="cell"><b>Switching frequency</b>
+            <span v-if="comb.found" data-test="fsw-detected">{{ fmtHz(comb.fSwHz) }}</span>
+            <span v-else class="unit">no comb detected</span>
+            <span v-if="comb.found" class="unit">{{ comb.harmonics.length }} harmonics</span>
           </div>
         </div>
         <div style="margin-top: 0.8rem">

@@ -39,6 +39,11 @@ export async function api() {
       unwrap(mod.separateTraces(Float64Array.from(line), Float64Array.from(neutral))),
     measureWaveform: (samples, fsHz, band = 'B', overlap = 0.9) =>
       unwrap(mod.measureWaveform(samples instanceof Float64Array ? samples : Float64Array.from(samples), fsHz, band, overlap)),
+    detectComb: (freqs, levels) =>
+      unwrap(mod.detectComb(JSON.stringify(freqs), JSON.stringify(levels))),
+    insertionLossCurves: (params) => unwrap(mod.insertionLossCurves(JSON.stringify(params))),
+    inputFilterInteraction: (lH, cF, vInMin, pIn) =>
+      unwrap(mod.inputFilterInteraction(lH, cF, vInMin, pIn)),
   }
 }
 

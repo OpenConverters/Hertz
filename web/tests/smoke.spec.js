@@ -8,6 +8,7 @@ test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer'
 
   await page.getByTestId('load-demo').click()
   await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('fsw-detected')).toContainText('kHz')
   await expect(page.getByTestId('offenders').locator('tbody tr')).not.toHaveCount(0)
   const aReq = await page.getByTestId('areq').textContent()
   expect(parseFloat(aReq)).toBeGreaterThan(10)
@@ -15,7 +16,11 @@ test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer'
   await page.getByTestId('design-fix').click()
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
   await expect(page.getByTestId('lcm')).toBeVisible()
+  await expect(page.getByTestId('il-chart')).toBeVisible()
+  await expect(page.getByTestId('middlebrook-margin')).toContainText('dB')
   await expect(page.getByTestId('netlist')).toContainText('.subckt LISN')
+  const fsw = await page.getByTestId('fsw').inputValue()
+  expect(Math.abs(parseFloat(fsw) - 300)).toBeLessThan(10)
   expect(consoleErrors).toEqual([])
 })
 

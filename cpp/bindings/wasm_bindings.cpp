@@ -12,10 +12,12 @@
 #include <string>
 #include <vector>
 
+#include "hertz/CombDetection.hpp"
 #include "hertz/Detector.hpp"
 #include "hertz/FilterDesign.hpp"
 #include "hertz/Limits.hpp"
 #include "hertz/Lisn.hpp"
+#include "hertz/Network.hpp"
 #include "hertz/Separation.hpp"
 #include "hertz/Traces.hpp"
 #include "hertz/Utils.hpp"
@@ -322,6 +324,57 @@ std::string measure_waveform_js(const emscripten::val& samplesArray, double fsHz
 });
 }
 
+
+std::string detect_comb_js(const std::string& freqsJson, const std::string& levelsJson) {
+    return guarded([&]() -> std::string {
+        auto result = Hertz::detect_comb(json::parse(freqsJson).get<std::vector<double>>(),
+                                         json::parse(levelsJson).get<std::vector<double>>());
+        json harmonics = json::array();
+        for (const auto& h : result.harmonics) {
+            harmonics.push_back({{"order", h.order}, {"frequencyHz", h.frequencyHz},
+                                 {"levelDbuv", h.levelDbuv}});
+        }
+        json residuals = json::array();
+        for (const auto& [f, level] : result.residualPeaks) {
+            residuals.push_back({{"frequencyHz", f}, {"levelDbuv", level}});
+        }
+        return json{{"found", result.found},
+                    {"fSwHz", result.found ? json(result.fSwHz) : json(nullptr)},
+                    {"confidence", result.confidence},
+                    {"coverage", result.coverage},
+                    {"harmonics", harmonics},
+                    {"residualPeaks", residuals}}.dump();
+    });
+}
+
+std::string insertion_loss_curves_js(const std::string& paramsJson) {
+    return guarded([&]() -> std::string {
+        json params = json::parse(paramsJson);
+        auto curves = Hertz::insertion_loss_curves(
+            params.at("inductanceH").get<double>(), params.at("capacitanceF").get<double>(),
+            params.at("stages").get<int>(), params.at("referenceImpedanceOhm").get<double>(),
+            params.at("fMinHz").get<double>(), params.at("fMaxHz").get<double>(),
+            params.value("pointsPerDecade", 40));
+        return json{{"frequenciesHz", curves.frequenciesHz},
+                    {"standardDb", curves.standardDb},
+                    {"worstCaseDb", curves.worstCaseDb}}.dump();
+    });
+}
+
+std::string input_filter_interaction_js(double inductanceH, double capacitanceF, double vInMinV,
+                                        double pInW) {
+    return guarded([&]() -> std::string {
+        auto r = Hertz::input_filter_interaction(inductanceH, capacitanceF, vInMinV, pInW);
+        return json{{"resonanceHz", r.resonanceHz},
+                    {"characteristicImpedanceOhm", r.characteristicImpedanceOhm},
+                    {"converterInputImpedanceOhm", r.converterInputImpedanceOhm},
+                    {"marginDb", r.marginDb},
+                    {"dampingResistorOhm", r.dampingResistorOhm},
+                    {"dampingCapacitorMinF", r.dampingCapacitorMinF},
+                    {"dampingCapacitorMaxF", r.dampingCapacitorMaxF}}.dump();
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(hertz) {
@@ -334,4 +387,7 @@ EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("lisnData", &lisn_data_js);
     emscripten::function("separateTraces", &separate_js);
     emscripten::function("measureWaveform", &measure_waveform_js);
+    emscripten::function("detectComb", &detect_comb_js);
+    emscripten::function("insertionLossCurves", &insertion_loss_curves_js);
+    emscripten::function("inputFilterInteraction", &input_filter_interaction_js);
 }

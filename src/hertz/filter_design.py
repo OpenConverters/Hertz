@@ -171,3 +171,36 @@ def discharge_resistor_power(v_grid_rms, resistance_ohm):
     if resistance_ohm <= 0.0:
         raise ValueError("resistance must be positive")
     return v_grid_rms**2 / resistance_ohm
+
+
+@dataclass(frozen=True)
+class FilterInteraction:
+    resonance_hz: float
+    characteristic_impedance_ohm: float
+    converter_input_impedance_ohm: float
+    margin_db: float                 # 20·log10(Zin/R0): >= 12 dB comfortable, < 6 dB critical
+    damping_resistor_ohm: float
+    damping_capacitor_min_f: float
+    damping_capacitor_max_f: float
+
+
+def input_filter_interaction(inductance_h, capacitance_f, v_in_min, p_in):
+    """Middlebrook check: the filter's undamped output-impedance peak (R0 at
+    resonance) must sit well below the converter's negative-incremental input
+    impedance |Z_in| = V_in(min)²/P_in. Damping per the Trilogy: R_d = √(L/C)
+    (Q = 1), C_d = 5–10 × C."""
+    if inductance_h <= 0.0 or capacitance_f <= 0.0:
+        raise ValueError("inductance and capacitance must be positive")
+    if v_in_min <= 0.0 or p_in <= 0.0:
+        raise ValueError("minimum input voltage and input power must be positive")
+    characteristic = math.sqrt(inductance_h / capacitance_f)
+    converter_input = v_in_min**2 / p_in
+    return FilterInteraction(
+        resonance_hz=resonant_cutoff(inductance_h, capacitance_f),
+        characteristic_impedance_ohm=characteristic,
+        converter_input_impedance_ohm=converter_input,
+        margin_db=20.0 * math.log10(converter_input / characteristic),
+        damping_resistor_ohm=characteristic,
+        damping_capacitor_min_f=5.0 * capacitance_f,
+        damping_capacitor_max_f=10.0 * capacitance_f,
+    )
