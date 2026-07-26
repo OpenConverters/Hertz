@@ -20,6 +20,14 @@ hasMeasuredCmCurve / hasMeasuredDmCurve flags in the main slice.
 import json
 import sys
 
+# Slice-level canonicalization of manufacturer spellings (duplicates found in
+# review; upstream data fix tracked in ABT). Majority spelling wins.
+MANUFACTURER_CANONICAL = {
+    "ABRACON": "Abracon",
+    "Murata Electronics": "Murata",
+    "Pulse Electronics": "PULSE",
+}
+
 
 def resolve_dimensional(value):
     """PEAS resolve_dimensional_values rule: nominal -> (min+max)/2 -> max -> min."""
@@ -91,7 +99,11 @@ def main(source_path, output_path, curves_path=None):
                 except ValueError:
                     inductance_h = None
             rated = electrical.get("ratedCurrents") or []
-            dcr = electrical.get("dcResistance")
+            # CMC rows carry per-winding dcResistances[]; fall back to the
+            # legacy singular for older rows.
+            dcr_list = electrical.get("dcResistances")
+            dcr = (dcr_list[0] if isinstance(dcr_list, list) and dcr_list
+                   else electrical.get("dcResistance"))
             curve_cm = extract_curve(electrical.get("impedancePoints"), "common") if curves_path else None
             curve_dm = extract_curve(electrical.get("impedancePoints"), "differential") if curves_path else None
             if inductance_h is None and curve_cm is None:
@@ -99,11 +111,13 @@ def main(source_path, output_path, curves_path=None):
                 continue
             part = {
                 "mpn": info.get("reference"),
-                "manufacturer": info.get("name"),
+                "manufacturer": MANUFACTURER_CANONICAL.get(info.get("name"), info.get("name")),
                 "family": info.get("family") or "",
                 "inductanceH": inductance_h,
                 "ratedCurrentA": max(rated) if rated else None,
                 "dcrOhm": resolve_dimensional(dcr) if dcr is not None else None,
+                "ratedVoltageAcV": electrical.get("ratedVoltageAC"),
+                "ratedVoltageDcV": electrical.get("ratedVoltageDC"),
             }
             if part["mpn"] and part["manufacturer"]:
                 if curve_cm or curve_dm:

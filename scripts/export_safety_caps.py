@@ -5,11 +5,16 @@ Hertz filter designer.
     export_safety_caps.py /cache/kelvin/capacitor.ndjson /cache/kelvin/hertz-safety-caps.v1.json
 
 CAS carries no dedicated safety-class field, so classification is by an
-EXPLICIT X2/Y2 token in the series or part number ("MKP-X2", "WCAP-FTX2",
-"...Y2..."), never inferred from technology — a film cap without the token may
-well be X2-capable, but claiming a safety class the datasheet string does not
-state would be invented data. The token must not be followed by a digit
-(case codes like "12.5X20" are not safety classes).
+EXPLICIT X2/Y2 token in the series or part number ("MKP-X2", "WCAP-FTX2"),
+never inferred from technology alone. Two hard gates guard against token
+collisions inside ordinary part numbers (found in review: Rubycon
+"450LEX2R2M..." wet electrolytics matched "X2"):
+  1. TECHNOLOGY: only film-* and ceramic-* parts can be safety caps —
+     aluminum-electrolytic/tantalum parts are excluded regardless of tokens
+     (a polarised electrolytic across the mains is a fire, and no such part
+     holds an IEC 60384-14 approval).
+  2. VOLTAGE: rated voltage must be >= 275 V (X2) / >= 250 V (Y2).
+The token must not be followed by a digit (case codes like "12.5X20").
 """
 
 import json
@@ -34,6 +39,10 @@ def resolve_dimensional(value):
     if value.get("minimum") is not None:
         return float(value["minimum"])
     raise ValueError(f"unresolvable dimensional value: {value!r}")
+
+
+SAFE_TECHNOLOGY_PREFIXES = ("film", "ceramic")
+MIN_RATED_VOLTAGE = {"X2": 275.0, "Y2": 250.0}
 
 
 def classify(part_number, series):
@@ -62,6 +71,12 @@ def main(source_path, output_path):
                 continue
             safety_class = classify(part.get("partNumber") or "", part.get("series") or "")
             if safety_class is None:
+                continue
+            technology = str(part.get("technology") or "")
+            if not technology.startswith(SAFE_TECHNOLOGY_PREFIXES):
+                continue
+            rated_v = electrical.get("ratedVoltage")
+            if not isinstance(rated_v, (int, float)) or rated_v < MIN_RATED_VOLTAGE[safety_class]:
                 continue
             capacitance = electrical.get("capacitance")
             if capacitance is None:

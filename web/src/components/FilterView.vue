@@ -27,7 +27,9 @@ const netlist = ref('')
 const error = ref('')
 const ilCm = ref(null)
 const ilDm = ref(null)
+const worstCaseAt = ref(null)   // {cm: {standard, worst}, dm: {...}} at f_design
 const vInMin = ref(207)
+const vInMinDirty = ref(false)
 const pIn = ref(25)
 const interaction = ref(null)
 const lCmSource = ref('manual')      // 'manual' | 'catalog'
@@ -35,6 +37,7 @@ const catalog = ref(null)            // {count, parts:[{mpn,manufacturer,family,
 const catalogState = ref('loading')  // 'loading' | 'ready' | 'unavailable'
 const mfrFilter = ref('')
 const minRatedA = ref(1)
+const minRatedV = ref(0)
 const capsCatalog = ref(null)
 const selectedRef = ref('')
 const bindings = ref({})
@@ -56,8 +59,8 @@ onMounted(async () => {
     if (response.ok) capsCatalog.value = await response.json()
   } catch { /* caps panel shows its own unavailable state */ }
   if (store.handoff) {
-    aReqCm.value = store.handoff.aReqDb
-    aReqDm.value = store.handoff.aReqDb
+    aReqCm.value = store.handoff.aReqCmDb ?? store.handoff.aReqDb
+    aReqDm.value = store.handoff.aReqDmDb ?? store.handoff.aReqDb
     if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
     store.handoff = null
     compute()
@@ -71,7 +74,9 @@ function catalogPartsAnyL() {
   if (!catalog.value) return []
   return catalog.value.parts.filter((p) =>
     (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
-    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)))
+    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)) &&
+    (Number(minRatedV.value) <= 0 ||
+      Math.max(p.ratedVoltageAcV ?? 0, p.ratedVoltageDcV ?? 0) >= Number(minRatedV.value)))
 }
 
 function catalogParts() {
@@ -169,10 +174,22 @@ async function compute() {
       stages: d.stages, referenceImpedanceOhm: 100, ...span })
     interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF,
       Number(vInMin.value), Number(pIn.value))
+    const at = (il) => {
+      let nearest = 0
+      for (let k = 1; k < il.frequenciesHz.length; k += 1) {
+        if (Math.abs(il.frequenciesHz[k] - d.fDesignHz) < Math.abs(il.frequenciesHz[nearest] - d.fDesignHz)) nearest = k
+      }
+      return { standard: il.standardDb[nearest], worst: il.worstCaseDb[nearest] }
+    }
+    worstCaseAt.value = { cm: at(ilCm.value), dm: at(ilDm.value) }
   } catch (e) {
     error.value = e.message
   }
 }
+
+watch(gridVrms, (v) => {
+  if (!vInMinDirty.value && v > 0) vInMin.value = Math.round(0.9 * v)
+})
 
 const ilSeries = () => [
   ...(measured.value?.cm ? [{ id: 'cmm', label: `CM measured (${measured.value.mpn})`, color: 'var(--s-1)', dash: '1 4',
@@ -222,7 +239,8 @@ const recommendations = () => {
       : (catalog.value?.parts ?? [])
     const valued = base.filter((p) => p.inductanceH > 0)
       .map((p) => ({ ...p, valueF: p.inductanceH, deviation: Math.abs(p.inductanceH - targetValueOf('cmc')) / targetValueOf('cmc') }))
-      .sort((a, b) => a.deviation - b.deviation || (b.ratedCurrentA ?? 0) - (a.ratedCurrentA ?? 0))
+      .sort((a, b) => (a.ratedCurrentA === null) - (b.ratedCurrentA === null) ||
+        a.deviation - b.deviation || (b.ratedCurrentA ?? 0) - (a.ratedCurrentA ?? 0))
       .slice(0, 6)
     const impedanceOnly = base.filter((p) => !(p.inductanceH > 0) && measuredIlAt.value[p.mpn] !== undefined)
       .map((p) => ({ ...p, valueF: null, deviation: null }))
@@ -341,13 +359,13 @@ function downloadNetlist() {
         <label class="field"><span>DM inductance source</span>
           <select v-model="dmMode">
             <option value="impedance">from choke DM impedance curve (Z at f)</option>
-            <option value="inductance">leakage inductance directly</option>
+            <option value="inductance">total loop leakage inductance directly</option>
           </select></label>
         <div v-if="dmMode === 'impedance'" class="row">
           <label class="field"><span>|Z| (Ω)</span><input v-model.number="dmImpedanceOhm" type="number" /></label>
           <label class="field"><span>at (MHz)</span><input v-model.number="dmImpedanceMhz" type="number" /></label>
         </div>
-        <label v-else class="field"><span>Leakage inductance (µH)</span>
+        <label v-else class="field"><span>Total loop leakage (µH) — line+neutral in series opposition (≈ 2× per-winding)</span>
           <input v-model.number="lDmUh" type="number" /></label>
         <label class="field"><span>CM choke source</span>
           <select v-model="lCmSource" data-test="lcm-source">
@@ -364,6 +382,8 @@ function downloadNetlist() {
               <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
           <label class="field"><span>Min. rated current (A)</span>
             <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
+          <label class="field"><span>Min. rated voltage (V, 0 = any)</span>
+            <input v-model.number="minRatedV" type="number" min="0" /></label>
         </div>
         <label class="field"><span>X capacitor candidates (µF)</span>
           <input v-model="cxCandidatesUf" type="text" /></label>
@@ -383,7 +403,19 @@ function downloadNetlist() {
           <div class="cell"><b>Design frequency</b><span>{{ fmtHz(design.fDesignHz) }}</span></div>
           <div class="cell"><b>Target cutoff</b><span>{{ fmtHz(design.fCutoffTargetHz) }}</span></div>
           <div class="cell"><b>Stages</b><span>{{ design.stages }}</span></div>
+          <div v-if="worstCaseAt" class="cell"><b>CM worst case @ f<sub>design</sub></b>
+            <span class="chip" :class="worstCaseAt.cm.worst >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">
+              {{ fmtDb(worstCaseAt.cm.worst) }} dB {{ worstCaseAt.cm.worst >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }}</span>
+          </div>
+          <div v-if="worstCaseAt" class="cell"><b>DM worst case @ f<sub>design</sub></b>
+            <span class="chip" :class="worstCaseAt.dm.worst >= Number(aReqDm) ? 'pass' : 'fail'" data-test="wc-verdict-dm">
+              {{ fmtDb(worstCaseAt.dm.worst) }} dB {{ worstCaseAt.dm.worst >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
+          </div>
         </div>
+        <p v-if="worstCaseAt && (worstCaseAt.cm.worst < Number(aReqCm) || worstCaseAt.dm.worst < Number(aReqDm))"
+           class="note" style="color: var(--fault)" data-test="wc-warning">
+          The CISPR 17 worst-case terminations eat the margin the ideal sizing promises — add a stage,
+          raise the component values, or verify the real source/load impedances before trusting this design.</p>
       </div>
 
       <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
@@ -396,6 +428,7 @@ function downloadNetlist() {
         <table v-else class="data">
           <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th>
             <th v-if="kindOf(selectedRef) === 'cmc'">Meas. IL @ f<sub>design</sub></th>
+            <th v-if="kindOf(selectedRef) === 'cmc'">Rated V</th>
             <th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
           <tbody>
             <tr v-for="p in recommendations().parts" :key="p.mpn">
@@ -406,13 +439,18 @@ function downloadNetlist() {
               <td v-if="kindOf(selectedRef) === 'cmc'" data-test="measured-il"
                   :class="measuredIlAt[p.mpn] !== undefined ? (measuredIlAt[p.mpn] >= Number(aReqCm) ? 'pos' : 'neg') : ''">
                 {{ measuredIlAt[p.mpn] !== undefined ? measuredIlAt[p.mpn].toFixed(1) + ' dB' : '—' }}</td>
+              <td v-if="kindOf(selectedRef) === 'cmc'" class="note">
+                {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
               <td>{{ kindOf(selectedRef) === 'cmc'
-                ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : '—')
+                ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify')
                 : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V' : '') }}</td>
               <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
             </tr>
           </tbody>
         </table>
+        <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
+          Most catalogued chokes carry no voltage rating — for mains use, verify insulation class
+          against the datasheet before committing; chip-scale data-line chokes are never mains parts.</p>
         <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
           "Meas. IL" is computed from the part's measured complex impedance against your Y network at the
           design frequency (SILENT-style selection). Parts offered "by measured curve" have no catalogued
@@ -446,8 +484,8 @@ function downloadNetlist() {
             <tr><td>L<sub>CM</sub> required</td><td>{{ fmtSi(design.lCmRequiredH, 'H') }}</td></tr>
             <tr><td>L<sub>CM</sub> selected</td><td data-test="lcm"><strong>{{ fmtSi(design.lCmSelectedH, 'H') }}</strong> (per stage)</td></tr>
             <tr><td>C<sub>Y</sub></td><td>2 × {{ fmtSi(design.cYPerLineF, 'F') }} per stage</td></tr>
-            <tr><td>Achieved CM attenuation</td>
-              <td :class="design.attenuationCmDb >= aReqCm ? 'pos' : 'neg'" data-test="il-cm">{{ fmtDb(design.attenuationCmDb) }} dB</td></tr>
+            <tr><td>Sizing asymptote (ideal 40·n·log₁₀ estimate — the worst-case chip above is the verdict)</td>
+              <td data-test="il-cm">{{ fmtDb(design.attenuationCmDb) }} dB</td></tr>
           </tbody>
         </table>
       </div>
@@ -459,8 +497,8 @@ function downloadNetlist() {
             <tr><td>L<sub>DM</sub> (leakage)</td><td>{{ fmtSi(design.lDmH, 'H') }}</td></tr>
             <tr><td>C<sub>X</sub> required</td><td>{{ fmtSi(design.cXRequiredF, 'F') }}</td></tr>
             <tr><td>C<sub>X</sub> selected</td><td><strong>{{ fmtSi(design.cXSelectedF, 'F') }}</strong> (per stage)</td></tr>
-            <tr><td>Achieved DM attenuation</td>
-              <td :class="design.attenuationDmDb >= aReqDm ? 'pos' : 'neg'">{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
+            <tr><td>Sizing asymptote (ideal — see worst-case chip above)</td>
+              <td>{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
           </tbody>
         </table>
       </div>
@@ -481,8 +519,12 @@ function downloadNetlist() {
 
       <div class="panel" v-if="ilCm && ilDm">
         <p class="section-label">In-circuit insertion loss — solid: nominal terminations · dashed: CISPR 17 worst case (0.1 Ω/100 Ω) · dot: your requirement</p>
-        <LogChart :series="ilSeries()" :violations="requirementMarkers()" y-label="dB" :height="300" data-test="il-chart" />
+        <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirement" y-label="dB" :height="300" data-test="il-chart" />
         <p class="note">If the dashed worst-case curve still clears your requirement at the design frequency, termination uncertainty cannot eat the margin.</p>
+        <p class="note">Ideal-element curves ignore self-resonance, ESL and winding capacitance —
+          above a few MHz a real single-stage filter plateaus at 50–70 dB. Bind a part with a
+          measured curve (dotted) for the honest high-frequency picture; measured curves currently
+          cover Murata parts only.</p>
         <p v-if="measured" class="note" data-test="measured-note">
           Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
           (complex Z, manufacturer data via the TAS catalog) — shown only over the measured frequency span.</p>
@@ -499,14 +541,18 @@ function downloadNetlist() {
         <table class="data">
           <tbody>
             <tr><td>Filter resonance</td><td>{{ fmtHz(interaction.resonanceHz) }}</td></tr>
-            <tr><td>Filter peak output impedance R₀</td><td>{{ fmtSi(interaction.characteristicImpedanceOhm, 'Ω') }}</td></tr>
+            <tr><td>Characteristic impedance R₀ (= peak output impedance <em>with the damping network fitted</em>)</td>
+              <td>{{ fmtSi(interaction.characteristicImpedanceOhm, 'Ω') }}</td></tr>
             <tr><td>Converter input impedance V²/P</td><td>{{ fmtSi(interaction.converterInputImpedanceOhm, 'Ω') }}</td></tr>
-            <tr><td>Stability margin</td>
+            <tr><td>Stability margin (assumes R<sub>d</sub>/C<sub>d</sub> below are fitted)</td>
               <td :class="interaction.marginDb >= 12 ? 'pos' : interaction.marginDb >= 6 ? '' : 'neg'" data-test="middlebrook-margin">
                 {{ fmtDb(interaction.marginDb) }} dB
                 <span class="note">(≥ 12 dB comfortable, &lt; 6 dB add damping: R<sub>d</sub> = {{ fmtSi(interaction.dampingResistorOhm, 'Ω') }},
                 C<sub>d</sub> = {{ fmtSi(interaction.dampingCapacitorMinF, 'F') }}–{{ fmtSi(interaction.dampingCapacitorMaxF, 'F') }})</span>
               </td></tr>
+            <tr><td class="note" colspan="2">Undamped, the LC section rings with a Q set by parasitic
+              resistances this tool does not know — the true undamped peak can be 10–50× R₀. Fit the
+              damping branch whenever the margin above is what keeps the converter stable.</td></tr>
           </tbody>
         </table>
       </div>
@@ -515,12 +561,13 @@ function downloadNetlist() {
         <p class="section-label">Safety checks (worst case: V+10 %, C+20 %)</p>
         <table class="data">
           <tbody>
-            <tr><td>PE leakage current</td>
+            <tr><td>PE touch current (single line-side Y path per IEC 60990 — worst case V+10 %, C+20 %)</td>
               <td :class="design.leakageCurrentA < 3.5e-3 ? 'pos' : 'neg'">
-                {{ fmtSi(design.leakageCurrentA, 'A') }} <span class="note">(3.5 mA typical limit)</span></td></tr>
-            <tr><td>X discharge resistor</td>
+                {{ fmtSi(design.leakageCurrentA, 'A') }} <span class="note">(limits: 3.5 mA IEC 62368-1 Class I · 0.75 mA some appliance standards · 0.5 mA medical)</span></td></tr>
+            <tr><td>X discharge resistor (V+10 %, C+20 %)</td>
               <td>≤ {{ fmtSi(design.dischargeResistorMaxOhm, 'Ω') }} → <strong>{{ fmtSi(design.dischargeResistorOhm, 'Ω') }}</strong>
-                ({{ fmtSi(design.dischargeResistorPowerW, 'W') }} continuous)</td></tr>
+                ({{ fmtSi(design.dischargeResistorPowerW, 'W') }} continuous — mind no-load standby budgets,
+                and use a series pair or an HV-rated resistor: single chip parts are typically rated 150–200 V)</td></tr>
           </tbody>
         </table>
       </div>

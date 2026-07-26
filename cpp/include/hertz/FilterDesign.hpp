@@ -116,11 +116,25 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
 
     double cYg = 2.0 * cYPerLineF;
     double lCmRequired = cm_inductance(fCutoff, cYg);
-    double lCmSelected = round_up_to(lCmRequired, lCmCandidates);
+    double lCmSelected;
+    try {
+        lCmSelected = round_up_to(lCmRequired, lCmCandidates);
+    } catch (const std::invalid_argument&) {
+        throw std::invalid_argument("no CM-choke candidate >= the required " +
+                                    std::to_string(lCmRequired * 1e3) +
+                                    " mH — add a larger part, raise C_Y, or relax the requirement");
+    }
     double attenuationCm = achieved_attenuation_db(fDesign, lCmSelected, cYg, stages);
 
     double cXRequired = dm_capacitance(fCutoff, lDmH);
-    double cXSelected = round_up_to(cXRequired, cXCandidates);
+    double cXSelected;
+    try {
+        cXSelected = round_up_to(cXRequired, cXCandidates);
+    } catch (const std::invalid_argument&) {
+        throw std::invalid_argument("no X-capacitor candidate >= the required " +
+                                    std::to_string(cXRequired * 1e6) +
+                                    " uF — add a larger part or relax the DM requirement");
+    }
     double attenuationDm = achieved_attenuation_db(fDesign, lDmH, cXSelected, stages);
 
     return LineFilterDesign{stages,       fDesign,     fCutoff,       cYPerLineF,

@@ -102,8 +102,28 @@ def _meter(stream, dt_s, tau_s):
     return peak
 
 
+SETTLE_METER_TAUS = 7.0  # dwell until the 2nd-order meter is settled well under 0.1 dB
+
+
+def _settle_repetitions(n_frames, dt_s, band):
+    """How many passes over the envelope the weighting chains need to settle.
+
+    A record shorter than ~5 meter time constants would report the meter
+    mid-rise — silently 10-20 dB low on a typical scope capture (a false-PASS
+    generator). The record is treated as one period of a stationary signal and
+    cycled until the meters settle, exactly as a receiver dwells on it.
+    """
+    duration = n_frames * dt_s
+    needed = SETTLE_METER_TAUS * max(band.tau_meter_s, band.tau_discharge_s / 2.0)
+    return max(1, math.ceil(needed / duration))
+
+
 def quasi_peak_envelope(envelope, dt_s, band):
-    """Quasi-peak detector on an envelope stream; returns per-bin volts."""
+    """Quasi-peak detector on an envelope stream; returns per-bin volts.
+
+    The envelope is cycled until the charge/discharge + meter chain settles
+    (see _settle_repetitions) — the record is assumed stationary/periodic.
+    """
     if dt_s >= band.tau_charge_s / 5.0:
         raise ValueError(
             f"envelope sample interval {dt_s:.3g} s too coarse for the "
@@ -111,19 +131,34 @@ def quasi_peak_envelope(envelope, dt_s, band):
         )
     charge_alpha = dt_s / band.tau_charge_s
     discharge_keep = 1.0 - dt_s / band.tau_discharge_s
+    meter_alpha = dt_s / band.tau_meter_s
     detector = np.zeros(envelope.shape[1])
-    weighted = np.empty_like(envelope)
-    for i, row in enumerate(envelope):
-        charging = row > detector
-        detector = np.where(
-            charging, detector + (row - detector) * charge_alpha, detector * discharge_keep
-        )
-        weighted[i] = detector
-    return _meter(weighted, dt_s, band.tau_meter_s)
+    m1 = np.zeros(envelope.shape[1])
+    m2 = np.zeros(envelope.shape[1])
+    reading = np.zeros(envelope.shape[1])
+    for _ in range(_settle_repetitions(envelope.shape[0], dt_s, band)):
+        for row in envelope:
+            charging = row > detector
+            detector = np.where(
+                charging, detector + (row - detector) * charge_alpha, detector * discharge_keep
+            )
+            m1 += (detector - m1) * meter_alpha
+            m2 += (m1 - m2) * meter_alpha
+            np.maximum(reading, m2, out=reading)
+    return reading
 
 
 def average_envelope(envelope, dt_s, band):
-    return _meter(envelope, dt_s, band.tau_meter_s)
+    meter_alpha = dt_s / band.tau_meter_s
+    m1 = np.zeros(envelope.shape[1])
+    m2 = np.zeros(envelope.shape[1])
+    reading = np.zeros(envelope.shape[1])
+    for _ in range(_settle_repetitions(envelope.shape[0], dt_s, band)):
+        for row in envelope:
+            m1 += (row - m1) * meter_alpha
+            m2 += (m1 - m2) * meter_alpha
+            np.maximum(reading, m2, out=reading)
+    return reading
 
 
 def peak_envelope(envelope):

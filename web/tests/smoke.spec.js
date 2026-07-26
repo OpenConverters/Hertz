@@ -117,3 +117,28 @@ test('receiver: REAL CISPR 16-1-1 calibration waveform through the GUI', async (
   })
   await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 150_000 })
 })
+
+test('receiver: 2-channel capture separates CM/DM and hands per-mode targets to the designer', async ({ page }) => {
+  // synthetic but physically exact: CM tone at 300 kHz on both lines, DM tone
+  // at 600 kHz in antiphase; separation must isolate them
+  const fs = 3e6
+  const lines = ['t,v_line,v_neutral']
+  for (let i = 0; i < 0.05 * fs; i += 1) {
+    const t = i / fs
+    const cm = 3e-3 * Math.sin(2 * Math.PI * 300e3 * t)
+    const dm = 1e-3 * Math.sin(2 * Math.PI * 600e3 * t)
+    lines.push(t.toFixed(9) + ',' + (cm + dm).toPrecision(6) + ',' + (cm - dm).toPrecision(6))
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'two_channel.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 60_000 })
+  await page.getByTestId('compute-targets').click()
+  await expect(page.getByTestId('target-cm')).toContainText(/\d/)
+  await page.getByTestId('design-from-modes').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await expect(page.getByTestId('bom')).toBeVisible()
+})

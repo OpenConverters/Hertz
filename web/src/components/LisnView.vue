@@ -25,6 +25,14 @@ const series = () => [{
   id: 'z', label: '|Z| seen by the EUT', color: 'var(--s-1)',
   points: data.value.frequenciesHz.map((f, i) => ({ f, v: data.value.impedanceOhm[i] })),
 }]
+// CISPR 16-1-2 magnitude tolerance is ±20 % — the mask an engineer checks against
+const maskRuns = () => [{
+  label: '+20 %', color: 'var(--s-limit)', dash: '3 5',
+  runs: [data.value.frequenciesHz.map((f, i) => ({ f, v: 1.2 * data.value.impedanceOhm[i] }))],
+}, {
+  label: '−20 %', color: 'var(--s-limit)', dash: '3 5',
+  runs: [data.value.frequenciesHz.map((f, i) => ({ f, v: 0.8 * data.value.impedanceOhm[i] }))],
+}]
 </script>
 
 <template>
@@ -41,7 +49,8 @@ const series = () => [{
         <p class="note">
           Simplified single-line model: main inductor in parallel with the 0.1 µF coupling branch
           into the 50 Ω receiver. Valid over the measurement bands (150 kHz up); the CISPR band A
-          low-frequency branch is not modeled.
+          low-frequency branch, the mains-side 1 µF and the 1 kΩ receiver-port bleed are not
+          modeled. Dashed: the ±20 % CISPR 16-1-2 magnitude tolerance around this nominal.
         </p>
       </div>
       <div v-if="data" class="panel">
@@ -52,7 +61,7 @@ const series = () => [{
       <div v-if="error" class="err">{{ error }}</div>
     </div>
     <div>
-      <LogChart v-if="data" :series="series()" y-label="Ω" :height="340" />
+      <LogChart v-if="data" :series="series()" :ref-runs="maskRuns()" y-label="Ω" :height="340" />
     </div>
   </div>
 </template>

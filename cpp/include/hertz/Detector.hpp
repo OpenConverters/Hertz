@@ -195,6 +195,13 @@ inline std::vector<std::vector<double>> stft_envelope(const std::vector<double>&
     return envelope;
 }
 
+// Dwell until the 2nd-order meter is settled well under 0.1 dB. A record
+// shorter than a few meter time constants would report the meter mid-rise —
+// silently 10-20 dB low on a typical scope capture (a false-PASS generator).
+// The record is treated as one period of a stationary signal and the weighting
+// chains cycle over its envelope until settled, as a receiver dwells on it.
+inline constexpr double SETTLE_METER_TAUS = 7.0;
+
 // EMI-receiver readings of a sampled signal: peak, quasi-peak and average per
 // FFT bin, RMS-of-CW calibrated dBµV.
 inline ReceiverReading measure(const std::vector<double>& x, double fsHz, const CisprBand& band,
@@ -205,25 +212,41 @@ inline ReceiverReading measure(const std::vector<double>& x, double fsHz, const 
         throw std::invalid_argument("signal yields fewer than two analysis frames");
     }
     double dt = static_cast<double>(plan.hop) / fsHz;
+    double needed = SETTLE_METER_TAUS * std::max(band.tauMeterS, band.tauDischargeS / 2.0);
+    size_t repetitions = std::max<size_t>(
+        1, static_cast<size_t>(std::ceil(needed / (static_cast<double>(frames) * dt))));
 
     detail::QuasiPeakChain quasiPeak(plan.bins, dt, band);
     detail::AverageChain average(plan.bins, dt, band);
     std::vector<double> peak(plan.bins, 0.0);
 
+    // float32 envelope buffer so short records can be cycled; ~4 B/bin/frame.
+    std::vector<float> envelope(frames * plan.bins);
     std::vector<std::complex<double>> frame(plan.nfft);
     std::vector<double> row(plan.bins);
-    for (size_t start = 0; start + plan.winLen <= x.size(); start += plan.hop) {
+    size_t frameIndex = 0;
+    for (size_t start = 0; start + plan.winLen <= x.size(); start += plan.hop, ++frameIndex) {
         std::fill(frame.begin(), frame.end(), std::complex<double>(0.0, 0.0));
         for (size_t i = 0; i < plan.winLen; ++i) {
             frame[i] = x[start + i] * plan.window[i];
         }
         OpenMagnetics::fft(frame);
+        float* out = &envelope[frameIndex * plan.bins];
         for (size_t k = 0; k < plan.bins; ++k) {
-            row[k] = 2.0 * std::abs(frame[k]) / plan.windowSum;
-            peak[k] = std::max(peak[k], row[k]);
+            double value = 2.0 * std::abs(frame[k]) / plan.windowSum;
+            peak[k] = std::max(peak[k], value);
+            out[k] = static_cast<float>(value);
         }
-        quasiPeak.push(row);
-        average.push(row);
+    }
+    for (size_t rep = 0; rep < repetitions; ++rep) {
+        for (size_t f = 0; f < frames; ++f) {
+            const float* source = &envelope[f * plan.bins];
+            for (size_t k = 0; k < plan.bins; ++k) {
+                row[k] = source[k];
+            }
+            quasiPeak.push(row);
+            average.push(row);
+        }
     }
 
     ReceiverReading reading;

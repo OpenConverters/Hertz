@@ -68,3 +68,11 @@ def test_signal_too_short_raises():
 def test_unknown_detector_raises():
     with pytest.raises(ValueError):
         measure(_tone(0.02), FS_HZ, BAND_B, detectors=("median",))
+
+
+def test_short_record_settles_by_cycling():
+    # A 120 ms capture used to read the meter mid-rise (~18 dB low). The
+    # detectors now dwell on the cycled record until settled.
+    result = measure(_tone(0.12), FS_HZ, BAND_B)
+    for detector in ("quasi_peak", "average"):
+        assert result[f"{detector}_dbuv"].max() == pytest.approx(CW_DBUV, abs=0.45), detector

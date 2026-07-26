@@ -3,32 +3,76 @@
 // average spectra out — the module no other free tool ships.
 import { ref } from 'vue'
 import LogChart from './LogChart.vue'
-import { api } from '../engine.js'
+import { api, STANDARDS } from '../engine.js'
 import { demoWaveform } from '../demo.js'
-import { fmtHz } from '../format.js'
+import { store } from '../store.js'
+import { fmtHz, fmtDb } from '../format.js'
+
+const BAND_RANGE = { A: [9e3, 150e3], B: [150e3, 30e6], C: [30e6, 300e6] }
 
 const band = ref('B')
 const reading = ref(null)
+const modal = ref(null)         // dual-channel result: {cm: reading, dm: reading}
+const targetStandard = ref('cispr32_class_b')
+const targets = ref(null)       // {aReqCm, aReqDm} from the modal spectra vs the limit
 const sourceName = ref('')
 const busy = ref(false)
 const error = ref('')
 const dragOver = ref(false)
 const fileInput = ref(null)
 
-async function run(samples, fsHz, name) {
+async function run(samples, fsHz, name, secondChannel = null) {
   busy.value = true
   error.value = ''
   reading.value = null
+  modal.value = null
+  targets.value = null
   sourceName.value = name
   await new Promise((resolve) => setTimeout(resolve, 30)) // let the busy state paint
   try {
     const engine = await api()
-    reading.value = engine.measureWaveform(samples, fsHz, band.value)
+    if (secondChannel) {
+      // two synchronized line channels: exact CM/DM separation, then a
+      // receiver run per mode — the only honest way to split the modes
+      const separated = engine.separateTraces(samples, secondChannel)
+      modal.value = {
+        cm: engine.measureWaveform(separated.commonMode, fsHz, band.value),
+        dm: engine.measureWaveform(separated.differentialMode, fsHz, band.value),
+      }
+    } else {
+      reading.value = engine.measureWaveform(samples, fsHz, band.value)
+    }
   } catch (e) {
     error.value = e.message
   } finally {
     busy.value = false
   }
+}
+
+async function computeTargets() {
+  error.value = ''
+  try {
+    const engine = await api()
+    const requirement = (r) => {
+      const freqs = [], levels = []
+      for (let i = 0; i < r.frequenciesHz.length; i += 1) {
+        const f = r.frequenciesHz[i]
+        if (f >= BAND_RANGE[band.value][0] && f <= BAND_RANGE[band.value][1] && isFinite(r.quasiPeakDbuv[i])) {
+          freqs.push(f); levels.push(r.quasiPeakDbuv[i])
+        }
+      }
+      const analysis = engine.limitAnalysis(targetStandard.value, 'quasi_peak', freqs, levels)
+      return Math.max(0, Math.ceil(analysis.requiredAttenuationDb))
+    }
+    targets.value = { aReqCm: requirement(modal.value.cm), aReqDm: requirement(modal.value.dm) }
+  } catch (e) {
+    error.value = 'targets: ' + e.message
+  }
+}
+
+function designFromModes() {
+  store.handoff = { aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm }
+  store.mode = 'filter'
 }
 
 function runDemo() {
@@ -47,7 +91,7 @@ async function ingest(files) {
       const nums = line.split(/[,;\t]/).map(Number).filter((x) => isFinite(x))
       if (nums.length >= 2) rows.push(nums)
     }
-    if (rows.length < 100) throw new Error('expected a time,voltage CSV with at least 100 rows')
+    if (rows.length < 100) throw new Error('expected a time,voltage CSV (or time,v_line,v_neutral for CM/DM) with at least 100 rows')
     const dt = []
     for (let i = 1; i < Math.min(rows.length, 200); i += 1) dt.push(rows[i][0] - rows[i - 1][0])
     dt.sort((a, b) => a - b)
@@ -56,19 +100,31 @@ async function ingest(files) {
       throw new Error('time column is not uniformly sampled — export a fixed-rate capture')
     }
     const samples = Float64Array.from(rows, (r) => r[1])
-    run(samples, 1 / median, file.name)
+    const second = rows[0].length >= 3 ? Float64Array.from(rows, (r) => r[2]) : null
+    run(samples, 1 / median, file.name + (second ? ' (2-channel CM/DM)' : ''), second)
   } catch (e) {
     error.value = e.message
   }
 }
 
+const clampToBand = (p) => p.f >= BAND_RANGE[band.value][0] && p.f <= BAND_RANGE[band.value][1] && isFinite(p.v)
 const seriesFor = (r) => [
   { id: 'qp', label: 'quasi-peak', color: 'var(--s-1)',
-    points: r.frequenciesHz.map((f, i) => ({ f, v: r.quasiPeakDbuv[i] })).filter((p) => p.f > 0 && isFinite(p.v)) },
+    points: r.frequenciesHz.map((f, i) => ({ f, v: r.quasiPeakDbuv[i] })).filter(clampToBand) },
   { id: 'avg', label: 'average', color: 'var(--s-2)',
-    points: r.frequenciesHz.map((f, i) => ({ f, v: r.averageDbuv[i] })).filter((p) => p.f > 0 && isFinite(p.v)) },
+    points: r.frequenciesHz.map((f, i) => ({ f, v: r.averageDbuv[i] })).filter(clampToBand) },
   { id: 'pk', label: 'peak', color: 'var(--s-3)', dash: '2 3',
-    points: r.frequenciesHz.map((f, i) => ({ f, v: r.peakDbuv[i] })).filter((p) => p.f > 0 && isFinite(p.v)) },
+    points: r.frequenciesHz.map((f, i) => ({ f, v: r.peakDbuv[i] })).filter(clampToBand) },
+]
+const modalSeries = () => [
+  { id: 'cmqp', label: 'CM quasi-peak', color: 'var(--s-1)',
+    points: modal.value.cm.frequenciesHz.map((f, i) => ({ f, v: modal.value.cm.quasiPeakDbuv[i] })).filter(clampToBand) },
+  { id: 'dmqp', label: 'DM quasi-peak', color: 'var(--s-2)',
+    points: modal.value.dm.frequenciesHz.map((f, i) => ({ f, v: modal.value.dm.quasiPeakDbuv[i] })).filter(clampToBand) },
+  { id: 'cmavg', label: 'CM average', color: 'var(--s-1)', dash: '2 3',
+    points: modal.value.cm.frequenciesHz.map((f, i) => ({ f, v: modal.value.cm.averageDbuv[i] })).filter(clampToBand) },
+  { id: 'dmavg', label: 'DM average', color: 'var(--s-2)', dash: '2 3',
+    points: modal.value.dm.frequenciesHz.map((f, i) => ({ f, v: modal.value.dm.averageDbuv[i] })).filter(clampToBand) },
 ]
 </script>
 
@@ -81,7 +137,8 @@ const seriesFor = (r) => [
              @click="fileInput.click()" @keydown.enter="fileInput.click()"
              @dragover.prevent="dragOver = true" @dragleave="dragOver = false"
              @drop.prevent="dragOver = false; ingest([...$event.dataTransfer.files])">
-          Drop a time,voltage CSV (scope export, fixed sample rate).
+          Drop a time,voltage CSV (scope export, fixed sample rate) — or
+          time,v<sub>line</sub>,v<sub>neutral</sub> from two synchronized channels for exact CM/DM separation.
         </div>
         <input ref="fileInput" type="file" accept=".csv,.txt" hidden
                @change="ingest([...$event.target.files]); $event.target.value = ''" />
@@ -104,6 +161,24 @@ const seriesFor = (r) => [
 
     <div>
       <div v-if="busy" class="panel"><p class="note">Measuring… the receiver chains run over every envelope sample.</p></div>
+      <template v-else-if="modal">
+        <LogChart :series="modalSeries()" y-label="dBµV" data-test="receiver-chart" />
+        <div class="panel" style="margin-top: 1rem">
+          <p class="section-label">Design targets from the separated modes</p>
+          <div class="row">
+            <label class="field"><span>Limit</span>
+              <select v-model="targetStandard">
+                <option v-for="s in STANDARDS" :key="s.id" :value="s.id">{{ s.name }}</option>
+              </select></label>
+            <button class="ghost" data-test="compute-targets" @click="computeTargets" style="align-self: end">Compute CM/DM targets</button>
+          </div>
+          <div v-if="targets" class="readout">
+            <div class="cell"><b>Required CM attenuation</b><span data-test="target-cm">{{ fmtDb(targets.aReqCm, 0) }}</span><span class="unit">dB</span></div>
+            <div class="cell"><b>Required DM attenuation</b><span>{{ fmtDb(targets.aReqDm, 0) }}</span><span class="unit">dB</span></div>
+          </div>
+          <button v-if="targets" class="act" data-test="design-from-modes" style="margin-top: 0.6rem" @click="designFromModes">Design filter for these modes →</button>
+        </div>
+      </template>
       <LogChart v-else-if="reading" :series="seriesFor(reading)" y-label="dBµV" data-test="receiver-chart" />
       <div v-else class="screen"><p class="note" style="padding: 2rem 1rem">Feed a waveform or run the demo — the three detector traces land here.</p></div>
       <p v-if="reading" class="note" style="margin-top: 0.5rem">{{ sourceName }} — band {{ band }}</p>

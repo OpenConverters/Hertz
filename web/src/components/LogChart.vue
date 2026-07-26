@@ -11,6 +11,7 @@ const props = defineProps({
   violations: { type: Array, default: () => [] },  // {f,v}
   yLabel: { type: String, required: true },
   height: { type: Number, default: 380 },
+  violationLabel: { type: String, default: 'over limit' },
 })
 
 const width = 920
@@ -91,7 +92,7 @@ function onMove(event) {
 const legend = computed(() => [
   ...props.series.map((s) => ({ label: s.label, color: s.color, dash: s.dash || null })),
   ...props.refRuns.map((r) => ({ label: r.label, color: r.color, dash: r.dash || '6 4' })),
-  ...(props.violations.length ? [{ label: 'over limit', color: 'var(--fault)', marker: true }] : []),
+  ...(props.violations.length ? [{ label: props.violationLabel, color: 'var(--fault)', marker: true }] : []),
 ])
 </script>
 

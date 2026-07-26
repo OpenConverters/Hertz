@@ -264,6 +264,19 @@ TEST_CASE("Pulsed signal orders detectors", "[detector]") {
     CHECK(pk - qp < 3.0);  // 1 ms charge vs 160 ms discharge holds QP near peak
 }
 
+TEST_CASE("Short record settles by cycling", "[detector]") {
+    // 120 ms used to read the meter mid-rise (~18 dB low); the chains now
+    // dwell on the cycled envelope until settled.
+    auto reading = Hertz::measure(make_tone(0.12, FS_HZ, TONE_HZ, AMPLITUDE), FS_HZ, Hertz::BAND_B);
+    auto maxOf = [](const std::vector<double>& v) {
+        double m = v[0];
+        for (double value : v) m = std::max(m, value);
+        return m;
+    };
+    CHECK(maxOf(reading.quasiPeakDbuv) == Approx(CW_DBUV).margin(0.45));
+    CHECK(maxOf(reading.averageDbuv) == Approx(CW_DBUV).margin(0.45));
+}
+
 TEST_CASE("Signal too short throws", "[detector]") {
     CHECK_THROWS_AS(Hertz::measure(make_tone(0.0001, FS_HZ, TONE_HZ, AMPLITUDE), FS_HZ, Hertz::BAND_B),
                     std::invalid_argument);

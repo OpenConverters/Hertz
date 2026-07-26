@@ -7,8 +7,10 @@ import { store } from '../store.js'
 import { demoScanCsv } from '../demo.js'
 import { fmtHz, fmtDb } from '../format.js'
 
-const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis}
+const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis, uncovered}
+const rawFiles = ref([])        // {name, text} — kept so unit changes re-read files
 const comb = ref(null)
+const U_CISPR_DB = 3.6          // CISPR 16-4-2 measurement uncertainty, conducted mains
 const standardId = ref('cispr32_class_b')
 const detector = ref('quasi_peak')
 const freqUnit = ref('')        // '' = read from header
@@ -25,19 +27,28 @@ const detectors = computed(() =>
 const seriesColors = ['var(--s-1)', 'var(--s-2)', 'var(--s-3)']
 
 async function ingest(files) {
+  for (const file of files) {
+    const text = typeof file === 'string' ? file : await file.text()
+    const name = typeof file === 'string' ? 'demo scan' : file.name
+    // same name replaces (re-drop after a unit fix must not duplicate)
+    rawFiles.value = [...rawFiles.value.filter((f) => f.name !== name), { name, text }].slice(-2)
+  }
+  await parseAll()
+}
+
+async function parseAll() {
   error.value = ''
   busy.value = true
   try {
     const engine = await api()
-    for (const file of files) {
-      const text = typeof file === 'string' ? file : await file.text()
-      const name = typeof file === 'string' ? 'demo scan' : file.name
+    traces.value = rawFiles.value.map(({ name, text }) => {
       const trace = engine.parseSpectrumCsv(text, freqUnit.value, levelUnit.value)
-      traces.value = [...traces.value.slice(-1), { name, ...trace, analysis: null }].slice(0, 2)
-    }
+      return { name, ...trace, analysis: null, uncovered: false }
+    })
     await analyze()
   } catch (e) {
-    error.value = e.message
+    error.value = e.message +
+      (e.message.includes('explicitly') ? ' — select the unit above; files are re-read automatically.' : '')
   } finally {
     busy.value = false
   }
@@ -50,9 +61,19 @@ async function analyze() {
     const engine = await api()
     let fMin = Infinity, fMax = 0
     for (const t of traces.value) {
-      t.analysis = engine.limitAnalysis(standardId.value, detector.value, t.frequenciesHz, t.levelsDbuv)
+      try {
+        t.analysis = engine.limitAnalysis(standardId.value, detector.value, t.frequenciesHz, t.levelsDbuv)
+        t.uncovered = false
+      } catch (traceError) {
+        // one out-of-band trace must not poison the others
+        t.analysis = null
+        t.uncovered = true
+      }
       fMin = Math.min(fMin, t.frequenciesHz[0])
       fMax = Math.max(fMax, t.frequenciesHz[t.frequenciesHz.length - 1])
+    }
+    if (traces.value.length && traces.value.every((t) => t.uncovered)) {
+      throw new Error('no trace point falls inside the selected limit — check the standard and the frequency units')
     }
     limitRuns.value = engine.limitPolyline(standardId.value, detector.value, fMin, fMax)
     const first = traces.value[0]
@@ -70,8 +91,14 @@ const worst = computed(() => {
   if (!all.length) return null
   return all.reduce((a, b) => (a.marginDb <= b.marginDb ? a : b))
 })
-const pass = computed(() => traces.value.length > 0 &&
-  traces.value.every((t) => t.analysis && t.analysis.pass))
+// three-state verdict: FAIL / MARGINAL (inside CISPR 16-4-2 uncertainty) / PASS
+const verdictState = computed(() => {
+  if (!worst.value) return null
+  if (worst.value.marginDb < 0) return 'fail'
+  if (worst.value.marginDb < U_CISPR_DB) return 'marginal'
+  return 'pass'
+})
+const uncoveredNames = computed(() => traces.value.filter((t) => t.uncovered).map((t) => t.name))
 const requiredAttenuation = computed(() => {
   const all = traces.value.filter((t) => t.analysis).map((t) => t.analysis.requiredAttenuationDb)
   return all.length ? Math.max(...all) : null
@@ -98,6 +125,10 @@ const chartSeries = computed(() => traces.value.map((t, i) => ({
 const chartRefRuns = computed(() => (limitRuns.value ? [{
   label: detector.value === 'average' ? 'AVG limit' : detector.value === 'peak' ? 'PK limit' : 'QP limit',
   color: 'var(--s-limit)', dash: '7 5', runs: limitRuns.value.runs,
+}, {
+  label: 'limit − U(CISPR)',
+  color: 'var(--s-limit)', dash: '2 6',
+  runs: limitRuns.value.runs.map((run) => run.map((p) => ({ f: p.f, v: p.v - U_CISPR_DB }))),
 }] : []))
 const chartViolations = computed(() => {
   const points = []
@@ -139,14 +170,14 @@ function onDrop(event) {
                @change="ingest([...$event.target.files]); $event.target.value = ''" />
         <div class="row" style="margin-top: 0.7rem">
           <button class="ghost" data-test="load-demo" @click="ingest([demoScanCsv()])">Load demo scan</button>
-          <button v-if="traces.length" class="ghost" @click="traces = []; limitRuns = null">Clear</button>
+          <button v-if="traces.length" class="ghost" @click="traces = []; rawFiles = []; limitRuns = null; comb = null">Clear</button>
         </div>
         <div class="row" style="margin-top: 0.7rem">
           <label class="field"><span>Frequency unit</span>
-            <select v-model="freqUnit"><option value="">from header</option><option>Hz</option><option>kHz</option><option>MHz</option></select>
+            <select v-model="freqUnit" @change="parseAll"><option value="">from header</option><option>Hz</option><option>kHz</option><option>MHz</option></select>
           </label>
           <label class="field"><span>Level unit</span>
-            <select v-model="levelUnit"><option value="">from header</option><option>dBuV</option><option>dBm</option></select>
+            <select v-model="levelUnit" @change="parseAll"><option value="">from header</option><option>dBuV</option><option>dBm</option></select>
           </label>
         </div>
       </div>
@@ -175,7 +206,8 @@ function onDrop(event) {
       <div v-if="worst" class="panel panel-hi" style="margin-top: 1rem">
         <div class="readout">
           <div class="cell"><b>Verdict</b>
-            <span class="chip" :class="pass ? 'pass' : 'fail'" data-test="verdict">{{ pass ? 'PASS' : 'FAIL' }}</span>
+            <span class="chip" :class="verdictState === 'pass' ? 'pass' : verdictState === 'marginal' ? 'warn' : 'fail'"
+                  data-test="verdict">{{ verdictState === 'pass' ? 'PASS' : verdictState === 'marginal' ? 'MARGINAL' : 'FAIL' }}</span>
           </div>
           <div class="cell"><b>Worst margin</b>
             <span :style="{ color: worst.marginDb < 0 ? 'var(--fault)' : 'var(--ok)' }">{{ fmtDb(worst.marginDb) }}</span><span class="unit">dB</span>
@@ -184,7 +216,7 @@ function onDrop(event) {
           <div class="cell"><b>Level / limit</b>
             <span>{{ fmtDb(worst.levelDbuv) }} / {{ fmtDb(worst.limitDbuv) }}</span><span class="unit">dBµV</span>
           </div>
-          <div class="cell"><b>Required attenuation (+10 dB buffer)</b>
+          <div class="cell"><b>Attenuation for a 10 dB margin</b>
             <span data-test="areq">{{ fmtDb(requiredAttenuation) }}</span><span class="unit">dB</span>
           </div>
           <div v-if="comb" class="cell"><b>Switching frequency</b>
@@ -193,8 +225,13 @@ function onDrop(event) {
             <span v-if="comb.found" class="unit">{{ comb.harmonics.length }} harmonics</span>
           </div>
         </div>
+        <p v-if="verdictState === 'marginal'" class="note" style="color: var(--amber)">
+          Worst margin is inside the ±{{ U_CISPR_DB }} dB CISPR 16-4-2 measurement uncertainty — an
+          accredited chamber can read this either way. Treat as unresolved, not as passing.</p>
+        <p v-if="uncoveredNames.length" class="note" data-test="uncovered-note">
+          Not covered by this limit (ignored in the verdict): {{ uncoveredNames.join(', ') }}</p>
         <div style="margin-top: 0.8rem">
-          <button v-if="!pass" class="act" data-test="design-fix" @click="designTheFix">Design the fix →</button>
+          <button v-if="verdictState !== 'pass'" class="act" data-test="design-fix" @click="designTheFix">Design the fix →</button>
         </div>
       </div>
 
