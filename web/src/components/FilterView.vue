@@ -59,52 +59,6 @@ const paneB = ref('il')
 const openSection = ref('req')   // KH-style accordion: one input stage open at a time
 const netlistLisn = ref('cispr16')   // which artificial network the SPICE deck embeds
 
-// ── templates: real worked examples to start from ────────────────────────────
-// The ANP015 preset reproduces the note's numbers exactly (the engine's golden
-// test vector); the others are TYPICAL setups from the application literature —
-// their attenuation targets are starting points, meant to be replaced by YOUR
-// scan via the Spectrum/Receiver hand-off.
-const EXAMPLES = {
-  anp015: {
-    label: 'WE ANP015 worked example — 300 kHz flyback, CISPR 32 B',
-    note: 'ANP015 rev. 2024-06 §worked example: 40 dB at 300 kHz, C_Y 4.7 nF, leakage from ' +
-      '|Z| = 92 Ω @ 1 MHz — expect 3.3 mH + 2.2 µF, as printed in the note.',
-    apply: (r) => { r.fSwKhz = 300; r.aReqCm = 40; r.aReqDm = 40; r.cYnF = '4.7'; r.stages = 1
-      r.dmMode = 'impedance'; r.dmImpedanceOhm = 92; r.dmImpedanceMhz = 1; r.gridVrms = 230; r.gridHz = 50 },
-  },
-  adapter65: {
-    label: 'Typical 65 kHz offline flyback (notebook adapter), CISPR 32 B',
-    note: 'Typical adapter-class starting point (65 kHz PWM → the tool designs at the first ' +
-      'in-band harmonic, 195 kHz). Replace the targets with your own scan via Spectrum/Receiver.',
-    apply: (r) => { r.fSwKhz = 65; r.aReqCm = 36; r.aReqDm = 30; r.cYnF = 'auto'; r.stages = 1
-      r.dmMode = 'inductance'; r.lDmUh = 20; r.gridVrms = 230; r.gridHz = 50 },
-  },
-  drive16: {
-    label: 'Typical 16 kHz industrial drive input, 2-stage, CISPR 11 A',
-    note: 'Typical drive-class starting point (16 kHz PWM → designed at 160 kHz, two stages ' +
-      'for the heavy low-frequency comb). Replace the targets with your own scan.',
-    apply: (r) => { r.fSwKhz = 16; r.aReqCm = 50; r.aReqDm = 45; r.cYnF = 'auto'; r.stages = 2
-      r.dmMode = 'inductance'; r.lDmUh = 15; r.gridVrms = 230; r.gridHz = 50 },
-  },
-}
-const exampleId = ref('')
-const exampleNote = ref('')
-function applyExample(id) {
-  if (!EXAMPLES[id]) return
-  clearBinding()
-  const refs = {
-    set fSwKhz(v) { fSwKhz.value = v }, set aReqCm(v) { aReqCm.value = v },
-    set aReqDm(v) { aReqDm.value = v }, set cYnF(v) { cYnF.value = v },
-    set stages(v) { stages.value = v }, set dmMode(v) { dmMode.value = v },
-    set dmImpedanceOhm(v) { dmImpedanceOhm.value = v }, set dmImpedanceMhz(v) { dmImpedanceMhz.value = v },
-    set lDmUh(v) { lDmUh.value = v }, set gridVrms(v) { gridVrms.value = v },
-    set gridHz(v) { gridHz.value = v },
-  }
-  EXAMPLES[id].apply(refs)
-  exampleNote.value = EXAMPLES[id].note
-  openSection.value = 'req'
-  compute()
-}
 function onPaneChange(which, view) {
   // never show the same view twice — swap instead
   if (which === 'a') {
@@ -177,7 +131,7 @@ function clearBinding() {
 }
 
 watch(stages, () => {
-  if (bindingSets.value && deriveFromBindings()) compute()
+  if (bindingSets.value && deriveFromBindings() && design.value) compute()
 })
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
@@ -240,7 +194,8 @@ onMounted(async () => {
       if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
     }
     store.handoff = null
-    compute()
+    // deliberately NOT computing: the hand-off fills the cards, the user walks
+    // Requirement -> Components -> Grid & safety and presses DESIGN FILTER
   }
 })
 
@@ -663,15 +618,6 @@ function downloadNetlist() {
   <div class="fbench">
     <!-- ── input rail ─────────────────────────────────────────────────────── -->
     <aside class="fcontrols panel">
-      <div class="rail-head">
-        <select class="example-select" data-test="example-select" :value="exampleId"
-                @change="applyExample($event.target.value); $event.target.value = ''">
-          <option value="" disabled selected>load a template…</option>
-          <option v-for="(ex, id) in EXAMPLES" :key="id" :value="id">{{ ex.label }}</option>
-        </select>
-      </div>
-      <p v-if="exampleNote" class="note" data-test="example-note">{{ exampleNote }}</p>
-
       <button class="acc-head" :class="{ open: openSection === 'req' }" data-test="sec-req"
               @click="openSection = 'req'">1 · REQUIREMENT</button>
       <div v-show="openSection === 'req'" class="acc-body">
@@ -679,7 +625,7 @@ function downloadNetlist() {
         <label class="field"><span>Switching frequency (kHz)</span>
           <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @input="clearBinding" /></label>
         <label class="field"><span>Stages</span>
-          <select v-model.number="stages"><option :value="1">1 (40 dB/dec)</option><option :value="2">2 (80 dB/dec)</option></select></label>
+          <select v-model.number="stages" data-test="stages"><option :value="1">1 (40 dB/dec)</option><option :value="2">2 (80 dB/dec)</option></select></label>
       </div>
       <div class="row">
         <label class="field"><span>CM attenuation (dB)</span>
@@ -697,15 +643,12 @@ function downloadNetlist() {
       <button class="acc-head" :class="{ open: openSection === 'comp' }" data-test="sec-comp"
               @click="openSection = 'comp'">2 · COMPONENTS</button>
       <div v-show="openSection === 'comp'" class="acc-body">
-      <label class="field"><span>Y capacitor per line</span>
+      <label class="field"><span title="Safety caps C_Y via the touch-current budget, never the spectrum. Within that cap a larger C_Y means a smaller choke — auto takes the largest standard value passing the tier selected under Grid & safety.">Y capacitor per line ⓘ</span>
         <select v-model="cYnF" data-test="cy-select">
           <option value="auto">auto — largest within the touch budget{{ autoCyNf !== null ? ` (→ ${autoCyNf} nF)` : '' }}</option>
           <option v-for="v in [1, 2.2, 3.3, 4.7, 10]" :key="v" :value="v">{{ v }} nF (manual)</option>
         </select></label>
-      <p class="note">Safety caps C_Y (touch current), never the spectrum; within that cap a larger
-        C_Y means a smaller choke, so <em>auto</em> takes the largest standard value passing the
-        tier under Grid &amp; safety.</p>
-      <label class="field"><span>DM (leakage) inductance from</span>
+      <label class="field"><span title="The DM path is sized from the choke's leakage inductance: one |Z| point from the datasheet's DM curve, several points (fitted, refused if they straddle the self-resonance), or the leakage value directly.">DM (leakage) inductance from ⓘ</span>
         <select v-model="dmMode" data-test="dm-mode">
           <option value="impedance">one point of the choke's DM |Z| curve</option>
           <option value="points">several DM |Z| points (fitted)</option>
@@ -720,7 +663,7 @@ function downloadNetlist() {
       <label v-else class="field"><span>Total loop leakage (µH) — ≈ 2× per-winding</span>
         <input v-model.number="lDmUh" type="number" data-test="ldm-input" /></label>
       <p v-if="dmPointsNote" class="note" style="color: var(--amber)">{{ dmPointsNote }}</p>
-      <label class="field"><span>CM choke candidates</span>
+      <label class="field"><span title="The values the designer may select from: a manual list, or real parts from the TAS catalog filtered by manufacturer and rated current (a positive current threshold excludes unrated parts).">CM choke candidates ⓘ</span>
         <select v-model="lCmSource" data-test="lcm-source">
           <option value="manual">manual value list</option>
           <option value="catalog" :disabled="catalogState !== 'ready'">
@@ -736,7 +679,7 @@ function downloadNetlist() {
         <label class="field"><span>Min. rated A (0 = incl. unrated)</span>
           <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
       </div>
-      <label class="field"><span>X capacitor candidates</span>
+      <label class="field"><span title="A manual µF list, or real X2 safety capacitors from the catalog. The manufacturer filter scopes both the candidate values and the recommended parts (X2 and Y2).">X capacitor candidates ⓘ</span>
         <select v-model="cxSource" data-test="cx-source">
           <option value="manual">manual value list</option>
           <option value="catalog" :disabled="!capsCatalog">
@@ -745,7 +688,7 @@ function downloadNetlist() {
         </select></label>
       <label v-if="cxSource === 'manual'" class="field"><span>Values (µF)</span>
         <input v-model="cxCandidatesUf" type="text" /></label>
-      <label v-else class="field"><span>Manufacturer — scopes the X2 candidates AND the recommended X2/Y2 parts</span>
+      <label v-else class="field"><span>Manufacturer</span>
         <select v-model="cxMfr" data-test="cx-mfr"><option value="">all manufacturers</option>
           <option v-for="m in cxManufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
       <button class="ghost cont" data-test="cont-comp" @click="openSection = 'grid'">CONTINUE ▸ GRID &amp; SAFETY</button>

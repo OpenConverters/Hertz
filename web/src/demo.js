@@ -1,6 +1,22 @@
 import balticLabCsv from './assets/baltic-lab-cispr25-bench.csv?raw'
 import balticLabCmCsv from './assets/baltic-lab-cm.csv?raw'
 import balticLabDmCsv from './assets/baltic-lab-dm.csv?raw'
+import mdpiQrfCsvRaw from './assets/mdpi-qrf-flyback.csv?raw'
+
+// A REAL mains pre-scan that fails LOW AND HIGH: peak-hold trace of a 24 W
+// quasi-resonant flyback (fixed frequency, 0.33 uF X-cap, neutral end),
+// digitized from Fig. 20a of M.-T. Kuo & M.-C. Tsou, "Novel Frequency
+// Swapping Technique for Conducted EMI Suppression in Power Converter
+// Applications", Energies 10(1):24, 2017, CC-BY-4.0. Calibration verified
+// against the figure's own marker table (all five real marker values within
+// ~1 dB). Judged the standard pre-scan way — peak trace against the CISPR 32
+// B AVERAGE limit: wherever peak clears the average limit, average complies;
+// here it exceeds it around 150-510 kHz AND 5-7 MHz (the paper's table
+// confirms the 498 kHz average failure at +2.79 dB), while QP passes.
+export const MDPI_SCAN_NAME = 'mdpi-qrf-flyback.csv'
+export function mdpiQrfCsv() {
+  return mdpiQrfCsvRaw
+}
 
 // A REAL benchtop conducted-emissions measurement: S. Westerhold (Baltic Lab),
 // "A Benchtop Approach to Conducted Emissions Testing According to CISPR 25

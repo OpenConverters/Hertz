@@ -6,7 +6,7 @@ test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer'
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
 
-  await page.getByTestId('load-demo').click()
+  await page.getByTestId('scan-example').selectOption('demo')
   await expect(page.getByTestId('verdict')).toHaveText('FAIL')
   await expect(page.getByTestId('fsw-detected')).toContainText('kHz')
   await expect(page.getByTestId('offenders').locator('tbody tr')).not.toHaveCount(0)
@@ -15,6 +15,10 @@ test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer'
 
   await page.getByTestId('design-fix').click()
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  // the hand-off fills the cards but does NOT run — the user walks to DESIGN
+  await expect(page.getByTestId('lcm')).not.toBeVisible()
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toBeVisible()
   await expect(page.getByTestId('il-chart')).toBeVisible()
   await expect(page.getByTestId('middlebrook-margin')).toContainText('dB')
@@ -153,6 +157,8 @@ test('receiver: 2-channel capture separates CM/DM and hands per-mode targets to 
   await expect(page.getByTestId('target-cm')).toContainText(/\d/)
   await page.getByTestId('design-from-modes').click()
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toBeVisible()
 })
 
@@ -203,8 +209,8 @@ test('spectrum: a stated dBm header survives a dBuV override (Berger R-1 blocker
   for (let f = 0.15; f <= 30; f *= 1.05) lines.push(f.toFixed(4) + ',-10')
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.locator('select').first().selectOption('MHz')       // frequency unit
-  await page.locator('select').nth(1).selectOption('dBuV')       // level override (must lose)
+  await page.getByTestId('freq-unit').selectOption('MHz')        // frequency unit
+  await page.getByTestId('level-unit').selectOption('dBuV')      // level override (must lose)
   await page.locator('input[type="file"]').first().setInputFiles({
     name: 'dbm_header.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
   })
@@ -271,6 +277,8 @@ test('filter: receiver handoff sizes each mode at its own critical point (Berger
   await expect(page.getByTestId('target-cm')).toContainText(/\d/)
   await page.getByTestId('design-from-modes').click()
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toBeVisible()
   const note = await page.getByTestId('binding-note').textContent()
   const cmAt = Number(note.match(/CM \d+ dB @ (\d+) kHz/)[1])
@@ -459,7 +467,7 @@ test('spectrum: judging an Average column against a QP limit raises a detector-m
   await page.getByTestId('column-select').selectOption({ label: 'Average (dBuV)' })
   await expect(page.getByTestId('detector-mismatch')).toContainText('quasi-peak')
   // aligning the detector clears the warning
-  await page.locator('select').nth(3).selectOption('average')
+  await page.getByTestId('detector').selectOption('average')
   await expect(page.getByTestId('detector-mismatch')).not.toBeVisible()
 })
 
@@ -478,12 +486,16 @@ test('spectrum: a PASS names the limit bands the scan never reached (Berger roun
   await expect(page.getByTestId('unswept-note')).toContainText('NOT SWEPT')
   await expect(page.getByTestId('unswept-note')).toContainText('150 kHz')
   await expect(page.getByTestId('unswept-note')).toContainText('30 MHz')
-  // a full-span scan shows no such note
+  // a genuinely full, dense sweep shows no such note (3 spot points would
+  // rightly be flagged by the two-point rule — that is not a sweep)
   await page.getByRole('button', { name: 'Clear' }).click()
+  const full = ['Frequency (MHz),Quasi-peak (dBuV)']
+  for (let f = 0.15; f < 30; f *= 1.05) full.push(f.toFixed(5) + ',40')
+  full.push('30.00000,40')
   await page.locator('input[type="file"]').first().setInputFiles({
-    name: 'full_span.csv', mimeType: 'text/csv',
-    buffer: Buffer.from('Frequency (MHz),Quasi-peak (dBuV)\n0.15,40\n1.0,40\n30.0,40\n'),
+    name: 'full_span.csv', mimeType: 'text/csv', buffer: Buffer.from(full.join('\n')),
   })
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
   await expect(page.getByTestId('unswept-note')).not.toBeVisible()
 })
 
@@ -527,18 +539,19 @@ test('spectrum: an entirely skipped CISPR 25 band is named NOT SWEPT (Berger rou
   await expect(page.getByTestId('unswept-note')).toContainText('26 MHz–28 MHz')
 })
 
-test('filter: the ANP015 template reproduces the note and the schematic passes CIAS verification', async ({ page }) => {
+test('filter: the schematic passes CIAS netlist verification for 1 and 2 stages', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
-  await page.getByTestId('example-select').selectOption('anp015')
-  await expect(page.getByTestId('lcm')).toContainText('3.3 mH')   // the note's printed result
-  await expect(page.getByTestId('example-note')).toContainText('ANP015')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
   // the schematic rendered means the geometry-extracted netlist matched filterNets()
   await expect(page.getByTestId('sch-CMC1')).toBeVisible()
   await expect(page.getByTestId('sch-error')).toHaveCount(0)
-  // 2-stage template: re-verification against the 2-stage CIAS netlist
-  await page.getByTestId('example-select').selectOption('drive16')
+  await page.getByTestId('sec-req').click()
+  await page.getByTestId('stages').selectOption('2')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
   await expect(page.getByTestId('sch-CMC2')).toBeVisible()
   await expect(page.getByTestId('sch-error')).toHaveCount(0)
 })
@@ -549,7 +562,7 @@ test('spectrum: the real CISPR 25 bench scan loads with attribution and fails Cl
   // by ~7.7 dB near 76 MHz — a REAL failing scan for the design-the-fix flow.
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('load-real').click()
+  await page.getByTestId('scan-example').selectOption('baltic')
   await expect(page.getByTestId('verdict')).toHaveText('FAIL')
   await expect(page.getByTestId('real-scan-attribution')).toContainText('zenodo')
   await expect(page.getByTestId('column-note')).toContainText('Average')
@@ -602,7 +615,7 @@ test('spectrum: the real CM/DM scan hands per-mode targets — hard CM, light DM
   // and a small, honestly-derived DM one (~9 dB), each at ITS OWN frequency.
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('load-real-cmdm').click()
+  await page.getByTestId('scan-example').selectOption('baltic-cmdm')
   await expect(page.getByTestId('verdict')).toHaveText('FAIL')
   await expect(page.getByTestId('trace-semantics')).toHaveValue('cm-first')
   await expect(page.getByTestId('real-scan-attribution')).toContainText('Fig. 18')
@@ -613,6 +626,23 @@ test('spectrum: the real CM/DM scan hands per-mode targets — hard CM, light DM
   const dmReq = Number(note.match(/DM (\d+) dB/)[1])
   expect(dmReq).toBeGreaterThanOrEqual(5)
   expect(dmReq).toBeLessThanOrEqual(12)   // DM must stay LIGHT — never sized from the CM offence
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toBeVisible()
   await expect(page.getByTestId('wc-verdict-dm')).toContainText(`≥ ${dmReq}`)
+})
+
+test('spectrum: the real QR-flyback pre-scan fails LOW and HIGH frequencies (MDPI, CC-BY)', async ({ page }) => {
+  // Kuo & Tsou, Energies 10(1):24 (2017), Fig. 20a — real 24 W QR flyback
+  // peak-hold pre-scan judged against the CISPR 32 B AVERAGE limit: over the
+  // limit around 150-510 kHz AND 5-7 MHz (worst +6.0 dB @ 509 kHz; the
+  // paper's own marker table confirms the 498 kHz average failure).
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('mdpi')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('mdpi-attribution')).toContainText('Energies')
+  const areq = await page.getByTestId('areq').textContent()
+  expect(parseFloat(areq)).toBeGreaterThan(14)          // ~6 dB deficit + 10 dB margin
+  await expect(page.getByTestId('offenders')).toContainText('kHz')   // low-band offender rows
 })

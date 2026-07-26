@@ -302,3 +302,7 @@ pre.code {
 
 /* stepper buttons at the foot of each rail card */
 .acc-body .cont { width: 100%; margin-top: 0.6rem; letter-spacing: 0.1em; }
+
+/* compact rail cards: info moved into tooltips (dotted-underlined ⓘ labels) */
+.acc-body .field { margin-bottom: 0.45rem; }
+.acc-body .field span[title] { cursor: help; text-decoration: underline dotted var(--ink-dim); text-underline-offset: 3px; }

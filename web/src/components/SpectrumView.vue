@@ -4,7 +4,8 @@ import { computed, ref } from 'vue'
 import LogChart from './LogChart.vue'
 import { api, STANDARDS } from '../engine.js'
 import { store } from '../store.js'
-import { demoScanCsv, realScanCsv, realCmDmScans, REAL_SCAN_NAME, REAL_CM_NAME, REAL_DM_NAME } from '../demo.js'
+import { demoScanCsv, realScanCsv, realCmDmScans, mdpiQrfCsv,
+         REAL_SCAN_NAME, REAL_CM_NAME, REAL_DM_NAME, MDPI_SCAN_NAME } from '../demo.js'
 import { fmtHz, fmtDb } from '../format.js'
 
 const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis, uncovered}
@@ -339,6 +340,19 @@ async function loadRealScan() {
   await ingest([file])
 }
 
+async function loadMdpi() {
+  standardId.value = 'cispr32_class_b'
+  detector.value = 'average'
+  await ingest([new File([mdpiQrfCsv()], MDPI_SCAN_NAME, { type: 'text/csv' })])
+}
+
+function loadExample(id) {
+  if (id === 'demo') return ingest([demoScanCsv()])
+  if (id === 'baltic') return loadRealScan()
+  if (id === 'baltic-cmdm') return loadRealCmDm()
+  if (id === 'mdpi') return loadMdpi()
+}
+
 async function loadRealCmDm() {
   standardId.value = 'cispr25_class_5'
   detector.value = 'average'
@@ -365,10 +379,16 @@ async function loadRealCmDm() {
         <input ref="fileInput" type="file" accept=".csv,.txt" multiple hidden
                @change="ingest([...$event.target.files]); $event.target.value = ''" />
         <div class="row" style="margin-top: 0.7rem">
-          <button class="ghost" data-test="load-demo" @click="ingest([demoScanCsv()])">Demo scan (synthetic)</button>
-          <button class="ghost" data-test="load-real" @click="loadRealScan">Real scan (CISPR 25 bench)</button>
-          <button class="ghost" data-test="load-real-cmdm" @click="loadRealCmDm">Real CM/DM scan</button>
-          <button v-if="traces.length || columnPickers.length" class="ghost"
+          <label class="field"><span>Example scans</span>
+            <select data-test="scan-example" value=""
+                    @change="loadExample($event.target.value); $event.target.value = ''">
+              <option value="" disabled selected>load an example…</option>
+              <option value="demo">synthetic — 300 kHz flyback (guaranteed comb)</option>
+              <option value="baltic">REAL — CISPR 25 bench DUT (fails Class 5 up high)</option>
+              <option value="baltic-cmdm">REAL — same DUT, CM/DM separated</option>
+              <option value="mdpi">REAL — QR flyback pre-scan (fails low AND high)</option>
+            </select></label>
+          <button v-if="traces.length || columnPickers.length" class="ghost" style="align-self: end"
                   @click="traces = []; rawFiles = []; limitRuns = null; comb = null; columnPickers = []; columnChoice = {}; parseProblems = []; traceSemantics = 'lines'">Clear</button>
         </div>
         <label v-if="traces.length === 2" class="field" style="margin-top: 0.7rem"><span>What the two traces are</span>
@@ -379,10 +399,10 @@ async function loadRealCmDm() {
           </select></label>
         <div class="row" style="margin-top: 0.7rem">
           <label class="field"><span>Frequency unit</span>
-            <select v-model="freqUnit" @change="parseAll"><option value="">from header</option><option>Hz</option><option>kHz</option><option>MHz</option></select>
+            <select v-model="freqUnit" data-test="freq-unit" @change="parseAll"><option value="">from header</option><option>Hz</option><option>kHz</option><option>MHz</option></select>
           </label>
           <label class="field"><span>Level unit</span>
-            <select v-model="levelUnit" @change="parseAll"><option value="">from header</option><option>dBuV</option><option>dBm</option></select>
+            <select v-model="levelUnit" data-test="level-unit" @change="parseAll"><option value="">from header</option><option>dBuV</option><option>dBm</option></select>
           </label>
         </div>
       </div>
@@ -395,7 +415,7 @@ async function loadRealCmDm() {
           </select>
         </label>
         <label class="field"><span>Detector the scan was taken with</span>
-          <select v-model="detector" @change="analyze">
+          <select v-model="detector" data-test="detector" @change="analyze">
             <option v-for="d in detectors" :key="d" :value="d">{{ d.replace('_', '-') }}</option>
           </select>
         </label>
@@ -407,6 +427,14 @@ async function loadRealCmDm() {
           threshold — silence means covered at that resolution, not bin-by-bin.</p>
       </div>
 
+      <p v-if="traces.some((t) => t.name === MDPI_SCAN_NAME)" class="note" data-test="mdpi-attribution">
+        Real pre-scan: M.-T. Kuo &amp; M.-C. Tsou, “Novel Frequency Swapping Technique for Conducted
+        Electromagnetic Interference Suppression in Power Converter Applications”, Energies 10(1):24,
+        2017 — <a href="https://doi.org/10.3390/en10010024" rel="noopener">DOI 10.3390/en10010024</a>,
+        CC-BY-4.0. Peak-hold trace of a 24 W QR flyback, digitized from Fig. 20a (calibration verified
+        against the figure's marker table, all five real values within ~1 dB). Judged the standard
+        pre-scan way: peak against the AVERAGE limit — wherever peak clears it, average complies;
+        here it fails around 150–510 kHz AND 5–7 MHz while QP passes everywhere.</p>
       <p v-if="realScanLoaded" class="note" data-test="real-scan-attribution">
         Real measurement: S. Westerhold, “A Benchtop Approach to Conducted Emissions Testing
         According to CISPR 25 Using the Voltage Method”, Baltic Lab, Jan 2026 —

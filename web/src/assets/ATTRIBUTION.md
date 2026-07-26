@@ -27,3 +27,22 @@ occlude short spans of the DM curves; occluded columns are omitted, never
 interpolated. Engine-verified: CM average fails CISPR 25 Class 5 by 9.3 dB
 near 76 MHz; DM meets every raw limit (worst +5.7 dB) but not the 10+6 dB
 engineering buffer.
+
+## mdpi-qrf-flyback.csv
+Real mains conducted-emissions pre-scan (peak-hold, 150 kHz – 29.8 MHz, 1927
+points) of a 24 W quasi-resonant flyback converter (fixed frequency, 0.33 µF
+X-capacitor, neutral end), digitized from Figure 20a of:
+
+M.-T. Kuo and M.-C. Tsou, "Novel Frequency Swapping Technique for Conducted
+Electromagnetic Interference Suppression in Power Converter Applications",
+Energies 2017, 10(1), 24. DOI: 10.3390/en10010024 — License: CC-BY-4.0.
+
+Digitization: strips stitched, y-axis from the 100/50 dBµV gridlines
+(7.07 px/dB, frame 120…−5 dBµV), x-axis 150 kHz–30 MHz log (verified: the 2
+and 10 MHz gridlines land exactly); the EN 55022 QP/AVG limit lines and
+marker glyphs were masked before envelope extraction. Calibration verified
+against the figure's own marker table: all five real peak values reproduce
+within ~1.1 dB (digitization bias ≤ +1 dB). Engine-verified: exceeds the
+CISPR 32 Class B AVERAGE limit around 150–510 kHz (worst +6.0 dB @ 509 kHz)
+AND 5–7 MHz (+2.0 dB @ 6.8 MHz); passes QP everywhere — matching the paper's
+marker table (498 kHz average failure +2.79 dB).
