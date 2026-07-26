@@ -225,6 +225,29 @@ TEST_CASE("Hole detection is local, not global (F14-1, round 14)", "[limits]") {
     CHECK(swallowed[0].second == Approx(28e6));
 }
 
+TEST_CASE("Hole width gate is frequency-independent (F15-1, round 15)", "[limits]") {
+    // an identical 1.85 MHz dropout in a uniform 10 kHz sweep must be
+    // reported wherever it sits — the old 0.05-decade log-ratio floor made
+    // it visible at 15.1 MHz and invisible at 15.2 MHz
+    for (double holeStart : {8e6, 15.2e6, 20e6, 25e6}) {
+        std::vector<double> freqs;
+        for (double f = 150e3; f <= 30e6 + 1.0; f += 10e3) {
+            if (!(holeStart < f && f < holeStart + 1.85e6)) {
+                freqs.push_back(f);
+            }
+        }
+        auto regions = Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), freqs);
+        REQUIRE(regions.size() == 1);
+        CHECK(regions[0].first == Approx(holeStart).epsilon(1e-3));
+    }
+    // grid-alignment slivers stay suppressed: a 60 kHz-stepped CISPR 25 scan
+    // leaves 20 kHz (2.2 RBW bins) at the top of the CB band — not a hole
+    std::vector<double> grid;
+    for (double f = 150e3; f <= 108e6 + 1.0; f += 60e3) grid.push_back(f);
+    CHECK(Hertz::unswept_regions(
+              Hertz::cispr25_conducted_voltage(5, Hertz::Detector::QUASI_PEAK), grid).empty());
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);

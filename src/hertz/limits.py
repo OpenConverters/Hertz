@@ -88,18 +88,23 @@ class LimitLine:
 UNSWEPT_GAP_DECADES = 0.35
 # ...OR grossly out of line with the scan's LOCAL spacing — > 6x the 90th-
 # percentile of the neighboring gaps on EACH available side, in BOTH
-# log-frequency (0.05 dec floor) and linear frequency. Local, not global: a
-# coarse 120 kHz segment above 30 MHz must not veto detection of a gutted
-# band at 200 kHz (round 14); per-side, so a legitimate density CHANGE
-# (dense sweep + coarse sweep spliced) never flags its own transition; both
-# domains, so log sweeps and linear exports are each judged against their
-# own uniformity. Independently, a gap that swallows >= 90% of a regulated
-# segment's width is a hole regardless of any density argument (two edge
-# samples do not measure a band).
+# log-frequency and linear frequency. Local, not global: a coarse 120 kHz
+# segment above 30 MHz must not veto detection of a gutted band at 200 kHz
+# (round 14); per-side, so a legitimate density CHANGE (dense sweep + coarse
+# sweep spliced) never flags its own transition; both domains, so log sweeps
+# and linear exports are each judged against their own uniformity. A hole is
+# only EMITTED when its clipped regulated width reaches 10x the band's RBW —
+# a width gate, NOT a log-ratio floor: a frequency-ratio floor made an
+# identical 1.85 MHz dropout reportable at 15.1 MHz and invisible at
+# 15.2 MHz (round 15), while grid-alignment slivers (the 20 kHz a 60 kHz
+# step leaves at a band edge) are a couple of RBW bins and stay suppressed.
+# Independently, a gap that swallows >= 90% of a regulated segment's width
+# is a hole regardless of any density argument (two edge samples do not
+# measure a band).
 UNSWEPT_RELATIVE_FACTOR = 6.0
-UNSWEPT_RELATIVE_FLOOR_DECADES = 0.05
 UNSWEPT_LOCAL_WINDOW = 12
 UNSWEPT_SEGMENT_SWALLOW = 0.9
+UNSWEPT_MIN_HOLE_RBW = 10.0
 
 
 def _cispr_rbw_hz(f_hz):
@@ -150,6 +155,9 @@ def unswept_regions_sampled(line, freqs_hz):
         raise ValueError("unswept_regions_sampled needs at least one sample frequency")
     regions = list(unswept_regions(line, freqs[0], freqs[-1]))
     def _p90(values):
+        # on a 12-element window the (n*9)//10 index is the 11th of 12 —
+        # effectively the local near-MAX, not a median. That bias is toward
+        # silence, which is the intended direction for a density reference.
         values = sorted(values)
         return values[min(len(values) - 1, (len(values) * 9) // 10)]
 
@@ -172,15 +180,14 @@ def unswept_regions_sampled(line, freqs_hz):
             continue
         gap = math.log10(fb / fa)
         hole = gap > UNSWEPT_GAP_DECADES or (
-            gap > UNSWEPT_RELATIVE_FLOOR_DECADES
-            and _outlier_vs_side(i, gap, fb - fa, True)
+            _outlier_vs_side(i, gap, fb - fa, True)
             and _outlier_vs_side(i, gap, fb - fa, False))
         for s in line.segments:
             f0, f1 = max(fa, s.f_start_hz), min(fb, s.f_stop_hz)
             if f0 >= f1:
                 continue
             swallows = f1 - f0 >= UNSWEPT_SEGMENT_SWALLOW * (s.f_stop_hz - s.f_start_hz)
-            if hole or swallows:
+            if (hole and f1 - f0 >= UNSWEPT_MIN_HOLE_RBW * _cispr_rbw_hz(f0)) or swallows:
                 regions.append((f0, f1))
     # A regulated segment the scan's extent overlaps but that contains NO
     # sample at all is unswept regardless of any gap ratio — CISPR 25's

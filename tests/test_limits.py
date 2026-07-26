@@ -181,6 +181,24 @@ def test_hole_detection_is_local_not_global():
     assert unswept_regions_sampled(c25, dense_elsewhere) == [pytest.approx((26e6, 28e6))]
 
 
+def test_hole_width_gate_is_frequency_independent():
+    # F15-1 (round 15): an identical 1.85 MHz / 185-point dropout in a uniform
+    # 10 kHz sweep must be reported wherever it sits — the old 0.05-decade
+    # log-ratio floor made it visible at 15.1 MHz and invisible at 15.2 MHz.
+    def sweep_with_hole(hole_start):
+        freqs = np.arange(150e3, 30e6 + 1, 10e3)
+        return [f for f in freqs if not hole_start < f < hole_start + 1.85e6]
+
+    for hole_start in (8e6, 15.2e6, 20e6, 25e6):
+        regions = unswept_regions_sampled(CISPR32_CLASS_B_MAINS_QP, sweep_with_hole(hole_start))
+        assert len(regions) == 1, f"hole at {hole_start}"
+        assert regions[0][0] == pytest.approx(hole_start, rel=1e-3)
+    # grid-alignment slivers stay suppressed: a 60 kHz-stepped CISPR 25 scan
+    # leaves 20 kHz (2.2 RBW bins) at the top of the CB band — not a hole
+    c25 = cispr25_conducted_voltage(5, "quasi_peak")
+    assert unswept_regions_sampled(c25, list(np.arange(150e3, 108e6 + 1, 60e3))) == []
+
+
 def test_lower_limit_applies_at_segment_boundary():
     # F9-1 (round 9), CISPR transition rule: at exactly 500 kHz Class A is 73
     # dBuV, not 79; the vectorized path must agree with the scalar one.

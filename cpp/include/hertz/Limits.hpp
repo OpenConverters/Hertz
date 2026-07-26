@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -107,19 +108,24 @@ class LimitLine {
 // density) when EITHER it exceeds an absolute factor no real sweep uses
 // (0.35 dec = 2.24x), OR it is grossly out of line with the scan's LOCAL
 // spacing — > 6x the 90th-percentile of the neighboring gaps on EACH
-// available side, in BOTH log-frequency (0.05 dec floor) and linear
-// frequency. Local, not global: a coarse 120 kHz segment above 30 MHz must
-// not veto detection of a gutted band at 200 kHz (round 14); per-side, so a
-// legitimate density CHANGE (dense sweep + coarse sweep spliced) never flags
-// its own transition; both domains, so log sweeps and linear exports are
-// each judged against their own uniformity. Independently, a gap that
-// swallows >= 90% of a regulated segment's width is a hole regardless of
-// any density argument (two edge samples do not measure a band).
+// available side, in BOTH log-frequency and linear frequency. Local, not
+// global: a coarse 120 kHz segment above 30 MHz must not veto detection of a
+// gutted band at 200 kHz (round 14); per-side, so a legitimate density
+// CHANGE (dense sweep + coarse sweep spliced) never flags its own
+// transition; both domains, so log sweeps and linear exports are each judged
+// against their own uniformity. A hole is only EMITTED when its clipped
+// regulated width reaches 10x the band's RBW — a width gate, NOT a log-ratio
+// floor: a frequency-ratio floor made an identical 1.85 MHz dropout
+// reportable at 15.1 MHz and invisible at 15.2 MHz (round 15), while grid-
+// alignment slivers (the 20 kHz a 60 kHz step leaves at a band edge) are a
+// couple of RBW bins and stay suppressed. Independently, a gap that swallows
+// >= 90% of a regulated segment's width is a hole regardless of any density
+// argument (two edge samples do not measure a band).
 inline constexpr double UNSWEPT_GAP_DECADES = 0.35;
 inline constexpr double UNSWEPT_RELATIVE_FACTOR = 6.0;
-inline constexpr double UNSWEPT_RELATIVE_FLOOR_DECADES = 0.05;
 inline constexpr size_t UNSWEPT_LOCAL_WINDOW = 12;
 inline constexpr double UNSWEPT_SEGMENT_SWALLOW = 0.9;
+inline constexpr double UNSWEPT_MIN_HOLE_RBW = 10.0;
 
 // CISPR 16-1-1 resolution bandwidth of the band containing f — an unswept
 // region narrower than the receiver's own RBW cannot even be resolved as
@@ -181,6 +187,9 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
         logGaps.push_back(freqsHz[i - 1] > 0.0 ? std::log10(freqsHz[i] / freqsHz[i - 1]) : 0.0);
         linGaps.push_back(freqsHz[i] - freqsHz[i - 1]);
     }
+    // NOTE: on a 12-element window the (n*9)/10 index is the 11th of 12 —
+    // effectively the local near-MAX, not a median. That bias is toward
+    // silence, which is the intended direction for a density reference.
     auto percentile90 = [](std::vector<double> values) {
         std::sort(values.begin(), values.end());
         return values[std::min(values.size() - 1, (values.size() * 9) / 10)];
@@ -206,8 +215,7 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
         }
         double gapLog = std::log10(fb / fa);
         bool hole = gapLog > UNSWEPT_GAP_DECADES ||
-                    (gapLog > UNSWEPT_RELATIVE_FLOOR_DECADES &&
-                     outlierVsSide(i - 1, gapLog, fb - fa, true) &&
+                    (outlierVsSide(i - 1, gapLog, fb - fa, true) &&
                      outlierVsSide(i - 1, gapLog, fb - fa, false));
         for (const auto& segment : line.segments()) {
             double f0 = std::max(fa, segment.fStartHz);
@@ -217,7 +225,7 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
             }
             bool swallowsSegment =
                 f1 - f0 >= UNSWEPT_SEGMENT_SWALLOW * (segment.fStopHz - segment.fStartHz);
-            if (hole || swallowsSegment) {
+            if ((hole && f1 - f0 >= UNSWEPT_MIN_HOLE_RBW * cispr_rbw_hz(f0)) || swallowsSegment) {
                 regions.emplace_back(f0, f1);
             }
         }
