@@ -46,10 +46,11 @@ test('receiver: demo signal separates the three detectors', async ({ page }) => 
   await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 45_000 })
 })
 
-test('lisn: subckt export present', async ({ page }) => {
+test('lisn: the test-setup pane works without a design and exports the subckt', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-lisn').click()
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('pane-select-b').selectOption('lisn')
   await expect(page.getByTestId('subckt')).toContainText('L1 eut mains 5e-05')
 })
 
@@ -534,4 +535,21 @@ test('filter: the ANP015 template reproduces the note and the schematic passes C
   await page.getByTestId('example-select').selectOption('drive16')
   await expect(page.getByTestId('sch-CMC2')).toBeVisible()
   await expect(page.getByTestId('sch-error')).toHaveCount(0)
+})
+
+test('spectrum: the real CISPR 25 bench scan loads with attribution and fails Class 5 average', async ({ page }) => {
+  // Digitized from Baltic Lab's Fig. 15 (DOI 10.5281/zenodo.18202069, CC-BY-4.0):
+  // a real DUT that passes the paper's Class 3 target and fails Class 5 average
+  // by ~7.7 dB near 76 MHz — a REAL failing scan for the design-the-fix flow.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('load-real').click()
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('real-scan-attribution')).toContainText('zenodo')
+  await expect(page.getByTestId('column-note')).toContainText('Average')
+  const areq = await page.getByTestId('areq').textContent()
+  expect(parseFloat(areq)).toBeGreaterThan(15)   // 7.7 dB deficit + 10 dB margin
+  // the same scan passes the paper's target: Class 3, average
+  await page.getByTestId('standard').selectOption('cispr25_class_3')
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
 })

@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import LogChart from './LogChart.vue'
 import { api, STANDARDS } from '../engine.js'
 import { store } from '../store.js'
-import { demoScanCsv } from '../demo.js'
+import { demoScanCsv, realScanCsv, REAL_SCAN_NAME } from '../demo.js'
 import { fmtHz, fmtDb } from '../format.js'
 
 const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis, uncovered}
@@ -299,6 +299,20 @@ function onDrop(event) {
   dragOver.value = false
   ingest([...event.dataTransfer.files])
 }
+
+// The real measurement ships as a genuine multi-trace export (Frequency, Peak,
+// Average) — the Average column is pre-chosen and judged against the class it
+// actually fails (CISPR 25 Class 5 average; it PASSES the paper's Class 3
+// target). Switch class/detector/column freely afterwards.
+const realScanLoaded = computed(() => traces.value.some((t) => t.name === REAL_SCAN_NAME) ||
+  columnPickers.value.some((p) => p.name === REAL_SCAN_NAME))
+async function loadRealScan() {
+  standardId.value = 'cispr25_class_5'
+  detector.value = 'average'
+  columnChoice.value[REAL_SCAN_NAME] = 3
+  const file = new File([realScanCsv()], REAL_SCAN_NAME, { type: 'text/csv' })
+  await ingest([file])
+}
 </script>
 
 <template>
@@ -315,7 +329,8 @@ function onDrop(event) {
         <input ref="fileInput" type="file" accept=".csv,.txt" multiple hidden
                @change="ingest([...$event.target.files]); $event.target.value = ''" />
         <div class="row" style="margin-top: 0.7rem">
-          <button class="ghost" data-test="load-demo" @click="ingest([demoScanCsv()])">Load demo scan</button>
+          <button class="ghost" data-test="load-demo" @click="ingest([demoScanCsv()])">Demo scan (synthetic)</button>
+          <button class="ghost" data-test="load-real" @click="loadRealScan">Real scan (CISPR 25 bench)</button>
           <button v-if="traces.length || columnPickers.length" class="ghost"
                   @click="traces = []; rawFiles = []; limitRuns = null; comb = null; columnPickers = []; columnChoice = {}; parseProblems = []">Clear</button>
         </div>
@@ -349,6 +364,12 @@ function onDrop(event) {
           threshold — silence means covered at that resolution, not bin-by-bin.</p>
       </div>
 
+      <p v-if="realScanLoaded" class="note" data-test="real-scan-attribution">
+        Real measurement: S. Westerhold, “A Benchtop Approach to Conducted Emissions Testing
+        According to CISPR 25 Using the Voltage Method”, Baltic Lab, Jan 2026 —
+        <a href="https://doi.org/10.5281/zenodo.18202069" rel="noopener">DOI 10.5281/zenodo.18202069</a>,
+        CC-BY-4.0. Peak/average traces digitized from Fig. 15; it passes the paper's Class 3
+        target and fails Class 5 average — judged here against Class 5.</p>
       <div v-for="p in columnPickers" :key="p.name" class="panel" data-test="column-picker">
         <p class="section-label">{{ p.name }} — multi-trace export</p>
         <label class="field"><span>The file carries several traces — which column is the one to judge?</span>

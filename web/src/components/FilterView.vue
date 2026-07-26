@@ -7,6 +7,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
+import LisnView from './LisnView.vue'
 import { api } from '../engine.js'
 import { buildFilterCias, filterComponents } from '../ciasFilter.js'
 import { store } from '../store.js'
@@ -51,6 +52,7 @@ const PANE_VIEWS = [
   ['il', 'INSERTION LOSS'],
   ['values', 'SIZING & SAFETY'],
   ['netlist', 'SPICE NETLIST'],
+  ['lisn', 'TEST SETUP (LISN)'],
 ]
 const paneA = ref('schematic')
 const paneB = ref('il')
@@ -803,18 +805,7 @@ function downloadNetlist() {
           candidates; the chips score what was actually selected.</p>
       </div>
 
-      <div v-if="!design" class="workspace-empty">
-        <div>
-          <div class="ws-title">LINE FILTER</div>
-          <div class="ws-sub">ANP015 sizing · in-circuit verdicts · real catalog parts</div>
-          <div class="ws-hint">Set the requirement (or bring one over from a failed scan on the
-            Spectrum or Receiver screens) and press <b>DESIGN FILTER</b> — the schematic, parts,
-            BOM, insertion loss, safety numbers and SPICE netlist appear here in two panes you can
-            switch independently.</div>
-        </div>
-      </div>
-
-      <div v-else class="fpane-grid">
+      <div class="fpane-grid">
         <section v-for="(pane, idx) in [paneA, paneB]" :key="idx" class="fpane panel">
           <div class="pane-head">
             <select class="pane-select" :data-test="'pane-select-' + (idx ? 'b' : 'a')" :value="pane"
@@ -825,7 +816,15 @@ function downloadNetlist() {
           <div class="pane-body">
             <!-- schematic -->
             <template v-if="pane === 'schematic'">
-              <div class="view-fill">
+              <div v-if="!design" class="pane-empty">
+                <div class="ws-title">LINE FILTER</div>
+                <div class="ws-sub">ANP015 sizing · in-circuit verdicts · real catalog parts</div>
+                <div class="ws-hint">Set the requirement (or bring one over from a failed scan on
+                  the Spectrum or Receiver screens) and press <b>DESIGN FILTER</b> — schematic,
+                  parts, BOM, insertion loss, safety numbers and SPICE netlist appear in these two
+                  switchable panes. The test setup (LISN) view works without a design.</div>
+              </div>
+              <div v-else class="view-fill">
                 <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
                                  :selected="selectedRef" @select="selectComponent" />
                 <p class="note" style="flex: 0 0 auto; margin: 0.2rem 0 0">Click a component — its catalog
@@ -835,8 +834,9 @@ function downloadNetlist() {
 
             <!-- catalog parts for the selected component -->
             <template v-else-if="pane === 'parts'">
-              <div v-if="!selectedRef || !recommendations()" class="pane-empty note">
-                Click a component in the schematic to list catalog parts for it.</div>
+              <div v-if="!design || !selectedRef || !recommendations()" class="pane-empty note">
+                {{ design ? 'Click a component in the schematic to list catalog parts for it.'
+                          : 'Design a filter first — then click a schematic component.' }}</div>
               <div v-else data-test="part-panel">
                 <p class="section-label">Parts for {{ selectedRef.replace('C_YL', 'C_Y (pair) ').replace('C_YN', 'C_Y (pair) ') }}
                   — target {{ fmtSi(recommendations().target, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}</p>
@@ -879,6 +879,8 @@ function downloadNetlist() {
 
             <!-- BOM + CIAS export -->
             <template v-else-if="pane === 'bom'">
+              <div v-if="!design" class="pane-empty note">Design a filter first.</div>
+              <template v-else>
               <p class="section-label">Bill of materials</p>
               <table class="data" data-test="bom">
                 <thead><tr><th>Ref</th><th>Value</th><th>Bound part</th></tr></thead>
@@ -911,11 +913,13 @@ function downloadNetlist() {
                   </tbody>
                 </table>
               </div>
+              </template>
             </template>
 
             <!-- insertion loss -->
             <template v-else-if="pane === 'il'">
-              <div v-if="ilCm && ilDm">
+              <div v-if="!design" class="pane-empty note">Design a filter first.</div>
+              <div v-else-if="ilCm && ilDm">
                 <p class="section-label">In-circuit insertion loss — solid: nominal · dashed: CISPR 17 worst case · dot: requirement</p>
                 <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirements (CM green, DM blue)" y-label="dB" :height="260" data-test="il-chart" />
                 <p class="note">If the dashed worst-case curve still clears your requirement at the design
@@ -930,6 +934,8 @@ function downloadNetlist() {
 
             <!-- sizing + safety + stability tables -->
             <template v-else-if="pane === 'values'">
+              <div v-if="!design" class="pane-empty note">Design a filter first.</div>
+              <template v-else>
               <p class="section-label">Common mode — choke against 2×C<sub>Y</sub></p>
               <table class="data">
                 <tbody>
@@ -977,10 +983,13 @@ function downloadNetlist() {
                     damping branch whenever this margin is what keeps the converter stable.</td></tr>
                 </tbody>
               </table>
+              </template>
             </template>
 
             <!-- SPICE netlist -->
             <template v-else-if="pane === 'netlist'">
+              <div v-if="!design" class="pane-empty note">Design a filter first.</div>
+              <template v-else>
               <p class="section-label">Filter + LISN in one deck — ready for Kirchhoff / ngspice / LTspice</p>
               <div class="row">
                 <label class="field"><span>Excitation deck</span>
@@ -1004,6 +1013,12 @@ function downloadNetlist() {
                 <button class="ghost" @click="downloadNetlist">Download .cir</button>
                 <button class="ghost" @click="copyNetlist">Copy</button>
               </div>
+              </template>
+            </template>
+
+            <!-- LISN / test setup — reference view, works without a design -->
+            <template v-else-if="pane === 'lisn'">
+              <LisnView />
             </template>
           </div>
         </section>

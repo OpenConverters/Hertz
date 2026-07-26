@@ -91,6 +91,7 @@ header.bar {
 .engine-led.fault i { background: var(--fault); box-shadow: 0 0 8px var(--fault); }
 
 /* ── mode keys: engraved instrument buttons ────────────────────────────── */
+.mode-group { font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.2em; color: var(--ink-dim); align-self: center; margin: 0 0.35rem; }
 .modes { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.05rem; }
 .mode-key {
   font-family: var(--disp); font-weight: 600; font-size: 0.95rem; letter-spacing: 0.12em;

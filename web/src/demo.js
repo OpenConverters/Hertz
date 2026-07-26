@@ -1,3 +1,16 @@
+import balticLabCsv from './assets/baltic-lab-cispr25-bench.csv?raw'
+
+// A REAL benchtop conducted-emissions measurement: S. Westerhold (Baltic Lab),
+// "A Benchtop Approach to Conducted Emissions Testing According to CISPR 25
+// Using the Voltage Method", Jan 2026, DOI 10.5281/zenodo.18202069, CC-BY-4.0.
+// Peak + average traces digitized from Fig. 15 (1385 points, 150 kHz-107 MHz);
+// the x-calibration was verified against the CISPR 25 limit staircase drawn in
+// the figure (band edges land within 0.5 %).
+export const REAL_SCAN_NAME = 'baltic-lab-cispr25-bench.csv'
+export function realScanCsv() {
+  return balticLabCsv
+}
+
 // Demo data: a failing 300 kHz flyback scan (harmonic comb + broadband floor),
 // emitted as CSV so the demo exercises the real ingestion path.
 export function demoScanCsv() {

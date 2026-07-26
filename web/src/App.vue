@@ -3,7 +3,6 @@ import { onMounted, ref } from 'vue'
 import SpectrumView from './components/SpectrumView.vue'
 import FilterView from './components/FilterView.vue'
 import ReceiverView from './components/ReceiverView.vue'
-import LisnView from './components/LisnView.vue'
 import { loadEngine } from './engine.js'
 import { store } from './store.js'
 
@@ -19,11 +18,12 @@ onMounted(async () => {
   }
 })
 
-const modes = [
+// The nav IS the workflow: measure (analyzer scan or scope capture), then
+// design. The LISN lives inside the Filter bench — it is the filter's test
+// setup, not a separate destination.
+const measureModes = [
   { id: 'spectrum', label: 'SPECTRUM' },
-  { id: 'filter', label: 'FILTER' },
   { id: 'receiver', label: 'RECEIVER' },
-  { id: 'lisn', label: 'LISN' },
 ]
 </script>
 
@@ -39,14 +39,17 @@ const modes = [
     </header>
 
     <nav class="modes" aria-label="Instrument mode">
-      <button v-for="m in modes" :key="m.id" class="mode-key" :class="{ active: store.mode === m.id }"
+      <span class="mode-group">MEASURE</span>
+      <button v-for="m in measureModes" :key="m.id" class="mode-key" :class="{ active: store.mode === m.id }"
               :data-test="'mode-' + m.id" @click="store.mode = m.id">{{ m.label }}</button>
+      <span class="mode-group">▸ DESIGN</span>
+      <button class="mode-key" :class="{ active: store.mode === 'filter' }"
+              data-test="mode-filter" @click="store.mode = 'filter'">FILTER</button>
     </nav>
 
     <SpectrumView v-if="store.mode === 'spectrum'" />
-    <FilterView v-else-if="store.mode === 'filter'" />
     <ReceiverView v-else-if="store.mode === 'receiver'" />
-    <LisnView v-else />
+    <FilterView v-else />
 
     <p class="footnote">
       Hertz is an open-source pre-compliance instrument — estimates with engineering margins, not a
