@@ -222,3 +222,59 @@ pre.code {
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ── Filter workbench (Kirchhoff pattern): viewport-tall, input rail left,
+   verdict strip + two switchable output panes right; no page scroll — the
+   rail and each pane scroll inside themselves. ─────────────────────────── */
+.wrap.fullbench { height: 100vh; display: flex; flex-direction: column; min-height: 0; padding-bottom: 0.5rem; }
+.wrap.fullbench .footnote { flex: 0 0 auto; margin: 0.4rem 0 0; }
+.fbench { flex: 1; min-height: 0; display: flex; gap: 1rem; align-items: stretch; }
+.fcontrols { width: 342px; flex: 0 0 342px; max-height: 100%; overflow-y: auto; margin: 0; }
+.fcontrols .section-label { margin-top: 0.9rem; }
+.fcontrols textarea {
+  width: 100%; background: var(--bg-deep); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 4px; font-family: var(--mono); font-size: 0.85rem; padding: 0.35rem 0.5rem;
+}
+.rail-head {
+  position: sticky; top: 0; z-index: 5; margin: 0 -1rem 0.3rem; padding: 0.7rem 1rem 0.6rem;
+  background: linear-gradient(180deg, var(--panel-hi) 60%, var(--panel));
+  border-bottom: 1px solid var(--line);
+}
+.rail-head .act { width: 100%; letter-spacing: 0.12em; }
+.fworkspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 0.7rem; }
+.fstrip { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.8rem; }
+.fstrip-row { display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; align-items: center; }
+.fstrip-row.cells { margin-top: 0.45rem; }
+.fcell { font-family: var(--mono); font-size: 0.82rem; color: var(--ink); white-space: nowrap; }
+.fcell b { color: var(--ink-dim); font-weight: 400; margin-right: 0.35em; }
+.fpane-grid { flex: 1; min-height: 0; display: grid; grid-template-rows: 1fr 1fr; gap: 0.8rem; }
+.fpane-grid > * { min-height: 0; }
+.fpane { display: flex; flex-direction: column; min-height: 0; margin: 0; padding: 0.5rem 0.9rem 0.7rem; }
+.pane-head { flex: 0 0 auto; padding-bottom: 0.4rem; }
+.pane-select {
+  background: var(--bg-deep); color: var(--phos); border: 1px solid var(--line);
+  border-radius: 4px; font-family: var(--disp, var(--mono)); font-size: 0.78rem;
+  letter-spacing: 0.14em; padding: 0.25rem 0.5rem;
+}
+.pane-body { flex: 1; min-height: 0; overflow-y: auto; }
+.pane-body .view-fill { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.pane-body .view-fill .screen { flex: 1; min-height: 0; }
+.pane-empty { padding: 1.2rem 0.4rem; }
+.workspace-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--line); border-radius: 6px; text-align: center;
+  background: rgba(0, 0, 0, 0.15);
+}
+.ws-title { font-family: var(--mono); font-size: 1.5rem; letter-spacing: 0.14em; color: var(--phos); }
+.ws-sub { font-family: var(--mono); font-size: 0.8rem; color: var(--ink-dim); margin-top: 0.4rem; }
+.ws-hint { font-size: 0.82rem; color: var(--ink-dim); max-width: 460px; margin: 1rem auto 0; line-height: 1.6; }
+
+@media (max-width: 1150px) {
+  /* narrow: give up the single-screen fit and scroll normally */
+  .wrap.fullbench { height: auto; min-height: 100vh; }
+  .fbench { flex-direction: column; flex: none; }
+  .fcontrols { width: 100%; flex: none; max-height: none; overflow-y: visible; }
+  .fpane-grid { grid-template-rows: none; }
+  .fpane-grid > * { min-height: 420px; }
+  .workspace-empty { min-height: 300px; }
+}

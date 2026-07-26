@@ -28,7 +28,7 @@ const modes = [
 </script>
 
 <template>
-  <div class="wrap">
+  <div class="wrap" :class="{ fullbench: store.mode === 'filter' }">
     <header class="bar">
       <span class="brand">HERTZ <small>EMI RECEIVER</small></span>
       <span class="tagline">conducted emissions · limit verdicts · line-filter design — entirely in your browser</span>

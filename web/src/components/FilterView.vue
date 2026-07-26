@@ -1,7 +1,10 @@
 <script setup>
-// ANP015 line-filter designer: attenuation target in, component values out,
-// with the safety checks (Y-cap leakage, X-cap discharge) and SPICE export.
-import { onMounted, ref, watch } from 'vue'
+// ANP015 line-filter designer, laid out as a Kirchhoff-style workbench: a
+// compact input rail on the left (requirement → components → grid & safety),
+// a verdict strip plus TWO independently switchable output panes on the right
+// (schematic, catalog parts, BOM, insertion loss, sizing tables, netlist).
+// The whole bench fits the viewport — panes scroll inside themselves.
+import { computed, onMounted, ref, watch } from 'vue'
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
 import { api } from '../engine.js'
@@ -12,17 +15,21 @@ import { fmtHz, fmtDb, fmtSi } from '../format.js'
 const fSwKhz = ref(300)
 const aReqCm = ref(40)
 const aReqDm = ref(40)
-const cYnF = ref(4.7)
+const cYnF = ref('auto')            // 'auto' = largest standard Y within the touch budget
 const stages = ref(1)
-const dmMode = ref('impedance')     // 'impedance' | 'inductance'
+const dmMode = ref('impedance')     // 'impedance' | 'inductance' | 'points'
 const dmImpedanceOhm = ref(92)
 const dmImpedanceMhz = ref(1)
 const lDmUh = ref(14.6)
+const dmPointsText = ref('')        // "MHz, Ohm" per line — fitted in the inductive region
+const dmPointsNote = ref('')
 const lCandidatesMh = ref('0.47, 0.68, 1, 1.5, 2.2, 3.3, 4.7, 6.8, 10')
 const cxCandidatesUf = ref('0.1, 0.15, 0.22, 0.33, 0.47, 0.68, 1, 1.5, 2.2, 3.3')
+const cxSource = ref('manual')      // 'manual' | 'catalog' (X2 safety caps)
+const cxMfr = ref('')
 const gridVrms = ref(230)
 const gridHz = ref(50)
-const touchLimitMa = ref(3.5)   // selected compliance tier for the touch-current verdict
+const touchLimitMa = ref(3.5)   // compliance tier: bounds C_Y and scores the touch verdict
 const design = ref(null)
 const netlist = ref('')
 const netlistMode = ref('dm')
@@ -33,9 +40,37 @@ const worstCaseAt = ref(null)   // {cm: {standard, worst}, dm: {...}} at f_desig
 const escalated = ref(false)    // selector had to go beyond the asymptote sizing
 const bindingSets = ref(null)   // receiver handoff: {cm: [[f,A]...], dm: [[f,A]...]}
 const bindingNote = ref('')
-
 const fCritCmHz = ref(null)     // per-mode critical design frequency from the binding sets
 const fCritDmHz = ref(null)
+
+// ── output panes (Kirchhoff pattern: two, independently switchable) ──────────
+const PANE_VIEWS = [
+  ['schematic', 'SCHEMATIC'],
+  ['parts', 'CATALOG PARTS'],
+  ['bom', 'BOM & EXPORT'],
+  ['il', 'INSERTION LOSS'],
+  ['values', 'SIZING & SAFETY'],
+  ['netlist', 'SPICE NETLIST'],
+]
+const paneA = ref('schematic')
+const paneB = ref('il')
+function onPaneChange(which, view) {
+  // never show the same view twice — swap instead
+  if (which === 'a') {
+    if (paneB.value === view) paneB.value = paneA.value
+    paneA.value = view
+  } else {
+    if (paneA.value === view) paneA.value = paneB.value
+    paneB.value = view
+  }
+}
+function selectComponent(ref_) {
+  selectedRef.value = ref_
+  // clicking a schematic component surfaces its catalog in the OTHER pane
+  if (paneA.value !== 'parts' && paneB.value !== 'parts') {
+    onPaneChange(paneA.value === 'schematic' ? 'b' : 'a', 'parts')
+  }
+}
 
 // Reduce EACH MODE's binding set to the (f*, A*) whose f/10^(A/(40 n)) is that
 // set's minimum — the mode's own cutoff formula then meets every one of ITS
@@ -107,7 +142,29 @@ const selectedRef = ref('')
 const bindings = ref({})
 const curvesFile = ref(null)     // /kelvin/hertz-cmc-curves.v1.json, fetched on first need
 const measured = ref(null)       // {mpn, cm?: {f, db}, dm?: {f, db}} — bound part's measured-Z IL
-const measuredIlAt = ref({})     // mpn -> measured CM IL (dB) at f_design, for the parts panel
+const measuredIlAt = ref({})     // mpn -> measured CM IL (dB) at f_design, for the parts pane
+
+// ── Y capacitor auto-selection ───────────────────────────────────────────────
+// The touch-current budget CAPS C_Y; within that cap, BIGGER C_Y means a
+// SMALLER (cheaper) choke for the same attenuation — so 'auto' picks the
+// largest standard value whose worst-case leakage (V+10 %, C+20 %, per-line,
+// per IEC 60990) stays under the selected tier. The spectrum never picks C_Y:
+// it sets the attenuation requirement; safety sets the C_Y ceiling.
+const CY_STANDARD_NF = [1, 2.2, 3.3, 4.7, 10, 15, 22, 33, 47]
+const autoCyNf = computed(() => {
+  const budgetF = (Number(touchLimitMa.value) * 1e-3) /
+    (Number(gridVrms.value) * 1.1 * 2 * Math.PI * Number(gridHz.value) * 1.2 * Number(stages.value))
+  const fit = CY_STANDARD_NF.filter((nf) => nf * 1e-9 <= budgetF)
+  return fit.length ? fit[fit.length - 1] : null
+})
+function resolvedCyNf() {
+  if (cYnF.value !== 'auto') return Number(cYnF.value)
+  if (autoCyNf.value === null) {
+    throw new Error(`even the smallest standard Y capacitor exceeds the ${touchLimitMa.value} mA ` +
+      'touch budget at this grid — pick C_Y manually or relax the tier')
+  }
+  return autoCyNf.value
+}
 
 onMounted(async () => {
   try {
@@ -121,7 +178,7 @@ onMounted(async () => {
   try {
     const response = await fetch('/kelvin/hertz-safety-caps.v1.json')
     if (response.ok) capsCatalog.value = await response.json()
-  } catch { /* caps panel shows its own unavailable state */ }
+  } catch { /* caps panes show their own unavailable state */ }
   if (store.handoff) {
     if (store.handoff.binding) {
       bindingSets.value = store.handoff.binding
@@ -152,6 +209,18 @@ function catalogPartsAnyL() {
 
 function catalogParts() {
   return catalogPartsAnyL().filter((p) => p.inductanceH > 0)
+}
+
+// X2 safety capacitors as the C_X candidate source — same pattern as the choke
+// catalog: real available values instead of a hand-typed list.
+const cxManufacturers = () => [...new Set((capsCatalog.value?.parts ?? [])
+  .filter((p) => p.safetyClass === 'X2').map((p) => p.manufacturer))].sort()
+function cxCatalogCandidates() {
+  const values = [...new Set((capsCatalog.value?.parts ?? [])
+    .filter((p) => p.safetyClass === 'X2' && (!cxMfr.value || p.manufacturer === cxMfr.value))
+    .map((p) => p.capacitanceF))].sort((a, b) => a - b)
+  if (!values.length) throw new Error('no X2 catalog capacitors match the manufacturer filter — loosen it or use the manual list')
+  return values
 }
 
 async function ensureCurves() {
@@ -208,6 +277,32 @@ function parseList(text, scale) {
   return values.map((x) => x * scale)
 }
 
+// Multi-point DM leakage: each (f, |Z|) in the inductive region gives
+// L = Z/(2πf); the median is used, and a spread across the points is
+// SURFACED — a large spread means the points straddle the self-resonance.
+function fitDmPoints() {
+  const rows = dmPointsText.value.split('\n').map((line) => line.trim()).filter(Boolean)
+  const inductances = rows.map((line) => {
+    const [fMhz, zOhm] = line.split(/[,;\s]+/).map(Number)
+    if (!Number.isFinite(fMhz) || !Number.isFinite(zOhm) || fMhz <= 0 || zOhm <= 0) {
+      throw new Error(`DM point "${line}" is not "MHz, Ohm" with positive numbers`)
+    }
+    return zOhm / (2 * Math.PI * fMhz * 1e6)
+  })
+  if (inductances.length < 2) throw new Error('give at least two "MHz, Ohm" DM impedance points')
+  const sorted = [...inductances].sort((a, b) => a - b)
+  const spread = sorted[sorted.length - 1] / sorted[0]
+  if (spread > 2) {
+    throw new Error(`the DM points do not lie on one inductive slope (L varies ${spread.toFixed(1)}×) — ` +
+      'use points below the choke\'s self-resonance')
+  }
+  dmPointsNote.value = spread > 1.25
+    ? `L spread ${((spread - 1) * 100).toFixed(0)} % across the DM points — median used; ` +
+      'the highest-frequency points may already feel the SRF'
+    : ''
+  return sorted[Math.floor(sorted.length / 2)]
+}
+
 async function compute() {
   error.value = ''
   design.value = null
@@ -217,6 +312,7 @@ async function compute() {
   ilCm.value = null
   ilDm.value = null
   worstCaseAt.value = null
+  dmPointsNote.value = ''
   try {
     const engine = await api()
     if (lCmSource.value === 'catalog' && catalogState.value === 'ready' && !catalogCandidates().length) {
@@ -226,11 +322,12 @@ async function compute() {
       fSwHz: fSwKhz.value * 1e3,
       aReqCmDb: Number(aReqCm.value),
       aReqDmDb: Number(aReqDm.value),
-      cYPerLineF: cYnF.value * 1e-9,
+      cYPerLineF: resolvedCyNf() * 1e-9,
       stages: Number(stages.value),
       lCmCandidatesH: lCmSource.value === 'catalog' && catalogState.value === 'ready'
         ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
-      cXCandidatesF: parseList(cxCandidatesUf.value, 1e-6),
+      cXCandidatesF: cxSource.value === 'catalog' && capsCatalog.value
+        ? cxCatalogCandidates() : parseList(cxCandidatesUf.value, 1e-6),
       grid: { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 },
     }
     if (bindingSets.value && fCritCmHz.value && fCritDmHz.value) {
@@ -240,6 +337,8 @@ async function compute() {
     if (dmMode.value === 'impedance') {
       params.dmImpedanceOhm = Number(dmImpedanceOhm.value)
       params.dmImpedanceFrequencyHz = dmImpedanceMhz.value * 1e6
+    } else if (dmMode.value === 'points') {
+      params.lDmH = fitDmPoints()
     } else {
       params.lDmH = lDmUh.value * 1e-6
     }
@@ -502,286 +601,338 @@ function downloadNetlist() {
 </script>
 
 <template>
-  <div class="grid2">
-    <div>
-      <div class="panel">
-        <p class="section-label">Requirement</p>
-        <div class="row">
-          <label class="field"><span>Switching frequency (kHz)</span>
-            <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @input="clearBinding" /></label>
-          <label class="field"><span>Stages</span>
-            <select v-model.number="stages"><option :value="1">1 (40 dB/dec)</option><option :value="2">2 (80 dB/dec)</option></select></label>
-        </div>
-        <div class="row">
-          <label class="field"><span>Required CM attenuation (dB)</span>
-            <input v-model.number="aReqCm" type="number" data-test="areq-cm" @input="clearBinding" /></label>
-          <label class="field"><span>Required DM attenuation (dB)</span>
-            <input v-model.number="aReqDm" type="number" data-test="areq-dm" @input="clearBinding" /></label>
-        </div>
-        <p class="note">Below 150 kHz the design moves to the first harmonic inside the measured band, as ANP015 prescribes.</p>
-        <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
+  <div class="fbench">
+    <!-- ── input rail ─────────────────────────────────────────────────────── -->
+    <aside class="fcontrols panel">
+      <div class="rail-head">
+        <button class="act" data-test="compute" @click="compute">DESIGN FILTER</button>
       </div>
 
-      <div class="panel">
-        <p class="section-label">Components</p>
-        <label class="field"><span>Y capacitor per line (nF) — bounded by leakage current</span>
-          <select v-model.number="cYnF"><option>1</option><option>2.2</option><option>3.3</option><option>4.7</option><option>10</option></select></label>
-        <label class="field"><span>DM inductance source</span>
-          <select v-model="dmMode" data-test="dm-mode">
-            <option value="impedance">from choke DM impedance curve (Z at f)</option>
-            <option value="inductance">total loop leakage inductance directly</option>
-          </select></label>
-        <div v-if="dmMode === 'impedance'" class="row">
-          <label class="field"><span>|Z| (Ω)</span><input v-model.number="dmImpedanceOhm" type="number" /></label>
-          <label class="field"><span>at (MHz)</span><input v-model.number="dmImpedanceMhz" type="number" /></label>
-        </div>
-        <label v-else class="field"><span>Total loop leakage (µH) — line+neutral in series opposition (≈ 2× per-winding)</span>
-          <input v-model.number="lDmUh" type="number" data-test="ldm-input" /></label>
-        <label class="field"><span>CM choke source</span>
-          <select v-model="lCmSource" data-test="lcm-source">
-            <option value="manual">manual value list</option>
-            <option value="catalog" :disabled="catalogState !== 'ready'">
-              parts catalog{{ catalogState === 'ready' ? ` (${catalog.count} chokes)` : catalogState === 'loading' ? ' (loading…)' : ' (unavailable here)' }}
-            </option>
-          </select></label>
-        <label v-if="lCmSource === 'manual'" class="field"><span>CM choke candidates (mH) — any manufacturer</span>
-          <input v-model="lCandidatesMh" type="text" /></label>
-        <div v-else class="row">
-          <label class="field"><span>Manufacturer</span>
-            <select v-model="mfrFilter" data-test="mfr-filter"><option value="">all manufacturers</option>
-              <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
-          <label class="field"><span>Min. rated current (A) — a positive value excludes unrated parts; 0 admits them</span>
-            <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
-        </div>
-        <label class="field"><span>X capacitor candidates (µF)</span>
-          <input v-model="cxCandidatesUf" type="text" /></label>
-        <div class="row">
-          <label class="field"><span>Grid voltage (V RMS)</span><input v-model.number="gridVrms" type="number" /></label>
-          <label class="field"><span>Grid frequency (Hz)</span><input v-model.number="gridHz" type="number" /></label>
-        </div>
-        <button class="act" data-test="compute" @click="compute">Design filter</button>
+      <p class="section-label">1 · Requirement</p>
+      <div class="row">
+        <label class="field"><span>Switching frequency (kHz)</span>
+          <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @input="clearBinding" /></label>
+        <label class="field"><span>Stages</span>
+          <select v-model.number="stages"><option :value="1">1 (40 dB/dec)</option><option :value="2">2 (80 dB/dec)</option></select></label>
       </div>
+      <div class="row">
+        <label class="field"><span>CM attenuation (dB)</span>
+          <input v-model.number="aReqCm" type="number" data-test="areq-cm" @input="clearBinding" /></label>
+        <label class="field"><span>DM attenuation (dB)</span>
+          <input v-model.number="aReqDm" type="number" data-test="areq-dm" @input="clearBinding" /></label>
+      </div>
+      <p class="note">From a failed scan: <em>Design the fix</em> (Spectrum) or <em>Design filter for
+        these modes</em> (Receiver) fill this section. Below 150 kHz the design moves to the first
+        harmonic inside the measured band (ANP015).</p>
+      <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
+
+      <p class="section-label">2 · Components</p>
+      <label class="field"><span>Y capacitor per line</span>
+        <select v-model="cYnF" data-test="cy-select">
+          <option value="auto">auto — largest within the touch budget{{ autoCyNf !== null ? ` (→ ${autoCyNf} nF)` : '' }}</option>
+          <option v-for="v in [1, 2.2, 3.3, 4.7, 10]" :key="v" :value="v">{{ v }} nF (manual)</option>
+        </select></label>
+      <p class="note">Safety caps C_Y (touch current), never the spectrum; within that cap a larger
+        C_Y means a smaller choke, so <em>auto</em> takes the largest standard value passing the
+        tier under Grid &amp; safety.</p>
+      <label class="field"><span>DM (leakage) inductance from</span>
+        <select v-model="dmMode" data-test="dm-mode">
+          <option value="impedance">one point of the choke's DM |Z| curve</option>
+          <option value="points">several DM |Z| points (fitted)</option>
+          <option value="inductance">a known leakage inductance</option>
+        </select></label>
+      <div v-if="dmMode === 'impedance'" class="row">
+        <label class="field"><span>|Z| (Ω)</span><input v-model.number="dmImpedanceOhm" type="number" /></label>
+        <label class="field"><span>at (MHz)</span><input v-model.number="dmImpedanceMhz" type="number" /></label>
+      </div>
+      <label v-else-if="dmMode === 'points'" class="field"><span>One “MHz, Ω” per line (inductive region)</span>
+        <textarea v-model="dmPointsText" rows="3" data-test="dm-points" placeholder="0.1, 9.2&#10;0.3, 27.5&#10;1, 92"></textarea></label>
+      <label v-else class="field"><span>Total loop leakage (µH) — ≈ 2× per-winding</span>
+        <input v-model.number="lDmUh" type="number" data-test="ldm-input" /></label>
+      <p v-if="dmPointsNote" class="note" style="color: var(--amber)">{{ dmPointsNote }}</p>
+      <label class="field"><span>CM choke candidates</span>
+        <select v-model="lCmSource" data-test="lcm-source">
+          <option value="manual">manual value list</option>
+          <option value="catalog" :disabled="catalogState !== 'ready'">
+            parts catalog{{ catalogState === 'ready' ? ` (${catalog.count} chokes)` : catalogState === 'loading' ? ' (loading…)' : ' (unavailable here)' }}
+          </option>
+        </select></label>
+      <label v-if="lCmSource === 'manual'" class="field"><span>Values (mH)</span>
+        <input v-model="lCandidatesMh" type="text" /></label>
+      <div v-else class="row">
+        <label class="field"><span>Manufacturer</span>
+          <select v-model="mfrFilter" data-test="mfr-filter"><option value="">all manufacturers</option>
+            <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
+        <label class="field"><span>Min. rated A (0 = incl. unrated)</span>
+          <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
+      </div>
+      <label class="field"><span>X capacitor candidates</span>
+        <select v-model="cxSource" data-test="cx-source">
+          <option value="manual">manual value list</option>
+          <option value="catalog" :disabled="!capsCatalog">
+            X2 safety-caps catalog{{ capsCatalog ? '' : ' (unavailable here)' }}
+          </option>
+        </select></label>
+      <label v-if="cxSource === 'manual'" class="field"><span>Values (µF)</span>
+        <input v-model="cxCandidatesUf" type="text" /></label>
+      <label v-else class="field"><span>Manufacturer</span>
+        <select v-model="cxMfr" data-test="cx-mfr"><option value="">all manufacturers</option>
+          <option v-for="m in cxManufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
+
+      <p class="section-label">3 · Grid &amp; safety</p>
+      <div class="row">
+        <label class="field"><span>Grid (V RMS)</span><input v-model.number="gridVrms" type="number" /></label>
+        <label class="field"><span>Grid (Hz)</span><input v-model.number="gridHz" type="number" /></label>
+      </div>
+      <label class="field"><span>Touch-current tier (bounds C_Y)</span>
+        <select v-model.number="touchLimitMa" data-test="touch-tier">
+          <option :value="3.5">3.5 mA — IEC 62368-1 Class I</option>
+          <option :value="0.75">0.75 mA — appliance</option>
+          <option :value="0.5">0.5 mA — medical</option>
+        </select></label>
+      <div class="row">
+        <label class="field"><span>Converter V<sub>in</sub> min (V)</span>
+          <input v-model.number="vInMin" type="number" @input="vInMinDirty = true" @change="compute" /></label>
+        <label class="field"><span>Input power (W)</span>
+          <input v-model.number="pIn" type="number" @change="compute" /></label>
+      </div>
+      <p class="note">V<sub>in</sub>/P feed the Middlebrook stability check; the tier bounds C_Y
+        and scores the touch-current verdict.</p>
 
       <div v-if="error" class="err" data-test="error">{{ error }}</div>
-    </div>
+    </aside>
 
-    <div v-if="design">
-      <div class="panel panel-hi">
-        <div class="readout">
-          <div class="cell"><b>Design frequency</b>
-            <span v-if="design.fDesignCmHz === design.fDesignDmHz" data-test="f-design">{{ fmtHz(design.fDesignCmHz) }}</span>
-            <span v-else data-test="f-design">CM {{ fmtHz(design.fDesignCmHz) }} · DM {{ fmtHz(design.fDesignDmHz) }}</span></div>
-          <div class="cell"><b>Target cutoff</b>
-            <span v-if="design.fCutoffCmHz === design.fCutoffDmHz">{{ fmtHz(design.fCutoffCmHz) }}</span>
-            <span v-else>CM {{ fmtHz(design.fCutoffCmHz) }} · DM {{ fmtHz(design.fCutoffDmHz) }}</span></div>
-          <div class="cell"><b>Stages</b><span>{{ design.stages }}</span></div>
-          <div v-if="worstCaseAt" class="cell"><b>CM in-circuit @ f<sub>design</sub> (25 Ω LISN)</b>
-            <span class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">
-              {{ fmtDb(worstCaseAt.cm.standard) }} dB {{ worstCaseAt.cm.standard >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }}</span>
-          </div>
-          <div v-if="worstCaseAt" class="cell"><b>DM in-circuit @ f<sub>design</sub> (100 Ω LISN)</b>
-            <span class="chip" :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'pass' : 'fail'" data-test="wc-verdict-dm">
-              {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
-          </div>
+    <!-- ── workspace: verdict strip + two switchable panes ────────────────── -->
+    <main class="fworkspace">
+      <div v-if="design" class="fstrip panel-hi">
+        <div class="fstrip-row">
+          <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">
+            CM {{ fmtDb(worstCaseAt.cm.standard) }} dB {{ worstCaseAt.cm.standard >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }}</span>
+          <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'pass' : 'fail'" data-test="wc-verdict-dm">
+            DM {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
+          <span v-if="interaction" class="chip" :class="interaction.marginDb >= 12 ? 'pass' : interaction.marginDb >= 6 ? 'warn' : 'fail'"
+                data-test="middlebrook-margin">STABILITY {{ fmtDb(interaction.marginDb) }} dB</span>
+          <span v-if="design.leakageCurrentA !== undefined" class="chip"
+                :class="design.leakageCurrentA < touchLimitMa * 1e-3 ? 'pass' : 'fail'" data-test="touch-verdict">
+            TOUCH {{ fmtSi(design.leakageCurrentA, 'A') }} {{ design.leakageCurrentA < touchLimitMa * 1e-3 ? '<' : '≥' }} {{ touchLimitMa }} mA</span>
         </div>
-        <p v-if="unrealizable()" class="err" data-test="k-warning">
+        <div class="fstrip-row cells">
+          <span class="fcell"><b>f<sub>design</sub></b>
+            <span v-if="design.fDesignCmHz === design.fDesignDmHz" data-test="f-design">{{ fmtHz(design.fDesignCmHz) }}</span>
+            <span v-else data-test="f-design">CM {{ fmtHz(design.fDesignCmHz) }} · DM {{ fmtHz(design.fDesignDmHz) }}</span></span>
+          <span class="fcell"><b>f<sub>co</sub></b>
+            <span v-if="design.fCutoffCmHz === design.fCutoffDmHz">{{ fmtHz(design.fCutoffCmHz) }}</span>
+            <span v-else>CM {{ fmtHz(design.fCutoffCmHz) }} · DM {{ fmtHz(design.fCutoffDmHz) }}</span></span>
+          <span class="fcell"><b>L<sub>CM</sub></b><span data-test="lcm">{{ fmtSi(design.lCmSelectedH, 'H') }}</span></span>
+          <span class="fcell"><b>C<sub>X</sub></b><span>{{ fmtSi(design.cXSelectedF, 'F') }}</span></span>
+          <span class="fcell"><b>C<sub>Y</sub></b><span>2×{{ fmtSi(design.cYPerLineF, 'F') }}/stage</span></span>
+          <span v-if="design.dischargeResistorOhm" class="fcell"><b>R<sub>bleed</sub></b>
+            <span>{{ fmtSi(design.dischargeResistorOhm, 'Ω') }} · {{ fmtSi(design.dischargeResistorPowerW, 'W') }}</span></span>
+        </div>
+        <p v-if="unrealizable()" class="err" data-test="k-warning" style="margin: 0.35rem 0 0">
           Not realizable as drawn: the DM (leakage) inductance {{ fmtSi(design.lDmH, 'H') }} is
           ≥ 2 × the selected CM choke {{ fmtSi(design.lCmSelectedH, 'H') }} — a coupled pair cannot
           leak more than 2·L<sub>CM</sub> (coupling K would leave (0,1)). Enter a real leakage value
           or pick a larger choke; the CIAS export is disabled until this is resolved.</p>
-        <p v-if="escalated" class="note" data-test="escalated-note">
-          The asymptote-sized parts missed the in-circuit criterion, so the selector escalated to
-          larger candidates until it passed — the verdict above scores what was actually selected.</p>
-        <p v-if="worstCaseAt" class="note">
-          Robustness caveat — CISPR 17 worst case (0.1 Ω/100 Ω, both orientations, worst kept):
-          CM {{ fmtDb(worstCaseAt.cm.worst) }} dB, DM {{ fmtDb(worstCaseAt.dm.worst) }} dB at
-          f<sub>design</sub>. The 0.1 Ω-source orientation is NOT the LISN measurement condition
-          (an AMN presents 25 Ω CM / 100 Ω DM by construction); it bounds sensitivity to an unknown
-          converter-side impedance, and single-stage DM filters score near 0 dB against it by nature.</p>
+        <p v-if="escalated" class="note" data-test="escalated-note" style="margin: 0.25rem 0 0">
+          Asymptote-sized parts missed the in-circuit criterion — the selector escalated to larger
+          candidates; the chips score what was actually selected.</p>
       </div>
 
-      <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
-                       :selected="selectedRef" @select="selectedRef = $event" />
-
-      <div v-if="selectedRef && recommendations()" class="panel" data-test="part-panel">
-        <p class="section-label">Catalog parts for {{ selectedRef.replace('C_YL', 'C_Y (pair) ').replace('C_YN', 'C_Y (pair) ') }}
-          — target {{ fmtSi(recommendations().target, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}</p>
-        <p v-if="recommendations().unavailable" class="note">Parts catalog not reachable from this deployment — bind manually via the BOM later, or design on values only.</p>
-        <table v-else class="data">
-          <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th>
-            <th v-if="kindOf(selectedRef) === 'cmc'">Meas. IL @ f<sub>design</sub></th>
-            <th v-if="kindOf(selectedRef) === 'cmc'">Rated V</th>
-            <th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
-          <tbody>
-            <tr v-for="p in recommendations().parts" :key="p.mpn">
-              <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td>
-              <td><template v-if="p.valueF !== null">{{ fmtSi(p.valueF, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}
-                <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></template>
-                <span v-else class="note">by measured curve</span></td>
-              <td v-if="kindOf(selectedRef) === 'cmc'" data-test="measured-il"
-                  :class="measuredIlAt[p.mpn] !== undefined ? (measuredIlAt[p.mpn] >= Number(aReqCm) ? 'pos' : 'neg') : ''">
-                {{ measuredIlAt[p.mpn] !== undefined ? measuredIlAt[p.mpn].toFixed(1) + ' dB' : '—' }}</td>
-              <td v-if="kindOf(selectedRef) === 'cmc'" class="note">
-                {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
-              <td>{{ kindOf(selectedRef) === 'cmc'
-                ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify')
-                : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V*' : '') }}</td>
-              <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">*Datasheet rated voltage — MIXED
-          AC and DC bases: the X2/Y2 class itself is defined for ≤310 VAC mains; values like
-          630 V are DC ratings on the same film part. Verify the AC rating on the datasheet.</p>
-        <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
-          Most catalogued chokes carry no voltage rating — for mains use, verify insulation class
-          against the datasheet before committing; chip-scale data-line chokes are never mains parts.</p>
-        <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
-          "Meas. IL" is computed from the part's measured complex impedance against your Y network at the
-          design frequency (SILENT-style selection). Parts offered "by measured curve" have no catalogued
-          inductance — binding one keeps the designed values in the netlist; the measured overlay shows its true prediction.</p>
-      </div>
-
-      <div class="panel">
-        <p class="section-label">Bill of materials</p>
-        <table class="data" data-test="bom">
-          <thead><tr><th>Ref</th><th>Value</th><th>Bound part</th></tr></thead>
-          <tbody>
-            <tr v-for="row in bomRows()" :key="row.ref">
-              <td>{{ row.ref }}</td><td>{{ row.value }}</td>
-              <td v-if="row.binding"><strong>{{ row.binding.mpn }}</strong> <span class="note">{{ row.binding.manufacturer }}</span>
-                <span v-if="row.warning" style="color: var(--fault)" data-test="bom-voltage-warning"> — {{ row.warning }}</span></td>
-              <td v-else class="note">unbound — click the part in the schematic</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="row" style="margin-top: 0.6rem">
-          <button class="ghost" data-test="download-cias" :disabled="!allBound() || unrealizable()" @click="downloadCias()"
-                  :title="unrealizable() ? 'The leakage/choke pair is not physically realizable — fix it first'
-                    : allBound() ? 'Download the CIAS circuit brick' : 'Bind every component first — a CIAS with placeholder parts is never produced'">
-            Download CIAS brick
-          </button>
+      <div v-if="!design" class="workspace-empty">
+        <div>
+          <div class="ws-title">LINE FILTER</div>
+          <div class="ws-sub">ANP015 sizing · in-circuit verdicts · real catalog parts</div>
+          <div class="ws-hint">Set the requirement (or bring one over from a failed scan on the
+            Spectrum or Receiver screens) and press <b>DESIGN FILTER</b> — the schematic, parts,
+            BOM, insertion loss, safety numbers and SPICE netlist appear here in two panes you can
+            switch independently.</div>
         </div>
       </div>
 
-      <div class="panel">
-        <p class="section-label">Common mode — choke against 2×C<sub>Y</sub></p>
-        <table class="data">
-          <tbody>
-            <tr><td>L<sub>CM</sub> required</td><td>{{ fmtSi(design.lCmRequiredH, 'H') }}</td></tr>
-            <tr><td>L<sub>CM</sub> selected</td><td data-test="lcm"><strong>{{ fmtSi(design.lCmSelectedH, 'H') }}</strong> (per stage)</td></tr>
-            <tr><td>C<sub>Y</sub></td><td>2 × {{ fmtSi(design.cYPerLineF, 'F') }} per stage</td></tr>
-            <tr><td>Sizing asymptote (ideal 40·n·log₁₀ estimate — the in-circuit chip above is the verdict)</td>
-              <td data-test="il-cm">{{ fmtDb(design.attenuationCmDb) }} dB</td></tr>
-          </tbody>
-        </table>
-      </div>
+      <div v-else class="fpane-grid">
+        <section v-for="(pane, idx) in [paneA, paneB]" :key="idx" class="fpane panel">
+          <div class="pane-head">
+            <select class="pane-select" :data-test="'pane-select-' + (idx ? 'b' : 'a')" :value="pane"
+                    @change="onPaneChange(idx ? 'b' : 'a', $event.target.value)">
+              <option v-for="[id, label] in PANE_VIEWS" :key="id" :value="id">{{ label }}</option>
+            </select>
+          </div>
+          <div class="pane-body">
+            <!-- schematic -->
+            <template v-if="pane === 'schematic'">
+              <div class="view-fill">
+                <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
+                                 :selected="selectedRef" @select="selectComponent" />
+                <p class="note" style="flex: 0 0 auto; margin: 0.2rem 0 0">Click a component — its catalog
+                  parts open in the other pane. Amber part numbers are bound; identical stages share bindings.</p>
+              </div>
+            </template>
 
-      <div class="panel">
-        <p class="section-label">Differential mode — leakage against C<sub>X</sub></p>
-        <table class="data">
-          <tbody>
-            <tr><td>L<sub>DM</sub> (leakage)</td><td>{{ fmtSi(design.lDmH, 'H') }}</td></tr>
-            <tr><td>C<sub>X</sub> required</td><td>{{ fmtSi(design.cXRequiredF, 'F') }}</td></tr>
-            <tr><td>C<sub>X</sub> selected</td><td><strong>{{ fmtSi(design.cXSelectedF, 'F') }}</strong> (per stage)</td></tr>
-            <tr><td>Sizing asymptote (ideal — see the in-circuit chip above)</td>
-              <td>{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
-          </tbody>
-        </table>
-      </div>
+            <!-- catalog parts for the selected component -->
+            <template v-else-if="pane === 'parts'">
+              <div v-if="!selectedRef || !recommendations()" class="pane-empty note">
+                Click a component in the schematic to list catalog parts for it.</div>
+              <div v-else data-test="part-panel">
+                <p class="section-label">Parts for {{ selectedRef.replace('C_YL', 'C_Y (pair) ').replace('C_YN', 'C_Y (pair) ') }}
+                  — target {{ fmtSi(recommendations().target, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}</p>
+                <p v-if="recommendations().unavailable" class="note">Parts catalog not reachable from this
+                  deployment — bind manually via the BOM later, or design on values only.</p>
+                <table v-else class="data">
+                  <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th>
+                    <th v-if="kindOf(selectedRef) === 'cmc'">Meas. IL @ f<sub>design</sub></th>
+                    <th v-if="kindOf(selectedRef) === 'cmc'">Rated V</th>
+                    <th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
+                  <tbody>
+                    <tr v-for="p in recommendations().parts" :key="p.mpn">
+                      <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td>
+                      <td><template v-if="p.valueF !== null">{{ fmtSi(p.valueF, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}
+                        <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></template>
+                        <span v-else class="note">by measured curve</span></td>
+                      <td v-if="kindOf(selectedRef) === 'cmc'" data-test="measured-il"
+                          :class="measuredIlAt[p.mpn] !== undefined ? (measuredIlAt[p.mpn] >= Number(aReqCm) ? 'pos' : 'neg') : ''">
+                        {{ measuredIlAt[p.mpn] !== undefined ? measuredIlAt[p.mpn].toFixed(1) + ' dB' : '—' }}</td>
+                      <td v-if="kindOf(selectedRef) === 'cmc'" class="note">
+                        {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
+                      <td>{{ kindOf(selectedRef) === 'cmc'
+                        ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify')
+                        : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V*' : '') }}</td>
+                      <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">*Datasheet rated voltage — MIXED
+                  AC and DC bases: the X2/Y2 class itself is defined for ≤310 VAC mains; values like
+                  630 V are DC ratings on the same film part. Verify the AC rating on the datasheet.</p>
+                <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
+                  Most catalogued chokes carry no voltage rating — for mains use, verify insulation class
+                  against the datasheet; chip-scale data-line chokes are never mains parts.
+                  “Meas. IL” is computed from the part's measured complex impedance against your Y network
+                  at the design frequency (SILENT-style selection); “by measured curve” parts have no
+                  catalogued inductance — binding one keeps the designed values in the netlist.</p>
+              </div>
+            </template>
 
-      <div class="panel" v-if="lCmSource === 'catalog' && matchedParts().length">
-        <p class="section-label">Catalog parts at {{ fmtSi(design.lCmSelectedH, 'H') }}</p>
-        <table class="data" data-test="catalog-parts">
-          <thead><tr><th>Part</th><th>Manufacturer</th><th>Family</th><th>Rated A</th><th>DCR</th></tr></thead>
-          <tbody>
-            <tr v-for="p in matchedParts()" :key="p.mpn">
-              <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td><td>{{ p.family || '—' }}</td>
-              <td>{{ p.ratedCurrentA !== null ? p.ratedCurrentA.toFixed(1) : '—' }}</td>
-              <td>{{ p.dcrOhm !== null ? fmtSi(p.dcrOhm, 'Ω') : '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+            <!-- BOM + CIAS export -->
+            <template v-else-if="pane === 'bom'">
+              <p class="section-label">Bill of materials</p>
+              <table class="data" data-test="bom">
+                <thead><tr><th>Ref</th><th>Value</th><th>Bound part</th></tr></thead>
+                <tbody>
+                  <tr v-for="row in bomRows()" :key="row.ref">
+                    <td>{{ row.ref }}</td><td>{{ row.value }}</td>
+                    <td v-if="row.binding"><strong>{{ row.binding.mpn }}</strong> <span class="note">{{ row.binding.manufacturer }}</span>
+                      <span v-if="row.warning" style="color: var(--fault)" data-test="bom-voltage-warning"> — {{ row.warning }}</span></td>
+                    <td v-else class="note">unbound — click the part in the schematic</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="row" style="margin-top: 0.6rem">
+                <button class="ghost" data-test="download-cias" :disabled="!allBound() || unrealizable()" @click="downloadCias()"
+                        :title="unrealizable() ? 'The leakage/choke pair is not physically realizable — fix it first'
+                          : allBound() ? 'Download the CIAS circuit brick' : 'Bind every component first — a CIAS with placeholder parts is never produced'">
+                  Download CIAS brick
+                </button>
+              </div>
+              <div v-if="lCmSource === 'catalog' && matchedParts().length" style="margin-top: 0.8rem">
+                <p class="section-label">Catalog parts at {{ fmtSi(design.lCmSelectedH, 'H') }}</p>
+                <table class="data" data-test="catalog-parts">
+                  <thead><tr><th>Part</th><th>Manufacturer</th><th>Family</th><th>Rated A</th><th>DCR</th></tr></thead>
+                  <tbody>
+                    <tr v-for="p in matchedParts()" :key="p.mpn">
+                      <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td><td>{{ p.family || '—' }}</td>
+                      <td>{{ p.ratedCurrentA !== null ? p.ratedCurrentA.toFixed(1) : '—' }}</td>
+                      <td>{{ p.dcrOhm !== null ? fmtSi(p.dcrOhm, 'Ω') : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
 
-      <div class="panel" v-if="ilCm && ilDm">
-        <p class="section-label">In-circuit insertion loss — solid: nominal terminations · dashed: CISPR 17 worst case (0.1 Ω/100 Ω) · dot: your requirement</p>
-        <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirements (CM green, DM blue)" y-label="dB" :height="300" data-test="il-chart" />
-        <p class="note">If the dashed worst-case curve still clears your requirement at the design frequency, termination uncertainty cannot eat the margin.</p>
-        <p class="note">Ideal-element curves ignore self-resonance, ESL and winding capacitance —
-          above a few MHz a real single-stage filter plateaus at 50–70 dB. Bind a part with a
-          measured curve (dotted) for the honest high-frequency picture; measured curves currently
-          cover Murata parts only.</p>
-        <p v-if="measured" class="note" data-test="measured-note">
-          Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
-          (complex Z, manufacturer data via the TAS catalog) — shown only over the measured frequency span.</p>
-      </div>
+            <!-- insertion loss -->
+            <template v-else-if="pane === 'il'">
+              <div v-if="ilCm && ilDm">
+                <p class="section-label">In-circuit insertion loss — solid: nominal · dashed: CISPR 17 worst case · dot: requirement</p>
+                <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirements (CM green, DM blue)" y-label="dB" :height="260" data-test="il-chart" />
+                <p class="note">If the dashed worst-case curve still clears your requirement at the design
+                  frequency, termination uncertainty cannot eat the margin. Ideal-element curves ignore
+                  self-resonance and winding capacitance — above a few MHz a real single-stage filter
+                  plateaus at 50–70 dB; bind a part with a measured curve (dotted) for the honest picture.</p>
+                <p v-if="measured" class="note" data-test="measured-note">
+                  Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
+                  (complex Z, manufacturer data via the TAS catalog) — shown only over the measured span.</p>
+              </div>
+            </template>
 
-      <div class="panel" v-if="interaction">
-        <p class="section-label">Input-filter interaction (Middlebrook)</p>
-        <div class="row">
-          <label class="field"><span>Converter min. input voltage (V)</span>
-            <input v-model.number="vInMin" type="number" @change="compute" /></label>
-          <label class="field"><span>Input power (W)</span>
-            <input v-model.number="pIn" type="number" @change="compute" /></label>
-        </div>
-        <table class="data">
-          <tbody>
-            <tr><td>Filter resonance</td><td>{{ fmtHz(interaction.resonanceHz) }}</td></tr>
-            <tr><td>Characteristic impedance R₀ (= peak output impedance <em>with the damping network fitted</em>)</td>
-              <td>{{ fmtSi(interaction.characteristicImpedanceOhm, 'Ω') }}</td></tr>
-            <tr><td>Converter input impedance V²/P</td><td>{{ fmtSi(interaction.converterInputImpedanceOhm, 'Ω') }}</td></tr>
-            <tr><td>Stability margin (assumes R<sub>d</sub>/C<sub>d</sub> below are fitted)</td>
-              <td :class="interaction.marginDb >= 12 ? 'pos' : interaction.marginDb >= 6 ? '' : 'neg'" data-test="middlebrook-margin">
-                {{ fmtDb(interaction.marginDb) }} dB
-                <span class="note">(≥ 12 dB comfortable, &lt; 6 dB add damping: R<sub>d</sub> = {{ fmtSi(interaction.dampingResistorOhm, 'Ω') }},
-                C<sub>d</sub> = {{ fmtSi(interaction.dampingCapacitorMinF, 'F') }}–{{ fmtSi(interaction.dampingCapacitorMaxF, 'F') }})</span>
-              </td></tr>
-            <tr><td class="note" colspan="2">Undamped, the LC section rings with a Q set by parasitic
-              resistances this tool does not know — the true undamped peak can be 10–50× R₀. Fit the
-              damping branch whenever the margin above is what keeps the converter stable.</td></tr>
-          </tbody>
-        </table>
-      </div>
+            <!-- sizing + safety + stability tables -->
+            <template v-else-if="pane === 'values'">
+              <p class="section-label">Common mode — choke against 2×C<sub>Y</sub></p>
+              <table class="data">
+                <tbody>
+                  <tr><td>L<sub>CM</sub> required / selected</td>
+                    <td>{{ fmtSi(design.lCmRequiredH, 'H') }} → <strong>{{ fmtSi(design.lCmSelectedH, 'H') }}</strong> per stage</td></tr>
+                  <tr><td>C<sub>Y</sub></td><td>2 × {{ fmtSi(design.cYPerLineF, 'F') }} per stage</td></tr>
+                  <tr><td>Sizing asymptote (ideal 40·n·log₁₀ — the strip chip is the verdict)</td>
+                    <td data-test="il-cm">{{ fmtDb(design.attenuationCmDb) }} dB</td></tr>
+                </tbody>
+              </table>
+              <p class="section-label" style="margin-top: 0.7rem">Differential mode — leakage against C<sub>X</sub></p>
+              <table class="data">
+                <tbody>
+                  <tr><td>L<sub>DM</sub> (leakage)</td><td>{{ fmtSi(design.lDmH, 'H') }}</td></tr>
+                  <tr><td>C<sub>X</sub> required / selected</td>
+                    <td>{{ fmtSi(design.cXRequiredF, 'F') }} → <strong>{{ fmtSi(design.cXSelectedF, 'F') }}</strong> per stage</td></tr>
+                  <tr><td>Sizing asymptote (ideal)</td><td>{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
+                </tbody>
+              </table>
+              <p class="section-label" style="margin-top: 0.7rem">Safety (worst case: V+10 %, C+20 %)</p>
+              <table class="data" v-if="design.leakageCurrentA !== undefined">
+                <tbody>
+                  <tr><td>PE touch current (single line-side Y path, IEC 60990)</td>
+                    <td :class="design.leakageCurrentA < touchLimitMa * 1e-3 ? 'pos' : 'neg'">
+                      {{ fmtSi(design.leakageCurrentA, 'A') }} vs {{ touchLimitMa }} mA tier</td></tr>
+                  <tr><td>X discharge resistor (60 V in 1 s)</td>
+                    <td>≤ {{ fmtSi(design.dischargeResistorMaxOhm, 'Ω') }} → <strong>{{ fmtSi(design.dischargeResistorOhm, 'Ω') }}</strong>
+                      ({{ fmtSi(design.dischargeResistorPowerW, 'W') }} continuous — mind standby budgets; use a series
+                      pair or an HV-rated part: single chip resistors are typically rated 150–200 V)</td></tr>
+                </tbody>
+              </table>
+              <p class="section-label" style="margin-top: 0.7rem">Input-filter interaction (Middlebrook)</p>
+              <table class="data" v-if="interaction">
+                <tbody>
+                  <tr><td>Filter resonance / R₀ (peak Z<sub>out</sub> with damping fitted)</td>
+                    <td>{{ fmtHz(interaction.resonanceHz) }} · {{ fmtSi(interaction.characteristicImpedanceOhm, 'Ω') }}</td></tr>
+                  <tr><td>Converter |Z<sub>in</sub>| = V²/P</td><td>{{ fmtSi(interaction.converterInputImpedanceOhm, 'Ω') }}</td></tr>
+                  <tr><td>Margin (the strip chip; ≥ 12 dB comfortable, &lt; 6 dB add damping)</td>
+                    <td :class="interaction.marginDb >= 12 ? 'pos' : interaction.marginDb >= 6 ? '' : 'neg'">
+                      {{ fmtDb(interaction.marginDb) }} dB
+                      <span class="note">R<sub>d</sub> = {{ fmtSi(interaction.dampingResistorOhm, 'Ω') }},
+                      C<sub>d</sub> = {{ fmtSi(interaction.dampingCapacitorMinF, 'F') }}–{{ fmtSi(interaction.dampingCapacitorMaxF, 'F') }}</span></td></tr>
+                  <tr><td class="note" colspan="2">Undamped, the LC section rings with a Q set by parasitic
+                    resistances this tool does not know — the true undamped peak can be 10–50× R₀. Fit the
+                    damping branch whenever this margin is what keeps the converter stable.</td></tr>
+                </tbody>
+              </table>
+            </template>
 
-      <div class="panel" v-if="design.leakageCurrentA !== undefined">
-        <p class="section-label">Safety checks (worst case: V+10 %, C+20 %)</p>
-        <table class="data">
-          <tbody>
-            <tr><td>PE touch current (single line-side Y path per IEC 60990 — worst case V+10 %, C+20 %)
-                <select v-model.number="touchLimitMa" style="width: auto; margin-left: 0.5em" data-test="touch-tier">
-                  <option :value="3.5">vs 3.5 mA (IEC 62368-1 Class I)</option>
-                  <option :value="0.75">vs 0.75 mA (appliance)</option>
-                  <option :value="0.5">vs 0.5 mA (medical)</option>
-                </select></td>
-              <td :class="design.leakageCurrentA < touchLimitMa * 1e-3 ? 'pos' : 'neg'" data-test="touch-verdict">
-                {{ fmtSi(design.leakageCurrentA, 'A') }}
-                {{ design.leakageCurrentA < touchLimitMa * 1e-3 ? 'passes' : 'EXCEEDS' }} {{ touchLimitMa }} mA</td></tr>
-            <tr><td>X discharge resistor (V+10 %, C+20 %)</td>
-              <td>≤ {{ fmtSi(design.dischargeResistorMaxOhm, 'Ω') }} → <strong>{{ fmtSi(design.dischargeResistorOhm, 'Ω') }}</strong>
-                ({{ fmtSi(design.dischargeResistorPowerW, 'W') }} continuous — mind no-load standby budgets,
-                and use a series pair or an HV-rated resistor: single chip parts are typically rated 150–200 V)</td></tr>
-          </tbody>
-        </table>
+            <!-- SPICE netlist -->
+            <template v-else-if="pane === 'netlist'">
+              <p class="section-label">Filter + CISPR 16 LISN — ready for Kirchhoff / ngspice / LTspice</p>
+              <label class="field"><span>Excitation deck</span>
+                <select v-model="netlistMode" data-test="netlist-mode"
+                        @change="api().then((e) => { try { netlist = e.filterSpiceNetlist(design, 'cispr16', netlistMode) } catch (deckError) { netlist = '* netlist unavailable: ' + deckError.message } })">
+                  <option value="dm">differential-mode drive (C_X path)</option>
+                  <option value="cm">common-mode drive (choke + Y caps)</option>
+                </select></label>
+              <pre class="code" data-test="netlist">{{ netlist }}</pre>
+              <div class="row" style="margin-top: 0.6rem">
+                <button class="ghost" @click="downloadNetlist">Download .cir</button>
+                <button class="ghost" @click="copyNetlist">Copy</button>
+              </div>
+            </template>
+          </div>
+        </section>
       </div>
-
-      <div class="panel">
-        <p class="section-label">SPICE export — filter + CISPR 16 LISN, ready for Kirchhoff / ngspice / LTspice</p>
-        <label class="field"><span>Excitation deck</span>
-          <select v-model="netlistMode" data-test="netlist-mode"
-                  @change="api().then((e) => { try { netlist = e.filterSpiceNetlist(design, 'cispr16', netlistMode) } catch (deckError) { netlist = '* netlist unavailable: ' + deckError.message } })">
-            <option value="dm">differential-mode drive (C_X path)</option>
-            <option value="cm">common-mode drive (choke + Y caps)</option>
-          </select></label>
-        <pre class="code" data-test="netlist">{{ netlist }}</pre>
-        <div class="row" style="margin-top: 0.6rem">
-          <button class="ghost" @click="downloadNetlist">Download .cir</button>
-          <button class="ghost" @click="copyNetlist">Copy</button>
-        </div>
-      </div>
-    </div>
-    <div v-else class="panel">
-      <p class="note">Set the requirement (or bring one over from a failed scan on the Spectrum screen) and press <em>Design filter</em>. Candidate lists take any manufacturer's catalog values; paste your preferred vendor's series to design with real parts.</p>
-    </div>
+    </main>
   </div>
 </template>

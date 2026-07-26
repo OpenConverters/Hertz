@@ -44,6 +44,10 @@ const maskRuns = () => [{
     <div>
       <div class="panel">
         <p class="section-label">Artificial network</p>
+        <p class="note" style="margin-bottom: 0.6rem">Why this screen: every conducted-emission
+          number in this tool assumes the standardized mains network (LISN/AMN) between EUT and
+          receiver. Here you see the impedance your EUT actually faces, check a real LISN against
+          the ±20 % CISPR 16-1-2 mask, and take the SPICE model for your own simulations.</p>
         <label class="field"><span>Network</span>
           <select v-model="kind" @change="refresh">
             <option value="cispr16">CISPR 16 — 50 µH / 50 Ω (mains: CISPR 32, CISPR 11)</option>

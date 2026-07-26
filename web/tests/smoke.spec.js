@@ -18,6 +18,7 @@ test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer'
   await expect(page.getByTestId('lcm')).toBeVisible()
   await expect(page.getByTestId('il-chart')).toBeVisible()
   await expect(page.getByTestId('middlebrook-margin')).toContainText('dB')
+  await page.getByTestId('pane-select-a').selectOption('netlist')
   await expect(page.getByTestId('netlist')).toContainText('.subckt LISN')
   const fsw = await page.getByTestId('fsw').inputValue()
   expect(Math.abs(parseFloat(fsw) - 300)).toBeLessThan(10)
@@ -29,8 +30,10 @@ test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('areq-cm').fill('40')
+  await page.getByTestId('cy-select').selectOption('4.7')   // the note's C_Y — auto would pick larger
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toContainText('3.3 mH')
+  await page.getByTestId('pane-select-b').selectOption('values')
   await expect(page.getByTestId('il-cm')).toContainText('40.8')
 })
 
@@ -54,14 +57,16 @@ test('filter: bind parts via the schematic and export CIAS', async ({ page }) =>
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('compute').click()
+  await page.getByTestId('pane-select-b').selectOption('bom')
   await expect(page.getByTestId('bom')).toBeVisible()
   await expect(page.getByTestId('download-cias')).toBeDisabled()
 
   for (const hotspot of ['sch-CMC1', 'sch-CX1', 'sch-CY1']) {
-    await page.getByTestId(hotspot).click()
+    await page.getByTestId(hotspot).click()   // opens CATALOG PARTS in the other pane
     await expect(page.getByTestId('part-panel')).toBeVisible()
     await page.getByTestId('bind-part').first().click()
   }
+  await page.getByTestId('pane-select-b').selectOption('bom')
   await expect(page.getByTestId('bom').locator('tbody tr td:has-text("unbound")')).toHaveCount(0)
   await expect(page.getByTestId('download-cias')).toBeEnabled()
 
@@ -77,11 +82,12 @@ test('filter: binding a curve-carrying CMC overlays measured-impedance IL', asyn
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('areq-cm').fill('15')
   await page.getByTestId('areq-dm').fill('15')
+  await page.getByTestId('cy-select').selectOption('4.7')
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('mfr-filter').selectOption('Murata')
   await page.getByTestId('min-rated').fill('0')
   await page.getByTestId('compute').click()
-  await expect(page.getByTestId('bom')).toBeVisible()
+  await expect(page.getByTestId('lcm')).toBeVisible()
   await page.getByTestId('sch-CMC1').click()
   await expect(page.getByTestId('part-panel')).toContainText('DLW32MH201XK2')
   // SILENT column: measured IL at f_design for curve parts, incl. the
@@ -89,6 +95,7 @@ test('filter: binding a curve-carrying CMC overlays measured-impedance IL', asyn
   await expect(page.getByTestId('part-panel')).toContainText('by measured curve')
   await expect(page.getByTestId('measured-il').first()).toContainText('dB', { timeout: 10_000 })
   await page.getByTestId('bind-part').first().click()
+  await page.getByTestId('pane-select-b').selectOption('il')
   await expect(page.getByTestId('measured-note')).toContainText('DLW32MH201XK2')
 })
 
@@ -140,7 +147,7 @@ test('receiver: 2-channel capture separates CM/DM and hands per-mode targets to 
   await expect(page.getByTestId('target-cm')).toContainText(/\d/)
   await page.getByTestId('design-from-modes').click()
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
-  await expect(page.getByTestId('bom')).toBeVisible()
+  await expect(page.getByTestId('lcm')).toBeVisible()
 })
 
 test('spectrum: CISPR 25 between-band points are visibly excluded, never silently passed', async ({ page }) => {
@@ -258,7 +265,7 @@ test('filter: receiver handoff sizes each mode at its own critical point (Berger
   await expect(page.getByTestId('target-cm')).toContainText(/\d/)
   await page.getByTestId('design-from-modes').click()
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
-  await expect(page.getByTestId('bom')).toBeVisible()
+  await expect(page.getByTestId('lcm')).toBeVisible()
   const note = await page.getByTestId('binding-note').textContent()
   const cmAt = Number(note.match(/CM \d+ dB @ (\d+) kHz/)[1])
   const dmAt = Number(note.match(/DM \d+ dB @ (\d+) kHz/)[1])
@@ -344,10 +351,12 @@ test('filter: an unrealizable leakage/choke pair is flagged in the verdict panel
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('dm-mode').selectOption('inductance')
-  await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs a 3.3 mH choke
+  await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs the selected choke
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('k-warning')).toContainText('Not realizable')
+  await page.getByTestId('pane-select-b').selectOption('bom')
   await expect(page.getByTestId('download-cias')).toBeDisabled()
+  await page.getByTestId('pane-select-a').selectOption('netlist')
   await expect(page.getByTestId('netlist')).toContainText('netlist unavailable')
 })
 
@@ -417,6 +426,7 @@ test('filter: a positive min rated current excludes unrated catalog parts (Berge
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
+  await page.getByTestId('cy-select').selectOption('4.7')
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('min-rated').fill('100')
   await page.getByTestId('compute').click()
