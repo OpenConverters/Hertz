@@ -849,3 +849,28 @@ test('filter: 3-phase + neutral refuses the 2-winding catalog loudly, designs fr
   await expect(page.getByTestId('netlist')).toContainText('Lcm_neut_1')
   await expect(page.getByTestId('netlist')).toContainText('Cx1_1n')   // star, phase-to-neutral
 })
+
+test('filter: voltage ratings are judged on the right basis per position (ABT #292 probe)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('topology').selectOption('3ph')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  // a 760 VAC-rated 3-phase choke on a 400 V grid: no false alarm
+  await page.getByTestId('sch-CMC1').click()
+  await expect(page.getByTestId('part-panel')).toContainText('760')
+  await page.getByTestId('bind-part').first().click()
+  // a correctly-rated Y2 cap (sees 230 V phase-to-earth, not 400): no false alarm
+  await page.getByTestId('sch-CY1').click()
+  await page.getByTestId('bind-part').first().click()
+  // an X2 cap on the delta line-to-line position: the class itself disqualifies it
+  await page.getByTestId('sch-CX1').click()
+  await expect(page.getByTestId('delta-x-voltage-note')).toContainText('line-to-line')
+  await page.getByTestId('bind-part').first().click()
+  await page.getByTestId('pane-select-b').selectOption('bom')
+  const bom = await page.getByTestId('bom').textContent()
+  expect(bom).toContain('NOT rated for it')          // the X2 on 400 V L-L
+  expect(bom.match(/NOT rated for it/g).length).toBe(3)  // all three delta caps, nothing else
+})

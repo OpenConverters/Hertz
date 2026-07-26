@@ -658,7 +658,8 @@ async function bindPart(part) {
   for (const c of filterComponents(design.value.stages, nLines.value)) {
     if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer,
       valueF: part.valueF ?? null, quantity: part.quantity ?? 1,
-      maxRatedV: Math.max(part.ratedVoltageAcV ?? 0, part.ratedVoltageDcV ?? 0) || null }
+      ratedVAcV: part.ratedVoltageAcV ?? null, ratedVDcV: part.ratedVoltageDcV ?? null,
+      safetyClass: part.safetyClass ?? null }
   }
   bindings.value = { ...bindings.value }
   await recomputeAsBuilt()
@@ -698,17 +699,37 @@ async function bindPart(part) {
 // CMCs only, by design: the caps catalog's ratedVoltageV mixes AC-class and DC
 // ratings, and comparing an X2's 305 VAC class number to the grid PEAK would
 // false-alarm on nearly every legitimate safety cap. Do not "fix" this.
+// IEC 60384-14 class ceilings: the class ITSELF caps the AC rating, so a
+// class-marked part with no explicit AC figure is still checkable.
+const SAFETY_CLASS_VAC = { X1: 500, X2: 310, Y1: 500, Y2: 300 }
 const bindingVoltageWarning = (binding, kind) => {
-  if (!binding || !binding.maxRatedV) return null
+  if (!binding) return null
   // what the position actually sees: a delta X capacitor sits line-to-line;
   // star/pair X and every Y capacitor see phase-to-earth (v_LL/sqrt(3) on
-  // 3-phase grids). A DC bus has no sqrt(2) crest.
+  // 3-phase grids).
   const vll = Number(gridVrms.value)
   const vPhase = nLines.value >= 3 ? vll / Math.sqrt(3) : vll
   const vSeen = kind === 'cx' && nLines.value === 3 ? vll : vPhase
-  const peak = topology.value === 'dc' ? vSeen : vSeen * Math.SQRT2
-  return binding.maxRatedV < peak
-    ? `rated ${binding.maxRatedV} V < ${Math.round(peak)} V peak at this position — NOT rated for it` : null
+  if (topology.value === 'dc') {
+    // DC bus, no crest factor; an AC-rated film part withstands at least its
+    // AC RMS figure as DC, so the AC rating is a conservative fallback basis
+    const rated = binding.ratedVDcV ?? binding.ratedVAcV
+    return rated != null && rated < vSeen
+      ? `rated ${rated} V < ${Math.round(vSeen)} V bus — NOT rated for it` : null
+  }
+  // AC position: compare RMS against an AC-basis rating — a DC figure is NOT
+  // an AC rating (recurring-peak/dV-dt stress), so it never silences the check
+  const acRated = binding.ratedVAcV ?? SAFETY_CLASS_VAC[binding.safetyClass] ?? null
+  if (acRated != null && acRated < vSeen) {
+    const basis = binding.ratedVAcV != null ? `rated ${acRated} VAC`
+      : `${binding.safetyClass} class (≤${acRated} VAC)`
+    return `${basis} < ${Math.round(vSeen)} V RMS at this position — NOT rated for it`
+  }
+  if (acRated == null && binding.ratedVDcV != null && binding.ratedVDcV < vSeen * Math.SQRT2) {
+    return `only a ${binding.ratedVDcV} V DC rating < ${Math.round(vSeen * Math.SQRT2)} V ` +
+      'recurring peak — verify AC capability'
+  }
+  return null
 }
 const bomRows = () => filterComponents(design.value.stages, nLines.value).map((c) => ({
   ref: c.ref,
@@ -976,6 +997,9 @@ function downloadNetlist() {
           <option :value="0.75">0.75 mA — appliance</option>
           <option :value="0.5">0.5 mA — medical</option>
         </select></label>
+      <p v-if="nLines >= 3" class="note">3-phase touch current is the conservative per-phase worst
+        case: one Y set at phase-to-earth voltage (v<sub>LL</sub>/√3). Balanced-network vector
+        cancellation is real but not credited — an unbalanced or single-faulted network loses it.</p>
       <p v-if="topology === 'dc'" class="note">DC/chassis topology: no touch-current budget and no
         discharge bleeder — C_Y is chosen by chassis-leakage and resonance practice, and the SPICE
         deck embeds the 5 µH CISPR 25 network.</p>
@@ -1105,6 +1129,12 @@ function downloadNetlist() {
                 <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">Parallel-bank rows wire n
                   identical parts in parallel: the capacitances add, the ripple current splits, and
                   the CIAS export expands the bank into n components on the same nets.</p>
+                <p v-if="kindOf(selectedRef) === 'cx' && nLines === 3" class="err" data-test="delta-x-voltage-note">
+                  Delta X capacitors sit across the full {{ gridVrms }} V line-to-line voltage — the X2
+                  class itself is rated ≤310 VAC, so NO catalogued safety cap qualifies as-is. Use
+                  line-to-line-rated film (e.g. X1/440 VAC+), a series pair, or move the design to the
+                  3-phase + N (star) topology where each X sees phase voltage; a bound X2 part is
+                  flagged in the BOM.</p>
                 <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">*Datasheet rated voltage — MIXED
                   AC and DC bases: the X2/Y2 class itself is defined for ≤310 VAC mains; values like
                   630 V are DC ratings on the same film part. Verify the AC rating on the datasheet.</p>
@@ -1312,6 +1342,12 @@ function downloadNetlist() {
       </template>
 
       <h2>Filter design</h2>
+      <p>
+        Topology: {{ topology === 'dc' ? 'DC supply (+/RTN/chassis, CISPR 25 bench)'
+          : topology === '3ph' ? '3-phase 3-wire (delta X), grid stated line-to-line'
+          : topology === '3phn' ? '3-phase + neutral (star X), grid stated line-to-line'
+          : 'single-phase L/N/PE' }}.
+      </p>
       <p>
         f<sub>design</sub> CM {{ fmtHz(design.fDesignCmHz) }} / DM {{ fmtHz(design.fDesignDmHz) }} ·
         required CM {{ fmtDb(Number(aReqCm), 0) }} dB / DM {{ fmtDb(Number(aReqDm), 0) }} dB · {{ design.stages }} stage(s).

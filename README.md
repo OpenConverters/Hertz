@@ -20,7 +20,7 @@ manufacturer's component catalog supplied as candidate lists.
 | `hertz.lisn` | 50 µH (CISPR 16) and 5 µH (CISPR 25) LISN models: EUT-side impedance vs frequency and SPICE subcircuit export. |
 | `hertz.detector` | CISPR 16-1-1 measuring-receiver emulation on sampled data: Gaussian-window STFT envelope + quasi-peak charge/discharge detector + critically damped meter (Krug & Russer, IEEE TEMC 2005). Bands A–D constants included. |
 | `hertz.separation` | Exact CM/DM separation from the two LISN line signals. Deliberately refuses magnitude-only spectra (phase is required — that is physics, not a missing feature). |
-| `hertz.filter_design` | Single-phase line-filter synthesis per Würth Elektronik's public application note ANP015: 1- and 2-stage CM+DM sizing, component rounding onto explicit candidate lists, Y-cap leakage current, X-cap discharge resistor. Validated against the app note's worked example. |
+| `hertz.filter_design` | Line-filter synthesis per Würth Elektronik's public application note ANP015, generalized over the line count: single-phase L/N, DC supply pair, 3-phase 3-wire (delta X, each pair sees 1.5·C) and 3-phase + neutral (star X). 1- and 2-stage CM+DM sizing, component rounding onto explicit candidate lists, Y-cap leakage current at phase-to-earth voltage, X-cap discharge resistor. Validated against the app note's worked example. |
 | `hertz.traces` | Spectrum-analyzer CSV ingestion with unit detection; ambiguous units raise instead of guessing. |
 
 ## Architecture
