@@ -191,6 +191,40 @@ TEST_CASE("Interior holes gated by coverage, not ratio alone (F13-1, round 13)",
     CHECK(Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), linear).empty());
 }
 
+TEST_CASE("Hole detection is local, not global (F14-1, round 14)", "[limits]") {
+    auto c25 = Hertz::cispr25_conducted_voltage(5, Hertz::Detector::QUASI_PEAK);
+    // gutted LW band: only the 150 kHz edge sample survives; detection must
+    // not depend on the sampling step 100 MHz away
+    for (double upperStep : {10e3, 120e3}) {
+        std::vector<double> freqs{150e3};
+        for (double f = 310e3; f < 30e6; f += 10e3) freqs.push_back(f);
+        for (double f = 30e6; f <= 108e6 + 1.0; f += upperStep) freqs.push_back(f);
+        auto regions = Hertz::unswept_regions(c25, freqs);
+        REQUIRE(!regions.empty());
+        CHECK(regions[0].first == Approx(150e3));
+        CHECK(regions[0].second == Approx(300e3));
+    }
+    // a spliced dense+coarse scan never flags its own density transition
+    std::vector<double> spliced;
+    for (double f = 150e3; f < 30e6; f += 1e3) spliced.push_back(f);
+    for (double f = 30e6; f <= 108e6 + 1.0; f += 120e3) spliced.push_back(f);
+    CHECK(Hertz::unswept_regions(c25, spliced).empty());
+    // two edge samples do not measure a band
+    std::vector<double> edges;
+    for (auto [f0, f1] : {std::pair{150e3, 300e3}, {530e3, 1.8e6}, {5.9e6, 6.2e6}}) {
+        for (int i = 0; i <= 199; ++i) edges.push_back(f0 * std::pow(f1 / f0, i / 199.0));
+    }
+    edges.push_back(26e6);
+    edges.push_back(28e6);
+    for (auto [f0, f1] : {std::pair{30e6, 54e6}, {68e6, 108e6}}) {
+        for (int i = 0; i <= 199; ++i) edges.push_back(f0 * std::pow(f1 / f0, i / 199.0));
+    }
+    auto swallowed = Hertz::unswept_regions(c25, edges);
+    REQUIRE(swallowed.size() == 1);
+    CHECK(swallowed[0].first == Approx(26e6));
+    CHECK(swallowed[0].second == Approx(28e6));
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);

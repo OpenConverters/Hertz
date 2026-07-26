@@ -105,15 +105,21 @@ class LimitLine {
 // bill. Contiguous regions across touching segments are merged for reporting.
 // Interior-hole criteria. A consecutive-sample gap is a HOLE (not sampling
 // density) when EITHER it exceeds an absolute factor no real sweep uses
-// (0.35 dec = 2.24x), OR it is grossly out of line with the scan's OWN
-// spacing in BOTH domains: > 6x the 90th-percentile gap in log-frequency
-// (with a 0.05 dec floor) AND in linear frequency. A log sweep is uniform in
-// log, a linear export is uniform in Hz — a gap that is an outlier against
-// both is a jump, not density. A ratio alone let a 16 MHz hole at 2.23x pass
-// silently (round 13).
+// (0.35 dec = 2.24x), OR it is grossly out of line with the scan's LOCAL
+// spacing — > 6x the 90th-percentile of the neighboring gaps on EACH
+// available side, in BOTH log-frequency (0.05 dec floor) and linear
+// frequency. Local, not global: a coarse 120 kHz segment above 30 MHz must
+// not veto detection of a gutted band at 200 kHz (round 14); per-side, so a
+// legitimate density CHANGE (dense sweep + coarse sweep spliced) never flags
+// its own transition; both domains, so log sweeps and linear exports are
+// each judged against their own uniformity. Independently, a gap that
+// swallows >= 90% of a regulated segment's width is a hole regardless of
+// any density argument (two edge samples do not measure a band).
 inline constexpr double UNSWEPT_GAP_DECADES = 0.35;
 inline constexpr double UNSWEPT_RELATIVE_FACTOR = 6.0;
 inline constexpr double UNSWEPT_RELATIVE_FLOOR_DECADES = 0.05;
+inline constexpr size_t UNSWEPT_LOCAL_WINDOW = 12;
+inline constexpr double UNSWEPT_SEGMENT_SWALLOW = 0.9;
 
 // CISPR 16-1-1 resolution bandwidth of the band containing f — an unswept
 // region narrower than the receiver's own RBW cannot even be resolved as
@@ -169,41 +175,49 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
     std::sort(freqsHz.begin(), freqsHz.end());
     auto regions = unswept_regions(line, freqsHz.front(), freqsHz.back());
 
-    auto percentile90 = [](std::vector<double> values) {
-        if (values.empty()) {
-            return 0.0;
-        }
-        std::sort(values.begin(), values.end());
-        return values[std::min(values.size() - 1, (values.size() * 9) / 10)];
-    };
     std::vector<double> logGaps;
     std::vector<double> linGaps;
     for (size_t i = 1; i < freqsHz.size(); ++i) {
-        if (freqsHz[i - 1] > 0.0) {
-            logGaps.push_back(std::log10(freqsHz[i] / freqsHz[i - 1]));
-            linGaps.push_back(freqsHz[i] - freqsHz[i - 1]);
-        }
+        logGaps.push_back(freqsHz[i - 1] > 0.0 ? std::log10(freqsHz[i] / freqsHz[i - 1]) : 0.0);
+        linGaps.push_back(freqsHz[i] - freqsHz[i - 1]);
     }
-    double logP90 = percentile90(logGaps);
-    double linP90 = percentile90(linGaps);
+    auto percentile90 = [](std::vector<double> values) {
+        std::sort(values.begin(), values.end());
+        return values[std::min(values.size() - 1, (values.size() * 9) / 10)];
+    };
+    // outlier against ONE side's window; an empty side cannot veto
+    auto outlierVsSide = [&](size_t gapIndex, double gapLog, double gapLin, bool preceding) {
+        size_t begin = preceding ? (gapIndex >= UNSWEPT_LOCAL_WINDOW ? gapIndex - UNSWEPT_LOCAL_WINDOW : 0)
+                                 : gapIndex + 1;
+        size_t end = preceding ? gapIndex : std::min(logGaps.size(), gapIndex + 1 + UNSWEPT_LOCAL_WINDOW);
+        if (begin >= end) {
+            return true;
+        }
+        std::vector<double> logWindow(logGaps.begin() + begin, logGaps.begin() + end);
+        std::vector<double> linWindow(linGaps.begin() + begin, linGaps.begin() + end);
+        return gapLog > UNSWEPT_RELATIVE_FACTOR * percentile90(std::move(logWindow)) &&
+               gapLin > UNSWEPT_RELATIVE_FACTOR * percentile90(std::move(linWindow));
+    };
     for (size_t i = 1; i < freqsHz.size(); ++i) {
         double fa = freqsHz[i - 1];
         double fb = freqsHz[i];
         if (fa <= 0.0) {
             continue;
         }
-        double gap = std::log10(fb / fa);
-        bool hole = gap > UNSWEPT_GAP_DECADES ||
-                    (gap > UNSWEPT_RELATIVE_FLOOR_DECADES &&
-                     gap > UNSWEPT_RELATIVE_FACTOR * logP90 &&
-                     fb - fa > UNSWEPT_RELATIVE_FACTOR * linP90);
-        if (!hole) {
-            continue;
-        }
+        double gapLog = std::log10(fb / fa);
+        bool hole = gapLog > UNSWEPT_GAP_DECADES ||
+                    (gapLog > UNSWEPT_RELATIVE_FLOOR_DECADES &&
+                     outlierVsSide(i - 1, gapLog, fb - fa, true) &&
+                     outlierVsSide(i - 1, gapLog, fb - fa, false));
         for (const auto& segment : line.segments()) {
             double f0 = std::max(fa, segment.fStartHz);
             double f1 = std::min(fb, segment.fStopHz);
-            if (f0 < f1) {
+            if (f0 >= f1) {
+                continue;
+            }
+            bool swallowsSegment =
+                f1 - f0 >= UNSWEPT_SEGMENT_SWALLOW * (segment.fStopHz - segment.fStartHz);
+            if (hole || swallowsSegment) {
                 regions.emplace_back(f0, f1);
             }
         }

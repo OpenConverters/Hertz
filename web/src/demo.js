@@ -3,7 +3,12 @@
 export function demoScanCsv() {
   const lines = ['Frequency [MHz];Level [dBµV]']
   const fSw = 300e3
-  for (let f = 150e3; f <= 30e6; f *= 1.02) {
+  // the multiplicative loop must END exactly at 30 MHz or the demo trips its
+  // own band-coverage note with a 350 kHz tail shortfall
+  const points = []
+  for (let f = 150e3; f < 30e6; f *= 1.02) points.push(f)
+  points.push(30e6)
+  for (const f of points) {
     let level = 28 - 6 * Math.log10(f / 150e3)
     for (let n = 1; n <= 60; n += 1) {
       const fh = n * fSw

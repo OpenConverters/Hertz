@@ -158,6 +158,29 @@ def test_interior_holes_are_gated_by_coverage_not_ratio_alone():
         CISPR32_CLASS_B_MAINS_QP, list(np.arange(150e3, 30e6 + 1, 50e3))) == []
 
 
+def test_hole_detection_is_local_not_global():
+    # F14-1 (round 14): the SAME gutted LW band (only the 150 kHz edge sample
+    # survives; next sample 310 kHz) must be reported no matter how coarse the
+    # sampling is 100 MHz away — Berger's A/B acceptance pair.
+    c25 = cispr25_conducted_voltage(5, "quasi_peak")
+    below_30 = [150e3] + list(np.arange(310e3, 30e6, 10e3))
+    for upper_step in (10e3, 120e3):
+        freqs = below_30 + list(np.arange(30e6, 108e6 + 1, upper_step))
+        regions = unswept_regions_sampled(c25, freqs)
+        assert regions[0] == pytest.approx((150e3, 300e3)), f"step {upper_step}"
+    # a spliced dense+coarse scan never flags its own density transition
+    spliced = list(np.arange(150e3, 30e6, 1e3)) + list(np.arange(30e6, 108e6 + 1, 120e3))
+    assert unswept_regions_sampled(c25, spliced) == []
+    # two edge samples do not measure a band: CB with only 26 and 28 MHz
+    # sampled is swallowed regardless of any density argument
+    dense_elsewhere = (list(np.geomspace(150e3, 300e3, 200)) +
+                       list(np.geomspace(530e3, 1.8e6, 200)) +
+                       list(np.geomspace(5.9e6, 6.2e6, 200)) + [26e6, 28e6] +
+                       list(np.geomspace(30e6, 54e6, 200)) +
+                       list(np.geomspace(68e6, 108e6, 200)))
+    assert unswept_regions_sampled(c25, dense_elsewhere) == [pytest.approx((26e6, 28e6))]
+
+
 def test_lower_limit_applies_at_segment_boundary():
     # F9-1 (round 9), CISPR transition rule: at exactly 500 kHz Class A is 73
     # dBuV, not 79; the vectorized path must agree with the scalar one.
