@@ -278,3 +278,23 @@ pre.code {
   .fpane-grid > * { min-height: 420px; }
   .workspace-empty { min-height: 300px; }
 }
+
+/* input-rail accordion (KH pattern: one stage open at a time) + template picker */
+.rail-head .example-select {
+  width: 100%; margin-top: 0.45rem; background: var(--bg-deep); color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 4px; font-family: var(--mono);
+  font-size: 0.75rem; padding: 0.3rem 0.5rem;
+}
+.acc-head {
+  width: 100%; display: block; text-align: left; margin: 0.7rem 0 0; padding: 0.45rem 0.6rem;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel));
+  border: 1px solid var(--line); border-radius: 5px;
+  color: var(--ink-dim); font-family: var(--mono); font-size: 0.74rem;
+  letter-spacing: 0.16em; cursor: pointer; transition: color 0.2s, border-color 0.2s;
+}
+.acc-head:hover { color: var(--phos); border-color: var(--phos-deep); }
+.acc-head.open { color: var(--phos); border-color: var(--phos-deep); border-radius: 5px 5px 0 0; }
+.acc-body {
+  border: 1px solid var(--line); border-top: none; border-radius: 0 0 5px 5px;
+  padding: 0.55rem 0.6rem 0.6rem;
+}

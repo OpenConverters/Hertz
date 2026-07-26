@@ -10,7 +10,7 @@
 // every electrical junction carries a dot; the L-side Y capacitor HOPS the
 // neutral rail (no-connection arc) instead of ambiguously crossing it.
 import { computed } from 'vue'
-import { filterComponents } from '../ciasFilter.js'
+import { filterComponents, filterNets } from '../ciasFilter.js'
 
 const props = defineProps({
   stages: { type: Number, required: true },
@@ -31,8 +31,78 @@ const yCore2 = 134
 const yCapMid = (yLine + yNeutral) / 2   // X-cap plates centered in the span
 const yCyPlates = 214                    // both Y caps side by side between N and PE
 
-const width = computed(() => 150 + props.stages * STAGE_W + 90)
+const svgWidth = (stages) => 150 + stages * STAGE_W + 90
+const width = computed(() => svgWidth(props.stages))
 const components = computed(() => filterComponents(props.stages))
+
+// ── KH-style render verification ─────────────────────────────────────────────
+// Values and components come from the CIAS truth (ciasFilter.js); only the
+// GEOMETRY is local. To make drift impossible instead of merely unlikely, the
+// drawn geometry's connectivity is EXTRACTED (pins + ports unioned along the
+// rail segments actually drawn) and compared against filterNets() on every
+// render — a mismatch shows an error instead of a lying schematic.
+const railSegments = (stages) => {
+  const segs = [
+    [[30, yLine], [xCmc(1), yLine]],
+    [[30, yNeutral], [xCmc(1), yNeutral]],
+    [[30, yPe], [svgWidth(stages) - 40, yPe]],
+  ]
+  for (let s = 1; s <= stages; s += 1) {
+    const endX = s === stages ? svgWidth(stages) - 40 : xCmc(s + 1)
+    segs.push([[xCmc(s) + 60, yLine], [endX, yLine]])
+    segs.push([[xCmc(s) + 60, yNeutral], [endX, yNeutral]])
+  }
+  return segs
+}
+const drawnEndpoints = (stages) => {
+  const pts = [
+    { key: 'port:line_in', x: 30, y: yLine },
+    { key: 'port:neutral_in', x: 30, y: yNeutral },
+    { key: 'port:pe', x: 30, y: yPe },
+    { key: 'port:line_out', x: svgWidth(stages) - 40, y: yLine },
+    { key: 'port:neutral_out', x: svgWidth(stages) - 40, y: yNeutral },
+  ]
+  for (let s = 1; s <= stages; s += 1) {
+    pts.push(
+      { key: `CMC${s}|P1`, x: xCmc(s), y: yLine }, { key: `CMC${s}|P2`, x: xCmc(s) + 60, y: yLine },
+      { key: `CMC${s}|S1`, x: xCmc(s), y: yNeutral }, { key: `CMC${s}|S2`, x: xCmc(s) + 60, y: yNeutral },
+      { key: `C_X${s}|1`, x: xCx(s), y: yLine }, { key: `C_X${s}|2`, x: xCx(s), y: yNeutral },
+      { key: `C_YL${s}|1`, x: xCyL(s), y: yLine }, { key: `C_YL${s}|2`, x: xCyL(s), y: yPe },
+      { key: `C_YN${s}|1`, x: xCyN(s), y: yNeutral }, { key: `C_YN${s}|2`, x: xCyN(s), y: yPe },
+    )
+  }
+  return pts
+}
+const schError = computed(() => {
+  const stages = props.stages
+  const pts = drawnEndpoints(stages)
+  const segs = railSegments(stages)
+  // union endpoints that lie on the same drawn rail segment
+  const parent = pts.map((_, i) => i)
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])))
+  const onSeg = (p, [[x1, y1], [x2, y2]]) => p.y === y1 && p.y === y2 &&
+    p.x >= Math.min(x1, x2) && p.x <= Math.max(x1, x2)
+  for (const seg of segs) {
+    let first = -1
+    pts.forEach((p, i) => {
+      if (!onSeg(p, seg)) return
+      if (first === -1) first = i
+      else parent[find(i)] = find(first)
+    })
+  }
+  const groups = new Map()
+  pts.forEach((p, i) => {
+    const root = find(i)
+    if (!groups.has(root)) groups.set(root, [])
+    groups.get(root).push(p.key)
+  })
+  const canonical = (sets) => sets.map((set) => [...set].sort().join(',')).sort().join(';')
+  const drawn = canonical([...groups.values()])
+  const truth = canonical(filterNets(stages).map((net) => net.endpoints.map(
+    (e) => e.port ? `port:${e.port}` : `${e.component}|${e.pin}`)))
+  return drawn === truth ? null
+    : `schematic geometry ≠ CIAS netlist for ${stages} stage(s) — drawing refused`
+})
 
 // per-stage x anchors
 const xCmc = (s) => 120 + (s - 1) * STAGE_W
@@ -52,7 +122,8 @@ const cls = (ref) => ({
 
 <template>
   <div class="screen sch-fill">
-    <svg :viewBox="`0 0 ${width} 300`" style="width: 100%; height: 100%; display: block"
+    <div v-if="schError" class="err" data-test="sch-error" style="align-self: center; margin: auto">{{ schError }}</div>
+    <svg v-else :viewBox="`0 0 ${width} 300`" style="width: 100%; height: 100%; display: block"
          preserveAspectRatio="xMidYMid meet" role="img" aria-label="Line filter schematic">
       <!-- rails -->
       <g stroke="var(--ink-dim)" stroke-width="1.6" fill="none">

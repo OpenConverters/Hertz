@@ -30,6 +30,7 @@ test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('areq-cm').fill('40')
+  await page.getByTestId('sec-comp').click()
   await page.getByTestId('cy-select').selectOption('4.7')   // the note's C_Y — auto would pick larger
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toContainText('3.3 mH')
@@ -82,6 +83,7 @@ test('filter: binding a curve-carrying CMC overlays measured-impedance IL', asyn
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('areq-cm').fill('15')
   await page.getByTestId('areq-dm').fill('15')
+  await page.getByTestId('sec-comp').click()
   await page.getByTestId('cy-select').selectOption('4.7')
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('mfr-filter').selectOption('Murata')
@@ -339,6 +341,7 @@ test('filter: catalog escalation reaches a passing part in one jump (Berger roun
   await page.getByTestId('fsw').fill('2000')
   await page.getByTestId('areq-cm').fill('26')
   await page.getByTestId('areq-dm').fill('10')
+  await page.getByTestId('sec-comp').click()
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('min-rated').fill('0')
   await page.getByTestId('compute').click()
@@ -350,6 +353,7 @@ test('filter: an unrealizable leakage/choke pair is flagged in the verdict panel
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
+  await page.getByTestId('sec-comp').click()
   await page.getByTestId('dm-mode').selectOption('inductance')
   await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs the selected choke
   await page.getByTestId('compute').click()
@@ -426,6 +430,7 @@ test('filter: a positive min rated current excludes unrated catalog parts (Berge
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
+  await page.getByTestId('sec-comp').click()
   await page.getByTestId('cy-select').selectOption('4.7')
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('min-rated').fill('100')
@@ -513,4 +518,20 @@ test('spectrum: an entirely skipped CISPR 25 band is named NOT SWEPT (Berger rou
   })
   await expect(page.getByTestId('verdict')).toHaveText('PASS')
   await expect(page.getByTestId('unswept-note')).toContainText('26 MHz–28 MHz')
+})
+
+test('filter: the ANP015 template reproduces the note and the schematic passes CIAS verification', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('example-select').selectOption('anp015')
+  await expect(page.getByTestId('lcm')).toContainText('3.3 mH')   // the note's printed result
+  await expect(page.getByTestId('example-note')).toContainText('ANP015')
+  // the schematic rendered means the geometry-extracted netlist matched filterNets()
+  await expect(page.getByTestId('sch-CMC1')).toBeVisible()
+  await expect(page.getByTestId('sch-error')).toHaveCount(0)
+  // 2-stage template: re-verification against the 2-stage CIAS netlist
+  await page.getByTestId('example-select').selectOption('drive16')
+  await expect(page.getByTestId('sch-CMC2')).toBeVisible()
+  await expect(page.getByTestId('sch-error')).toHaveCount(0)
 })
