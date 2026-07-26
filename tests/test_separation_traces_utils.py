@@ -83,3 +83,13 @@ def test_read_csv_ambiguous_units_raise(tmp_path):
         read_spectrum_csv(path)
     freqs, _ = read_spectrum_csv(path, freq_unit="MHz", level_unit="dBuV")
     assert freqs[0] == pytest.approx(150e3)
+
+
+def test_stated_header_unit_beats_override(tmp_path):
+    # R-1 at the LIBRARY level: a header stating dBm must not be clobbered by a
+    # dBuV override (was a 107 dB error for direct API consumers).
+    path = tmp_path / "trace.csv"
+    path.write_text("Frequency,Level (dBm)\n0.2,-10\n0.5,-10\n", encoding="utf-8")
+    freqs, levels = read_spectrum_csv(path, freq_unit="MHz", level_unit="dBuV")
+    assert levels[0] == pytest.approx(96.99, abs=0.01)  # dBm honored, not dBuV
+    assert freqs[0] == pytest.approx(200e3)             # override filled the silent axis

@@ -84,8 +84,10 @@ def read_spectrum_csv(path, freq_unit=None, level_unit=None, z0_ohm=50.0):
 
     file_freq_unit = _find_unit(header_text, tuple(_FREQ_UNITS), bool(freq_unit))
     file_level_unit = _find_unit(header_text, _LEVEL_UNITS, bool(level_unit))
-    freq_unit = (freq_unit or file_freq_unit or "").lower()
-    level_unit = (level_unit or file_level_unit or "").lower()
+    # R-1 contract, enforced in the library and not only in GUIs: a unit the
+    # header STATES always wins; the override only fills a silent/ambiguous axis.
+    freq_unit = (file_freq_unit or freq_unit or "").lower()
+    level_unit = (file_level_unit or level_unit or "").lower()
     if level_unit in ("dbµv", "dbμv"):
         level_unit = "dbuv"
     if freq_unit not in _FREQ_UNITS:

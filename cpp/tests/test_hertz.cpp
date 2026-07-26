@@ -181,6 +181,13 @@ TEST_CASE("CSV dBm conversion and sorting", "[traces]") {
     CHECK(trace.levelsDbuv[0] == Approx(46.99).margin(0.01));
 }
 
+TEST_CASE("CSV stated header unit beats override (R-1 in the library)", "[traces]") {
+    auto trace = Hertz::parse_spectrum_csv("Frequency,Level (dBm)\n0.2,-10\n0.5,-10\n",
+                                           "MHz", "dBuV");
+    CHECK(trace.levelsDbuv[0] == Approx(96.99).margin(0.01));  // dBm honored
+    CHECK(trace.frequenciesHz[0] == Approx(200e3));            // override filled the gap
+}
+
 TEST_CASE("CSV ambiguous units throw, explicit units work", "[traces]") {
     std::string content = "col1,col2\n0.15,62.1\n0.5,55.0\n";
     CHECK_THROWS_AS(Hertz::parse_spectrum_csv(content), Hertz::TraceFormatError);

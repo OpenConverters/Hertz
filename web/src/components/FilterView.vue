@@ -31,6 +31,29 @@ const ilCm = ref(null)
 const ilDm = ref(null)
 const worstCaseAt = ref(null)   // {cm: {standard, worst}, dm: {...}} at f_design
 const escalated = ref(false)    // selector had to go beyond the asymptote sizing
+const bindingSets = ref(null)   // receiver handoff: {cm: [[f,A]...], dm: [[f,A]...]}
+const bindingNote = ref('')
+
+// Reduce the binding sets to the (f*, A*) whose f/10^(A/(40 n)) is the global
+// minimum — the designer's own cutoff formula then meets EVERY binding point.
+function deriveFromBindings() {
+  const n = Number(stages.value)
+  const all = [...(bindingSets.value.cm ?? []), ...(bindingSets.value.dm ?? [])]
+  if (!all.length) return
+  let best = all[0]
+  for (const point of all) {
+    if (point[0] / 10 ** (point[1] / (40 * n)) < best[0] / 10 ** (best[1] / (40 * n))) best = point
+  }
+  fSwKhz.value = best[0] / 1e3
+  aReqCm.value = Math.ceil(best[1])
+  aReqDm.value = Math.ceil(best[1])
+  bindingNote.value = `sized by the min-f_co rule over ${all.length} binding points ` +
+    `(critical: ${Math.ceil(best[1])} dB @ ${(best[0] / 1e3).toFixed(0)} kHz, ${n}-stage)`
+}
+
+watch(stages, () => {
+  if (bindingSets.value) { deriveFromBindings(); compute() }
+})
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
 const pIn = ref(25)
@@ -61,9 +84,14 @@ onMounted(async () => {
     if (response.ok) capsCatalog.value = await response.json()
   } catch { /* caps panel shows its own unavailable state */ }
   if (store.handoff) {
-    aReqCm.value = store.handoff.aReqCmDb ?? store.handoff.aReqDb
-    aReqDm.value = store.handoff.aReqDmDb ?? store.handoff.aReqDb
-    if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
+    if (store.handoff.binding) {
+      bindingSets.value = store.handoff.binding
+      deriveFromBindings()
+    } else {
+      aReqCm.value = store.handoff.aReqCmDb ?? store.handoff.aReqDb
+      aReqDm.value = store.handoff.aReqDmDb ?? store.handoff.aReqDb
+      if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
+    }
     store.handoff = null
     compute()
   }
@@ -185,14 +213,17 @@ async function compute() {
         stages: d.stages, referenceImpedanceOhm: 25, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
         stages: d.stages, referenceImpedanceOhm: 100, ...span })
-      const at = (il) => {
-        let nearest = 0
-        for (let k = 1; k < il.frequenciesHz.length; k += 1) {
-          if (Math.abs(il.frequenciesHz[k] - d.fDesignHz) < Math.abs(il.frequenciesHz[nearest] - d.fDesignHz)) nearest = k
-        }
-        return { standard: il.standardDb[nearest], worst: il.worstCaseDb[nearest] }
+      // the chip is a hard pass/fail input: evaluate it AT f_design via a
+      // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off)
+      const exactAt = (inductanceH, capacitanceF, refZ) => {
+        const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: d.stages,
+          referenceImpedanceOhm: refZ, fMinHz: d.fDesignHz * 0.9995, fMaxHz: d.fDesignHz * 1.0005,
+          pointsPerDecade: 20000 })
+        const mid = Math.floor(il.frequenciesHz.length / 2)
+        return { standard: il.standardDb[mid], worst: il.worstCaseDb[mid] }
       }
-      return { d, cm, dm, at: { cm: at(cm), dm: at(dm) } }
+      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25),
+                                dm: exactAt(d.lDmH, d.cXSelectedF, 100) } }
     }
     let attempt = evaluate(params)
     for (let guard = 0; guard < 8; guard += 1) {
@@ -378,6 +409,10 @@ function downloadCias() {
   URL.revokeObjectURL(a.href)
 }
 
+function copyNetlist() {
+  navigator.clipboard.writeText(netlist.value)
+}
+
 function downloadNetlist() {
   const blob = new Blob([netlist.value], { type: 'text/plain' })
   const a = document.createElement('a')
@@ -406,6 +441,7 @@ function downloadNetlist() {
             <input v-model.number="aReqDm" type="number" data-test="areq-dm" /></label>
         </div>
         <p class="note">Below 150 kHz the design moves to the first harmonic inside the measured band, as ANP015 prescribes.</p>
+        <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
       </div>
 
       <div class="panel">
@@ -652,7 +688,7 @@ function downloadNetlist() {
         <pre class="code" data-test="netlist">{{ netlist }}</pre>
         <div class="row" style="margin-top: 0.6rem">
           <button class="ghost" @click="downloadNetlist">Download .cir</button>
-          <button class="ghost" @click="navigator.clipboard.writeText(netlist)">Copy</button>
+          <button class="ghost" @click="copyNetlist">Copy</button>
         </div>
       </div>
     </div>

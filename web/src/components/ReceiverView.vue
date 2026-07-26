@@ -74,13 +74,18 @@ async function computeTargets() {
       const analysis = engine.limitAnalysis(targetStandard.value, 'quasi_peak', freqs, levels, marginBufferDb)
       // lowest frequency where the requirement binds: sizing a low-pass there
       // with the MAX requirement guarantees every higher frequency too
-      let lowestBinding = null
+      // every binding point (margin < buffer) with ITS OWN local requirement —
+      // the designer reduces the whole set with the min-f_co rule; pairing one
+      // frequency with a requirement measured elsewhere over- or under-designs
+      const binding = []
       for (let i = 0; i < freqs.length; i += 1) {
         const margin = analysis.marginsDb[i]
-        if (margin !== null && margin < marginBufferDb) { lowestBinding = freqs[i]; break }
+        if (margin !== null && margin < marginBufferDb) {
+          binding.push([freqs[i], marginBufferDb - margin])
+        }
       }
       return { required: Math.max(0, Math.ceil(analysis.requiredAttenuationDb)),
-               worst: analysis.worst, lowestBinding }
+               worst: analysis.worst, binding }
     }
     const jL = judge(lineL, 10), jN = judge(lineN, 10)
     // Per-mode targets carry a 6 dB in-phase summation allowance on top of the
@@ -92,9 +97,7 @@ async function computeTargets() {
       aReqDm: jDm.required,
       lineL: jL.worst, lineN: jN.worst,
       lineRequired: Math.max(jL.required, jN.required),
-      designFreq: [jL.lowestBinding, jN.lowestBinding].filter((f) => f !== null)
-        .reduce((a, b) => Math.min(a, b), Infinity) === Infinity ? null
-        : Math.min(...[jL.lowestBinding, jN.lowestBinding].filter((f) => f !== null)),
+      binding: { cm: jCm.binding, dm: jDm.binding },
     }
     // never hand over per-mode targets that jointly under-shoot the line requirement
     if (targets.value.aReqCm + targets.value.aReqDm < targets.value.lineRequired) {
@@ -107,12 +110,12 @@ async function computeTargets() {
 }
 
 function designFromModes() {
-  // Size the low-pass at the LOWEST frequency where the requirement binds, with
-  // the max requirement — that guarantees every higher frequency as well. Using
-  // the worst offender's frequency instead would leave lower-frequency
-  // violations untreated (a 20 MHz offender does not size a 300 kHz problem).
-  store.handoff = { aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm,
-                    fSwHz: targets.value.designFreq }
+  // Hand over the full binding sets: the designer reduces them with
+  // f_co = min_i(f_i / 10^(A_i/(40 n))) for ITS stage count — the only
+  // reduction that guarantees every binding frequency without pairing one
+  // frequency with a requirement measured at another.
+  store.handoff = { binding: targets.value.binding,
+                    aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm }
   store.mode = 'filter'
 }
 

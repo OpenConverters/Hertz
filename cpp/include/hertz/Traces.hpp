@@ -196,8 +196,11 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
     auto fileLevelUnit = detail::find_one_unit(headerTokens, {"dbuv", "dbm"}, "level",
                                                levelUnit.has_value());
 
-    std::string freq = detail::normalize(freqUnit.value_or(fileFreqUnit.value_or("")));
-    std::string level = detail::normalize(levelUnit.value_or(fileLevelUnit.value_or("")));
+    // R-1 contract, enforced HERE and not only in callers: a unit the header
+    // STATES always wins; a passed override only fills an axis the header left
+    // silent (or an ambiguous header that find_one_unit declined to decide).
+    std::string freq = detail::normalize(fileFreqUnit.value_or(freqUnit.value_or("")));
+    std::string level = detail::normalize(fileLevelUnit.value_or(levelUnit.value_or("")));
 
     double freqScale;
     if (freq == "hz") {

@@ -49,20 +49,27 @@ async function parseAll() {
       // only fill an axis the header left silent. Trying (none), (freq only),
       // (level only), (both) in order guarantees a stated dBm header can never
       // be clobbered into dBuV by the level dropdown.
-      const attempts = [['', ''], [freqUnit.value, ''], ['', levelUnit.value],
-                        [freqUnit.value, levelUnit.value]]
-      let trace = null, lastError = null, attemptUsed = -1
-      for (let a = 0; a < attempts.length; a += 1) {
+      const attempts = []
+      const seen = new Set()
+      for (const pair of [['', ''], [freqUnit.value, ''], ['', levelUnit.value],
+                          [freqUnit.value, levelUnit.value]]) {
+        const key = pair.join('|')
+        if (!seen.has(key)) { seen.add(key); attempts.push(pair) }
+      }
+      let trace = null, lastError = null, usedFu = '', usedLu = ''
+      for (const [fu, lu] of attempts) {
         try {
-          trace = engine.parseSpectrumCsv(text, attempts[a][0], attempts[a][1])
-          attemptUsed = a
+          trace = engine.parseSpectrumCsv(text, fu, lu)
+          usedFu = fu
+          usedLu = lu
           break
         } catch (attemptError) {
           lastError = attemptError
         }
       }
       if (trace) {
-        const overrideIgnored = (freqUnit.value || levelUnit.value) && attemptUsed < 3
+        // per axis: a set selector that the successful parse did not need
+        const overrideIgnored = Boolean((freqUnit.value && !usedFu) || (levelUnit.value && !usedLu))
         parsed.push({ name, ...trace, analysis: null, uncovered: false, overrideIgnored })
       } else {
         problems.push(`${name}: ${lastError.message}`)

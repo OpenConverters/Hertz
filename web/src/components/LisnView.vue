@@ -8,6 +8,10 @@ const kind = ref('cispr16')
 const data = ref(null)
 const error = ref('')
 
+function copySubckt() {
+  navigator.clipboard.writeText(data.value.subckt)
+}
+
 async function refresh() {
   error.value = ''
   try {
@@ -56,7 +60,7 @@ const maskRuns = () => [{
       <div v-if="data" class="panel">
         <p class="section-label">SPICE subcircuit</p>
         <pre class="code" data-test="subckt">{{ data.subckt }}</pre>
-        <button class="ghost" @click="navigator.clipboard.writeText(data.subckt)">Copy</button>
+        <button class="ghost" @click="copySubckt">Copy</button>
       </div>
       <div v-if="error" class="err">{{ error }}</div>
     </div>
