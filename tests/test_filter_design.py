@@ -176,3 +176,17 @@ def test_three_phase_y_bank_and_delta_x_factor():
     assert d4.c_x_required_f == pytest.approx(d2.c_x_required_f)
     with pytest.raises(ValueError):
         design(5)
+
+
+def test_choke_selection_respects_the_leakage_realizability_floor():
+    import hertz.filter_design as fd
+
+    d = fd.design_line_filter(150e3, 3.0, 40.0, 33e-9, 14.6e-6, 1,
+                              [91e-9, 1e-6, 10e-6, 100e-6, 1e-3], [1.0],
+                              f_design_cm_hz=15e6)
+    assert d.l_cm_required_h < 1e-6
+    assert d.l_cm_selected_h == 10e-6            # smallest candidate above l_dm/2
+    assert d.l_cm_floor_from_leakage
+    assert 0.0 < 1.0 - d.l_dm_h / (2.0 * d.l_cm_selected_h) < 1.0
+    normal = fd.design_line_filter(150e3, 40.0, 40.0, 4.7e-9, 14.6e-6, 1, [20e-3], [1.0])
+    assert not normal.l_cm_floor_from_leakage

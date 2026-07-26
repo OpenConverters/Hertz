@@ -118,6 +118,7 @@ struct LineFilterDesign {
     double attenuationDmDb;
     int nLines;
     double cXDmFactor;
+    bool lCmFloorFromLeakage;
 };
 
 // Full ANP015 sizing pass. cYPerLineF: the chosen Y capacitor per line (bounded
@@ -154,15 +155,30 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
 
     double cYg = nLines * cYPerLineF;
     double lCmRequired = cm_inductance(fCutoffCm, cYg);
+    // Realizability floor: the selected choke must be able to CARRY the DM
+    // (leakage) inductance the DM design assumes — a coupled choke cannot leak
+    // more than 2·L_CM (K = 1 − L_dm/(2L) must stay in (0,1)). A high-frequency
+    // CM requirement can ask for mere nanohenries; the leakage then governs the
+    // selection, and the caller is told so via lCmFloorFromLeakage.
+    double lCmFloor = lDmH / 2.0 * 1.01;
+    bool floorFromLeakage = lCmFloor > lCmRequired;
     double lCmSelected;
     try {
-        lCmSelected = round_up_to(lCmRequired, lCmCandidates);
+        lCmSelected = round_up_to(std::max(lCmRequired, lCmFloor), lCmCandidates);
     } catch (const std::invalid_argument&) {
-        char msg[160];
-        std::snprintf(msg, sizeof(msg),
-                      "no CM-choke candidate >= the required %.3g mH — add a larger part, raise "
-                      "C_Y, relax the requirement, or loosen the catalog filters",
-                      lCmRequired * 1e3);
+        char msg[240];
+        if (floorFromLeakage) {
+            std::snprintf(msg, sizeof(msg),
+                          "no CM-choke candidate >= %.3g uH — the choke must carry the assumed DM "
+                          "leakage (L_CM > L_dm/2 = %.3g uH); enter the real leakage of a smaller "
+                          "part, or add a larger part",
+                          std::max(lCmRequired, lCmFloor) * 1e6, lCmFloor * 1e6);
+        } else {
+            std::snprintf(msg, sizeof(msg),
+                          "no CM-choke candidate >= the required %.3g mH — add a larger part, raise "
+                          "C_Y, relax the requirement, or loosen the catalog filters",
+                          lCmRequired * 1e3);
+        }
         throw std::invalid_argument(msg);
     }
     double attenuationCm = achieved_attenuation_db(fDesignCm, lCmSelected, cYg, stages);
@@ -183,7 +199,7 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
     return LineFilterDesign{stages,     fDesignCm,   fDesignDm,   fCutoffCm,     fCutoffDm,
                             cYPerLineF, cYg,         lCmRequired, lCmSelected,   attenuationCm,
                             lDmH,       cXRequired,  cXSelected,  attenuationDm,
-                            nLines,     xFactor};
+                            nLines,     xFactor,     floorFromLeakage};
 }
 
 // Protective-earth leakage current — ANP015 eqs. (29)-(30). Apply worst-case

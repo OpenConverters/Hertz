@@ -1077,6 +1077,11 @@ function downloadNetlist() {
           ≥ 2 × the selected CM choke {{ fmtSi(design.lCmSelectedH, 'H') }} — a coupled pair cannot
           leak more than 2·L<sub>CM</sub> (coupling K would leave (0,1)). Enter a real leakage value
           or pick a larger choke; the CIAS export is disabled until this is resolved.</p>
+        <p v-if="design.lCmFloorFromLeakage" class="note" data-test="leakage-floor-note" style="margin: 0.35rem 0 0">
+          The CM requirement alone needed only {{ fmtSi(design.lCmRequiredH, 'H') }} — the choke
+          selection was floored at L<sub>DM</sub>/2 because a coupled choke cannot leak more than
+          2·L<sub>CM</sub> (assumed leakage {{ fmtSi(design.lDmH, 'H') }}). If your real part's
+          leakage is smaller, enter it in 2 · COMPONENTS and re-design.</p>
         <button class="ghost report-btn" data-test="print-report" @click="printReport">PRINT REPORT</button>
         <p v-if="escalated" class="note" data-test="escalated-note" style="margin: 0.25rem 0 0">
           Asymptote-sized parts missed the in-circuit criterion — the selector escalated to larger

@@ -117,6 +117,7 @@ class LineFilterDesign:
     attenuation_dm_db: float
     n_lines: int = 2
     c_x_dm_factor: float = 1.0
+    l_cm_floor_from_leakage: bool = False
 
 
 def design_line_filter(
@@ -157,7 +158,11 @@ def design_line_filter(
     x_factor = x_capacitor_dm_factor(n_lines)
     c_yg = n_lines * c_y_per_line_f
     l_cm_required = cm_inductance(f_cutoff_cm, c_yg)
-    l_cm_selected = round_up_to(l_cm_required, l_cm_candidates)
+    # Realizability floor: a coupled choke cannot leak more than 2 L_CM, so the
+    # selection must also carry the assumed DM leakage (K = 1 - L_dm/(2L) in (0,1)).
+    l_cm_floor = l_dm_h / 2.0 * 1.01
+    floor_from_leakage = l_cm_floor > l_cm_required
+    l_cm_selected = round_up_to(max(l_cm_required, l_cm_floor), l_cm_candidates)
     attenuation_cm = achieved_attenuation_db(f_design_cm, l_cm_selected, c_yg, stages)
 
     c_x_required = dm_capacitance(f_cutoff_dm, l_dm_h) / x_factor
@@ -181,6 +186,7 @@ def design_line_filter(
         attenuation_dm_db=attenuation_dm,
         n_lines=n_lines,
         c_x_dm_factor=x_factor,
+        l_cm_floor_from_leakage=floor_from_leakage,
     )
 
 

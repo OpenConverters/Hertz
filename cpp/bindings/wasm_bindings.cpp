@@ -244,7 +244,8 @@ std::string design_filter_js(const std::string& paramsJson)  {
                 {"cXSelectedF", design.cXSelectedF},
                 {"attenuationDmDb", design.attenuationDmDb},
                 {"nLines", design.nLines},
-                {"cXDmFactor", design.cXDmFactor}};
+                {"cXDmFactor", design.cXDmFactor},
+                {"lCmFloorFromLeakage", design.lCmFloorFromLeakage}};
 
     if (params.contains("grid")) {
         const json& grid = params.at("grid");

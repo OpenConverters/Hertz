@@ -713,3 +713,31 @@ TEST_CASE("three-phase SPICE deck: all-pairs K, delta X, one LISN per line", "[f
     CHECK_THROWS(Hertz::filter_spice_deck(1, 1e-3, 470e-9, 4.7e-9, 3e-3,
                                           Hertz::cispr16_lisn(), "dm", 3));
 }
+
+TEST_CASE("choke selection respects the leakage realizability floor", "[filterK]") {
+    // an HF-only CM requirement asks for nanohenries; with 14.6 uH assumed
+    // leakage the pair would be unbuildable (K out of (0,1)) — the selection
+    // must rise to L > L_dm/2 and SAY the floor governed
+    std::vector<double> candidates{91e-9, 1e-6, 10e-6, 100e-6, 1e-3};
+    auto d = Hertz::design_line_filter(150e3, 3.0, 40.0, 33e-9, 14.6e-6, 1, candidates, {1.0},
+                                       15e6, std::nullopt, 2);
+    CHECK(d.lCmRequiredH < 1e-6);                    // CM alone wanted almost nothing
+    CHECK(d.lCmSelectedH == 10e-6);                  // smallest candidate above L_dm/2
+    CHECK(d.lCmFloorFromLeakage);
+    double k = 1.0 - d.lDmH / (2.0 * d.lCmSelectedH);
+    CHECK(k > 0.0); CHECK(k < 1.0);
+    // the deck accepts what the design selected
+    CHECK_NOTHROW(Hertz::filter_spice_deck(1, d.lCmSelectedH, 470e-9, 4.7e-9, d.lDmH,
+                                           Hertz::cispr16_lisn(), "dm", 2));
+    // an ordinary mains design is untouched by the floor
+    auto normal = Hertz::design_line_filter(150e3, 40.0, 40.0, 4.7e-9, 14.6e-6, 1, {20e-3}, {1.0});
+    CHECK_FALSE(normal.lCmFloorFromLeakage);
+    // no candidate above the floor: the error must name the leakage constraint
+    try {
+        Hertz::design_line_filter(150e3, 3.0, 40.0, 33e-9, 14.6e-6, 1, {91e-9, 1e-6}, {1.0},
+                                  15e6, std::nullopt, 2);
+        FAIL("expected a leakage-floor error");
+    } catch (const std::invalid_argument& e) {
+        CHECK(std::string(e.what()).find("leakage") != std::string::npos);
+    }
+}

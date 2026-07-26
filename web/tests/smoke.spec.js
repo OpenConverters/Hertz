@@ -363,20 +363,29 @@ test('filter: catalog escalation reaches a passing part in one jump (Berger roun
   await expect(page.getByTestId('wc-verdict-cm')).toContainText('≥ 26')
 })
 
-test('filter: an unrealizable leakage/choke pair is flagged in the verdict panel (Berger round-7 R7-3)', async ({ page }) => {
+test('filter: an unrealizable leakage/choke pair is refused loudly (Berger round-7 R7-3, hardened 2026-07-27)', async ({ page }) => {
+  // Originally the pair designed WITH a k-warning and a disabled export. The
+  // engine now enforces the realizability floor L_CM > L_DM/2 at selection
+  // time, so a 10 mH claimed leakage against a 2.2 mH catalog cannot even
+  // produce a design — the refusal names the constraint, and entering a real
+  // leakage recovers.
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
   await page.getByTestId('sec-comp').click()
   await page.getByTestId('dm-mode').selectOption('inductance')
-  await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs the selected choke
+  await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs a 2.2 mH catalog
   await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
-  await expect(page.getByTestId('k-warning')).toContainText('Not realizable')
-  await page.getByTestId('pane-select-b').selectOption('bom')
-  await expect(page.getByTestId('download-cias')).toBeDisabled()
-  await page.getByTestId('pane-select-a').selectOption('netlist')
-  await expect(page.getByTestId('netlist')).toContainText('netlist unavailable')
+  await expect(page.locator('.err')).toContainText('must carry the assumed DM leakage')
+  await expect(page.getByTestId('lcm')).not.toBeVisible()
+  // recovery: a realistic leakage designs immediately
+  await page.getByTestId('sec-comp').click()
+  await page.getByTestId('ldm-input').fill('14.6')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await expect(page.getByTestId('k-warning')).not.toBeVisible()
 })
 
 test('spectrum: CISPR 25 Class 3 uses the band-dependent Table 4 steps (Berger round-8 F8-2/F8-4)', async ({ page }) => {
@@ -887,4 +896,21 @@ test('filter: voltage ratings are judged on the right basis per position (ABT #2
   const bom = await page.getByTestId('bom').textContent()
   expect(bom).toContain('NOT rated for it')          // the X2 on 400 V L-L
   expect(bom.match(/NOT rated for it/g).length).toBe(3)  // all three delta caps, nothing else
+})
+
+test('filter: an HF-only scan no longer dead-ends on the K constraint (user report 2026-07-27)', async ({ page }) => {
+  // The Baltic Lab scans fail at high frequency with small margins: CM alone
+  // asks for nanohenries, the catalog rounded up to a 91 nH data-line choke,
+  // and the assumed 14.6 uH leakage made the pair unbuildable (K out of (0,1)).
+  // The selection now respects the realizability floor L_CM > L_DM/2 and says so.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('baltic')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await page.getByTestId('design-fix').click()
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await expect(page.getByTestId('k-warning')).not.toBeVisible()
+  await expect(page.getByTestId('leakage-floor-note')).toContainText('cannot leak more than')
 })
