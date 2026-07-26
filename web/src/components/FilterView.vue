@@ -28,6 +28,10 @@ const lCandidatesMh = ref('0.47, 0.68, 1, 1.5, 2.2, 3.3, 4.7, 6.8, 10')
 const cxCandidatesUf = ref('0.1, 0.15, 0.22, 0.33, 0.47, 0.68, 1, 1.5, 2.2, 3.3')
 const cxSource = ref('catalog')     // real parts by default; 'manual' opts out
 const cxMfr = ref('')
+const topology = ref('mains')   // 'mains' (1φ L/N/PE) | 'dc' (12/48 V supply/return/chassis, CISPR 25)
+const eslXnH = ref(20)          // X-cap ESL (#290) — film-box typical; override from datasheet
+const eslYnH = ref(10)          // per-Y-cap ESL; the parallel pair halves it
+const lineCurrentA = ref(0)     // operating current for saturation screening (0 = off)
 const gridVrms = ref(230)
 const gridHz = ref(50)
 const touchLimitMa = ref(3.5)   // compliance tier: bounds C_Y and scores the touch verdict
@@ -44,6 +48,7 @@ const bindingSets = ref(null)   // receiver handoff: {cm: [[f,A]...], dm: [[f,A]
 const bindingNote = ref('')
 const fCritCmHz = ref(null)     // per-mode critical design frequency from the binding sets
 const fCritDmHz = ref(null)
+const scanCtx = ref(null)       // the measured scan carried by the hand-off (#289/#291)
 
 // ── output panes (Kirchhoff pattern: two, independently switchable) ──────────
 const PANE_VIEWS = [
@@ -53,6 +58,7 @@ const PANE_VIEWS = [
   ['il', 'INSERTION LOSS'],
   ['values', 'SIZING & SAFETY'],
   ['netlist', 'SPICE NETLIST'],
+  ['result', 'PREDICTED RESULT'],
   ['lisn', 'TEST SETUP (LISN)'],
 ]
 const paneA = ref('schematic')
@@ -134,6 +140,29 @@ function clearBinding() {
 watch(stages, () => {
   if (bindingSets.value && deriveFromBindings() && design.value) compute()
 })
+watch(topology, (t) => {
+  // DC: no mains, no touch-current story — auto-C_Y (a touch-budget concept)
+  // and the 50 uH mains LISN both stop applying
+  if (t === 'dc') {
+    if (cYnF.value === 'auto') cYnF.value = 4.7
+    netlistLisn.value = 'cispr25'
+  } else {
+    netlistLisn.value = 'cispr16'
+  }
+})
+
+// saturation screening (#290): datasheet comparison, not magnetics math —
+// full L(I) derating stays in MKF per the house rule
+function saturationWarn(p) {
+  const i = Number(lineCurrentA.value)
+  if (!(i > 0)) return null
+  const peak = topology.value === 'mains' ? i * Math.SQRT2 : i
+  if (p.saturationCurrentPeakA != null && peak > p.saturationCurrentPeakA) {
+    return `saturates: ${peak.toFixed(1)} A pk > ${p.saturationCurrentPeakA} A sat`
+  }
+  if (p.ratedCurrentA != null && i > p.ratedCurrentA) return `over ${p.ratedCurrentA} A rating`
+  return null
+}
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
 const pIn = ref(25)
@@ -199,6 +228,7 @@ onMounted(() => {
 
 function onMountedHandoff() {
   if (store.handoff) {
+    scanCtx.value = store.handoff.scan ?? null
     if (store.handoff.binding) {
       bindingSets.value = store.handoff.binding
       if (!deriveFromBindings()) { store.handoff = null; return }
@@ -331,11 +361,19 @@ function buildParams(overrides = {}) {
     aReqDmDb: Number(aReqDm.value),
     cYPerLineF: resolvedCyNf() * 1e-9,
     stages: Number(stages.value),
+    // #290: shunt-capacitor parasitics — the Y pair in parallel halves its ESL
+    eslCmH: (Number(eslYnH.value) / 2) * 1e-9,
+    eslDmH: Number(eslXnH.value) * 1e-9,
     lCmCandidatesH: lCmSource.value === 'catalog'
       ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
     cXCandidatesF: cxSource.value === 'catalog'
       ? cxCatalogCandidates() : parseList(cxCandidatesUf.value, 1e-6),
-    grid: { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 },
+  }
+  if (topology.value === 'mains') {
+    // touch current / bleeder are a MAINS story; a DC supply filter has
+    // neither (chassis-referenced Y practice differs) — omitting grid skips
+    // both in the engine instead of faking them
+    params.grid = { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 }
   }
   if (bindingSets.value && fCritCmHz.value && fCritDmHz.value) {
     params.fDesignCmHz = fCritCmHz.value
@@ -398,30 +436,33 @@ async function runDesign(makeParams, { keepBindings }) {
       // the chip must be evaluated AT f_design — never snapped to a span edge
       const fLow = Math.min(d.fDesignCmHz, d.fDesignDmHz)
       const fHigh = Math.max(d.fDesignCmHz, d.fDesignDmHz)
-      const span = { fMinHz: Math.min(150e3, fLow / 2),
-                     fMaxHz: Math.max(30e6, fHigh * 2), pointsPerDecade: 30 }
+      // span must also cover the carried scan so the residual view never
+      // extrapolates the IL curves
+      const scanF = (scanCtx.value?.traces ?? []).flatMap((t) => [t.frequenciesHz[0], t.frequenciesHz[t.frequenciesHz.length - 1]])
+      const span = { fMinHz: Math.min(150e3, fLow / 2, ...scanF.filter((f) => f > 0)),
+                     fMaxHz: Math.max(30e6, fHigh * 2, ...scanF), pointsPerDecade: 30 }
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
-        stages: d.stages, referenceImpedanceOhm: 25, ...span })
+        stages: d.stages, referenceImpedanceOhm: 25, capEslH: params.eslCmH, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
-        stages: d.stages, referenceImpedanceOhm: 100, ...span })
+        stages: d.stages, referenceImpedanceOhm: 100, capEslH: params.eslDmH, ...span })
       // the chip is a hard pass/fail input: evaluate it AT f_design via a
       // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off)
-      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz) => {
+      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz, eslH) => {
         const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: d.stages,
           referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
-          pointsPerDecade: 20000 })
+          pointsPerDecade: 20000, capEslH: eslH })
         const mid = Math.floor(il.frequenciesHz.length / 2)
         return { standard: il.standardDb[mid], worst: il.worstCaseDb[mid] }
       }
-      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25, d.fDesignCmHz),
-                                dm: exactAt(d.lDmH, d.cXSelectedF, 100, d.fDesignDmHz) } }
+      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25, d.fDesignCmHz, params.eslCmH),
+                                dm: exactAt(d.lDmH, d.cXSelectedF, 100, d.fDesignDmHz, params.eslDmH) } }
     }
     // in-circuit IL at exactly f_design — the same criterion the verdict chip
     // scores, so the escalation target and the verdict can never disagree
-    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages) => {
+    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages, eslH) => {
       const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: nStages,
         referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
-        pointsPerDecade: 20000 })
+        pointsPerDecade: 20000, capEslH: eslH })
       return il.standardDb[Math.floor(il.frequenciesHz.length / 2)]
     }
     let attempt = evaluate(params)
@@ -439,7 +480,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(v, attempt.d.cYgF, 25, attempt.d.fDesignCmHz, attempt.d.stages) >= Number(params.aReqCmDb))
+            ilAtDesign(v, attempt.d.cYgF, 25, attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH) >= Number(params.aReqCmDb))
           next.lCmCandidatesH = pass !== undefined
             ? params.lCmCandidatesH.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -449,7 +490,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.cXCandidatesF.filter((v) => v > attempt.d.cXSelectedF).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(attempt.d.lDmH, v, 100, attempt.d.fDesignDmHz, attempt.d.stages) >= Number(params.aReqDmDb))
+            ilAtDesign(attempt.d.lDmH, v, 100, attempt.d.fDesignDmHz, attempt.d.stages, params.eslDmH) >= Number(params.aReqDmDb))
           next.cXCandidatesF = pass !== undefined
             ? params.cXCandidatesF.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -566,9 +607,17 @@ const recommendations = () => {
     return { kind, target, parts: [], unavailable: !capsCatalog.value,
              filteredOut: !!capsCatalog.value, capsMfr }
   }
-  const parts = pool
+  // parallel BANKS (2-4 x the same part) compete with singles on deviation:
+  // n x C hits capacitances no single part matches, and splits the ripple
+  // current across the bank
+  const banks = pool.flatMap((p) => [2, 3, 4].map((n) => ({
+    ...p, quantity: n, valueF: n * p.capacitanceF, singleValueF: p.capacitanceF,
+  })))
+  const parts = [...pool.map((p) => ({ ...p, quantity: 1 })), ...banks]
     .map((p) => ({ ...p, deviation: Math.abs(p.valueF - target) / target }))
-    .sort((a, b) => a.deviation - b.deviation || String(a.mpn).localeCompare(String(b.mpn)))
+    .filter((p) => p.quantity === 1 || p.deviation < 0.25)   // banks only when they genuinely fit
+    .sort((a, b) => a.deviation - b.deviation || a.quantity - b.quantity ||
+      String(a.mpn).localeCompare(String(b.mpn)))
     .slice(0, 8)
   return { kind, target, parts, unavailable: false }
 }
@@ -581,7 +630,7 @@ async function bindPart(part) {
   const kind = kindOf(selectedRef.value)
   for (const c of filterComponents(design.value.stages)) {
     if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer,
-      valueF: part.valueF ?? null,
+      valueF: part.valueF ?? null, quantity: part.quantity ?? 1,
       maxRatedV: Math.max(part.ratedVoltageAcV ?? 0, part.ratedVoltageDcV ?? 0) || null }
   }
   bindings.value = { ...bindings.value }
@@ -670,13 +719,83 @@ async function recomputeAsBuilt() {
   }
 }
 
+// ── #289/#291: predicted post-filter residual against the scan's own limit ──
+// Transfer-function route: predicted = measured − in-circuit IL(f) per mode.
+// A plain line trace is bounded with the WEAKER mode's IL (whatever the mode
+// mix, each component gets at least min(IL_cm, IL_dm)) — conservative and
+// disclosed. Bound-part measured curves take precedence over ideal elements
+// within their measured span.
+function ilInterp(fHz, source) {
+  const freqs = source.f, db = source.db
+  if (fHz <= freqs[0]) return db[0]
+  if (fHz >= freqs[freqs.length - 1]) return db[db.length - 1]
+  let lo = 0
+  let hi = freqs.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (freqs[mid] <= fHz) lo = mid
+    else hi = mid
+  }
+  const t = Math.log(fHz / freqs[lo]) / Math.log(freqs[hi] / freqs[lo])
+  return db[lo] + t * (db[hi] - db[lo])
+}
+function ilSourceFor(mode) {
+  const ideal = { cm: { f: ilCm.value.frequenciesHz, db: ilCm.value.standardDb },
+                  dm: { f: ilDm.value.frequenciesHz, db: ilDm.value.standardDb } }
+  const meas = { cm: measured.value?.cm, dm: measured.value?.dm }
+  const one = (m) => (fHz) => {
+    const mc = meas[m]
+    if (mc && fHz >= mc.f[0] && fHz <= mc.f[mc.f.length - 1]) return ilInterp(fHz, mc)
+    return ilInterp(fHz, ideal[m])
+  }
+  if (mode === 'cm') return one('cm')
+  if (mode === 'dm') return one('dm')
+  return (fHz) => Math.min(one('cm')(fHz), one('dm')(fHz))
+}
+const predicted = ref(null)   // {traces: [{name, mode, f[], measured[], predicted[]}], analysis, limitRuns}
+async function computePredicted() {
+  predicted.value = null
+  if (!scanCtx.value || !design.value || !ilCm.value || !ilDm.value) return
+  try {
+    const engine = await api()
+    const traces = scanCtx.value.traces.map((t) => {
+      const il = ilSourceFor(t.mode)
+      return { ...t, predicted: t.frequenciesHz.map((f, i) => t.levelsDbuv[i] - il(f)) }
+    })
+    // predicted verdict: the WORST trace decides, judged on the scan's limit
+    let analysis = null
+    for (const t of traces) {
+      try {
+        const a = engine.limitAnalysis(scanCtx.value.standardId, scanCtx.value.detector,
+                                       t.frequenciesHz, t.predicted)
+        if (!analysis || a.worst.marginDb < analysis.worst.marginDb) analysis = a
+      } catch { /* trace entirely outside the limit — skip */ }
+    }
+    const fAll = traces.flatMap((t) => t.frequenciesHz)
+    const limitRuns = engine.limitPolyline(scanCtx.value.standardId, scanCtx.value.detector,
+                                           Math.min(...fAll), Math.max(...fAll))
+    predicted.value = { traces, analysis, limitRuns }
+  } catch (e) {
+    error.value = 'predicted result unavailable: ' + e.message
+  }
+}
+watch([design, measured], () => { computePredicted() })
+const predictedSeries = () => predicted.value.traces.flatMap((t, i) => [
+  { id: `m${i}`, label: `${t.name} (measured)`, color: 'var(--ink-dim)', dash: '2 3',
+    points: t.frequenciesHz.map((f, k) => ({ f, v: t.levelsDbuv[k] })) },
+  { id: `p${i}`, label: `${t.name} — predicted with this filter`, color: i === 0 ? 'var(--s-1)' : 'var(--s-2)',
+    points: t.frequenciesHz.map((f, k) => ({ f, v: t.predicted[k] })) },
+])
+const predictedRefRuns = () => (predicted.value.limitRuns ? [{
+  label: 'limit', color: 'var(--s-limit)', dash: '7 5', runs: predicted.value.limitRuns.runs,
+}] : [])
 // A coupled pair cannot leak more than its full loop: K = 1 - L_dm/(2 L_cm)
 // must stay in (0,1). The netlist already refuses; the design panel must not
 // present an unbuildable BOM as valid either.
 const unrealizable = () => design.value && design.value.lDmH >= 2 * design.value.lCmSelectedH
 
 function downloadCias() {
-  const brick = buildFilterCias(design.value.stages, bindings.value)
+  const brick = buildFilterCias(design.value.stages, bindings.value, topology.value)
   const blob = new Blob([JSON.stringify(brick, null, 2)], { type: 'application/json' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -688,6 +807,17 @@ function downloadCias() {
 function copyNetlist() {
   navigator.clipboard.writeText(netlist.value)
 }
+
+// ── #293: printable pre-compliance report — the artifact handed to managers.
+// Client-side only: a print-styled sheet with scan, verdict, coverage,
+// design, BOM (real MPNs) and netlist; the browser's print dialog does the
+// PDF. Nothing leaves the page.
+const showReport = ref(false)
+function printReport() {
+  showReport.value = true
+  setTimeout(() => { window.print(); showReport.value = false }, 60)
+}
+const reportDate = () => new Date().toISOString().slice(0, 10)
 
 function downloadNetlist() {
   const blob = new Blob([netlist.value], { type: 'text/plain' })
@@ -706,6 +836,11 @@ function downloadNetlist() {
       <button class="acc-head" :class="{ open: openSection === 'req' }" data-test="sec-req"
               @click="openSection = 'req'">1 · REQUIREMENT</button>
       <div v-show="openSection === 'req'" class="acc-body">
+      <label class="field"><span>Topology</span>
+        <select v-model="topology" data-test="topology">
+          <option value="mains">single-phase mains — L/N/PE (CISPR 32/11)</option>
+          <option value="dc">12/48 V DC supply — +/RTN/chassis (CISPR 25)</option>
+        </select></label>
       <div class="row">
         <label class="field"><span>Switching frequency (kHz)</span>
           <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @input="clearBinding" /></label>
@@ -730,7 +865,7 @@ function downloadNetlist() {
       <div v-show="openSection === 'comp'" class="acc-body">
       <label class="field"><span title="Safety caps C_Y via the touch-current budget, never the spectrum. Within that cap a larger C_Y means a smaller choke — auto takes the largest standard value passing the tier selected under Grid & safety.">Y capacitor per line ⓘ</span>
         <select v-model="cYnF" data-test="cy-select">
-          <option value="auto">auto — largest within the touch budget{{ autoCyNf !== null ? ` (→ ${autoCyNf} nF)` : '' }}</option>
+          <option v-if="topology === 'mains'" value="auto">auto — largest within the touch budget{{ autoCyNf !== null ? ` (→ ${autoCyNf} nF)` : '' }}</option>
           <option v-for="v in [1, 2.2, 3.3, 4.7, 10]" :key="v" :value="v">{{ v }} nF (manual)</option>
         </select></label>
       <label class="field"><span title="The DM path is sized from the choke's leakage inductance: one |Z| point from the datasheet's DM curve, several points (fitted, refused if they straddle the self-resonance), or the leakage value directly.">DM (leakage) inductance from ⓘ</span>
@@ -776,6 +911,12 @@ function downloadNetlist() {
       <label v-else class="field"><span>Manufacturer</span>
         <select v-model="cxMfr" data-test="cx-mfr"><option value="">all manufacturers</option>
           <option v-for="m in cxManufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
+      <div class="row">
+        <label class="field"><span title="Series inductance of the X capacitor (leads + body). Above the cap's self-resonance 1/(2π√(ESL·C)) the branch turns inductive and the real filter stops improving — film-box X2 typically 15–30 nH; take it from the datasheet.">X-cap ESL (nH) ⓘ</span>
+          <input v-model.number="eslXnH" type="number" min="0" data-test="esl-x" /></label>
+        <label class="field"><span title="Per-Y-capacitor series inductance; the parallel pair halves it in the CM path. Disc/film Y2 typically 5–15 nH.">Y-cap ESL (nH) ⓘ</span>
+          <input v-model.number="eslYnH" type="number" min="0" data-test="esl-y" /></label>
+      </div>
       <button class="ghost cont" data-test="cont-comp" @click="openSection = 'grid'">CONTINUE ▸ GRID &amp; SAFETY</button>
       </div>
 
@@ -783,15 +924,21 @@ function downloadNetlist() {
               @click="openSection = 'grid'">3 · GRID &amp; SAFETY</button>
       <div v-show="openSection === 'grid'" class="acc-body">
       <div class="row">
-        <label class="field"><span>Grid (V RMS)</span><input v-model.number="gridVrms" type="number" /></label>
-        <label class="field"><span>Grid (Hz)</span><input v-model.number="gridHz" type="number" /></label>
+        <label class="field"><span>{{ topology === 'dc' ? 'Bus voltage (V DC)' : 'Grid (V RMS)' }}</span>
+          <input v-model.number="gridVrms" type="number" /></label>
+        <label v-if="topology === 'mains'" class="field"><span>Grid (Hz)</span><input v-model.number="gridHz" type="number" /></label>
+        <label class="field"><span title="Operating line/bus current for saturation screening: parts whose datasheet saturation current sits below the operating peak are flagged in the parts pane. 0 disables the check. Full L(I) derating via MKF is planned.">Line current (A) ⓘ</span>
+          <input v-model.number="lineCurrentA" type="number" min="0" data-test="line-current" /></label>
       </div>
-      <label class="field"><span>Touch-current tier (bounds C_Y)</span>
+      <label v-if="topology === 'mains'" class="field"><span>Touch-current tier (bounds C_Y)</span>
         <select v-model.number="touchLimitMa" data-test="touch-tier">
           <option :value="3.5">3.5 mA — IEC 62368-1 Class I</option>
           <option :value="0.75">0.75 mA — appliance</option>
           <option :value="0.5">0.5 mA — medical</option>
         </select></label>
+      <p v-if="topology === 'dc'" class="note">DC/chassis topology: no touch-current budget and no
+        discharge bleeder — C_Y is chosen by chassis-leakage and resonance practice, and the SPICE
+        deck embeds the 5 µH CISPR 25 network.</p>
       <div class="row">
         <label class="field"><span>Converter V<sub>in</sub> min (V)</span>
           <input v-model.number="vInMin" type="number" @input="vInMinDirty = true" @change="compute" /></label>
@@ -838,6 +985,7 @@ function downloadNetlist() {
           ≥ 2 × the selected CM choke {{ fmtSi(design.lCmSelectedH, 'H') }} — a coupled pair cannot
           leak more than 2·L<sub>CM</sub> (coupling K would leave (0,1)). Enter a real leakage value
           or pick a larger choke; the CIAS export is disabled until this is resolved.</p>
+        <button class="ghost report-btn" data-test="print-report" @click="printReport">PRINT REPORT</button>
         <p v-if="escalated" class="note" data-test="escalated-note" style="margin: 0.25rem 0 0">
           Asymptote-sized parts missed the in-circuit criterion — the selector escalated to larger
           candidates; the chips score what was actually selected.</p>
@@ -866,7 +1014,7 @@ function downloadNetlist() {
               </div>
               <div v-else class="view-fill">
                 <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
-                                 :selected="selectedRef" @select="selectComponent" />
+                                 :selected="selectedRef" :dc="topology === 'dc'" @select="selectComponent" />
                 <p class="note" style="flex: 0 0 auto; margin: 0.2rem 0 0">Click a component — its catalog
                   parts open in the other pane. Amber part numbers are bound; identical stages share bindings.</p>
               </div>
@@ -892,8 +1040,10 @@ function downloadNetlist() {
                     <th v-if="kindOf(selectedRef) === 'cmc'">Rated V</th>
                     <th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
                   <tbody>
-                    <tr v-for="p in recommendations().parts" :key="p.mpn">
-                      <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td>
+                    <tr v-for="p in recommendations().parts" :key="p.mpn + '-' + (p.quantity ?? 1)">
+                      <td><strong>{{ (p.quantity ?? 1) > 1 ? p.quantity + ' × ' : '' }}{{ p.mpn }}</strong>
+                        <span v-if="(p.quantity ?? 1) > 1" class="note">parallel bank</span></td>
+                      <td>{{ p.manufacturer }}</td>
                       <td><template v-if="p.valueF !== null">{{ fmtSi(p.valueF, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}
                         <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></template>
                         <span v-else class="note">by measured curve</span></td>
@@ -905,11 +1055,16 @@ function downloadNetlist() {
                         {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
                       <td>{{ kindOf(selectedRef) === 'cmc'
                         ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify')
-                        : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V*' : '') }}</td>
+                        : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V*' : '') }}
+                        <span v-if="kindOf(selectedRef) === 'cmc' && saturationWarn(p)"
+                              style="color: var(--fault)" data-test="saturation-warn"> {{ saturationWarn(p) }}</span></td>
                       <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
                     </tr>
                   </tbody>
                 </table>
+                <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">Parallel-bank rows wire n
+                  identical parts in parallel: the capacitances add, the ripple current splits, and
+                  the CIAS export expands the bank into n components on the same nets.</p>
                 <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">*Datasheet rated voltage — MIXED
                   AC and DC bases: the X2/Y2 class itself is defined for ≤310 VAC mains; values like
                   630 V are DC ratings on the same film part. Verify the AC rating on the datasheet.</p>
@@ -936,7 +1091,8 @@ function downloadNetlist() {
                 <tbody>
                   <tr v-for="row in bomRows()" :key="row.ref">
                     <td>{{ row.ref }}</td><td>{{ row.value }}</td>
-                    <td v-if="row.binding"><strong>{{ row.binding.mpn }}</strong> <span class="note">{{ row.binding.manufacturer }}</span>
+                    <td v-if="row.binding"><strong>{{ (row.binding.quantity ?? 1) > 1 ? row.binding.quantity + ' × ' : '' }}{{ row.binding.mpn }}</strong>
+                      <span class="note">{{ row.binding.manufacturer }}</span>
                       <span v-if="row.warning" style="color: var(--fault)" data-test="bom-voltage-warning"> — {{ row.warning }}</span></td>
                     <td v-else class="note">unbound — click the part in the schematic</td>
                   </tr>
@@ -1068,6 +1224,30 @@ function downloadNetlist() {
               </template>
             </template>
 
+            <!-- predicted post-filter residual (#289/#291) -->
+            <template v-else-if="pane === 'result'">
+              <div v-if="!scanCtx" class="pane-empty note">Bring a measurement over first —
+                <em>Design the fix</em> (Spectrum) or <em>Design filter for these modes</em>
+                (Receiver) carries the scan along for this comparison.</div>
+              <div v-else-if="!design" class="pane-empty note">Design a filter first.</div>
+              <div v-else-if="predicted">
+                <p class="section-label">Measured scan vs predicted post-filter residual — the budget view</p>
+                <div class="fstrip-row" style="margin-bottom: 0.4rem">
+                  <span v-if="predicted.analysis" class="chip"
+                        :class="predicted.analysis.worst.marginDb >= 0 ? 'pass' : 'fail'" data-test="predicted-verdict">
+                    PREDICTED {{ predicted.analysis.worst.marginDb >= 0 ? 'PASS' : 'FAIL' }} ·
+                    {{ fmtDb(predicted.analysis.worst.marginDb) }} dB @ {{ fmtHz(predicted.analysis.worst.frequencyHz) }}</span>
+                </div>
+                <LogChart :series="predictedSeries()" :ref-runs="predictedRefRuns()"
+                          y-label="dBµV" :height="260" data-test="predicted-chart" />
+                <p class="note">Transfer-function prediction: the measured trace minus this filter's
+                  in-circuit insertion loss per mode (line traces are bounded with the WEAKER mode's
+                  IL — conservative). Bound-part measured curves are used inside their span. Mode
+                  conversion, layout parasitics and source-impedance deviation are NOT modeled —
+                  verify with the SPICE deck and on the bench.</p>
+              </div>
+            </template>
+
             <!-- LISN / test setup — reference view, works without a design -->
             <template v-else-if="pane === 'lisn'">
               <LisnView />
@@ -1076,5 +1256,58 @@ function downloadNetlist() {
         </section>
       </div>
     </main>
+
+    <!-- ── print-only report sheet (#293) ─────────────────────────────────── -->
+    <div v-if="design" class="report-sheet" :class="{ 'report-visible': showReport }" data-test="report-sheet">
+      <h1>Hertz pre-compliance report</h1>
+      <p class="rep-meta">{{ reportDate() }} · hertz.openconverters.com · engine v0.1.0 —
+        pre-compliance estimates with engineering margins, NOT a certification; accredited
+        chamber testing remains mandatory.</p>
+
+      <template v-if="scanCtx">
+        <h2>Measurement</h2>
+        <p>Judged against <b>{{ scanCtx.standardId }}</b> ({{ scanCtx.detector.replace('_', '-') }} detector);
+          traces: {{ scanCtx.traces.map((t) => `${t.name} [${t.mode}]`).join(' · ') }}.</p>
+        <p v-if="bindingNote">{{ bindingNote }}</p>
+      </template>
+
+      <h2>Filter design</h2>
+      <p>
+        f<sub>design</sub> CM {{ fmtHz(design.fDesignCmHz) }} / DM {{ fmtHz(design.fDesignDmHz) }} ·
+        required CM {{ fmtDb(Number(aReqCm), 0) }} dB / DM {{ fmtDb(Number(aReqDm), 0) }} dB · {{ design.stages }} stage(s).
+        In-circuit at f<sub>design</sub>: CM {{ worstCaseAt ? fmtDb(worstCaseAt.cm.standard) : '—' }} dB,
+        DM {{ worstCaseAt ? fmtDb(worstCaseAt.dm.standard) : '—' }} dB.
+        <template v-if="interaction">Middlebrook margin {{ fmtDb(interaction.marginDb) }} dB.</template>
+        <template v-if="design.leakageCurrentA !== undefined">Touch current
+          {{ fmtSi(design.leakageCurrentA, 'A') }} vs {{ touchLimitMa }} mA tier.</template>
+        <template v-if="asBuiltNote"> {{ asBuiltNote }}.</template>
+      </p>
+      <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
+                       selected="" :dc="topology === 'dc'" :interactive="false" @select="() => {}" />
+      <template v-if="predicted && predicted.analysis">
+        <h2>Predicted post-filter result</h2>
+        <p>Worst predicted margin {{ fmtDb(predicted.analysis.worst.marginDb) }} dB at
+          {{ fmtHz(predicted.analysis.worst.frequencyHz) }} (transfer-function estimate; mode
+          conversion and layout parasitics not modeled).</p>
+      </template>
+
+      <h2>Bill of materials</h2>
+      <table>
+        <thead><tr><th>Ref</th><th>Value</th><th>Part</th><th>Manufacturer</th></tr></thead>
+        <tbody>
+          <tr v-for="row in bomRows()" :key="row.ref">
+            <td>{{ row.ref }}</td><td>{{ row.value }}</td>
+            <td>{{ row.binding ? row.binding.mpn : 'unbound' }}</td>
+            <td>{{ row.binding ? row.binding.manufacturer : '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>SPICE netlist (filter + LISN)</h2>
+      <pre>{{ netlist }}</pre>
+      <p class="rep-meta">Part data: TAS catalog (manufacturer datasheets/parametrics; measured
+        impedance curves where available — Murata measured complex Z, WE |Z| with Bode-reconstructed
+        phase). Generated locally in the browser; no data left this machine.</p>
+    </div>
   </div>
 </template>

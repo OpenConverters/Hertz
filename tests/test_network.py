@@ -108,3 +108,21 @@ def test_tabulated_validation():
         tabulated_series_il_curves([1e6, 5e5], [1.0, 1.0], [0.0, 0.0], C, 1, 25.0)
     with pytest.raises(ValueError):
         tabulated_series_il_curves([1e6, 2e6], [1.0, 1.0], [0.0, 0.0], -1.0, 1, 25.0)
+
+
+def test_cap_esl_caps_the_high_frequency_insertion_loss():
+    # 290: a 1 uF X-cap with 20 nH ESL self-resonates at 1.125 MHz; above it
+    # the shunt branch is inductive and IL must fall away from the ideal curve
+    import math
+    from hertz.network import insertion_loss_db, lc_filter_abcd
+    f_srf = 1.0 / (2.0 * math.pi * math.sqrt(20e-9 * 1e-6))
+    assert f_srf == pytest.approx(1.1254e6, rel=1e-3)
+    ideal = insertion_loss_db(lc_filter_abcd(10e6, 14.6e-6, 1e-6, 1), 100.0, 100.0)
+    real = insertion_loss_db(lc_filter_abcd(10e6, 14.6e-6, 1e-6, 1, cap_esl_h=20e-9), 100.0, 100.0)
+    assert real < ideal - 10.0   # dramatic HF cap at 10 MHz
+    # at low frequency the parasitic is invisible
+    lo_i = insertion_loss_db(lc_filter_abcd(150e3, 14.6e-6, 1e-6, 1), 100.0, 100.0)
+    lo_r = insertion_loss_db(lc_filter_abcd(150e3, 14.6e-6, 1e-6, 1, cap_esl_h=20e-9), 100.0, 100.0)
+    assert lo_r == pytest.approx(lo_i, abs=0.2)
+    with pytest.raises(ValueError):
+        lc_filter_abcd(1e6, 1e-3, 1e-6, 1, cap_esl_h=-1e-9)

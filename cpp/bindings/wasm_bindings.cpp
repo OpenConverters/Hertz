@@ -317,6 +317,7 @@ std::string filter_spice_netlist_js(const std::string& designJson, const std::st
     netlist += "XlisnL line_out mains_l measL LISN\nXlisnN neut_out mains_n measN LISN\n";
     netlist += "Vmains mains_l 0 DC 0\nRmains mains_n 0 1m\n";
     netlist += "* LISN model omissions (see LISN screen): band-A branch, mains 1uF, 1k bleed\n";
+    netlist += "* capacitor ESL/ESR not modeled in this deck — the IL curves carry the parasitic-aware prediction\n";
     if (mode == "cm") {
         netlist += "* COMMON-MODE drive: both lines together against PE (exercises choke + Y caps)\n";
         netlist += "Vnoise cm_src 0 AC 1\nRsrcL cm_src line_src 1m\nRsrcN cm_src neut_src 1m\n";
@@ -410,7 +411,8 @@ std::string insertion_loss_curves_js(const std::string& paramsJson) {
             params.at("inductanceH").get<double>(), params.at("capacitanceF").get<double>(),
             params.at("stages").get<int>(), params.at("referenceImpedanceOhm").get<double>(),
             params.at("fMinHz").get<double>(), params.at("fMaxHz").get<double>(),
-            params.value("pointsPerDecade", 40));
+            params.value("pointsPerDecade", 40),
+            params.value("capEslH", 0.0), params.value("capEsrOhm", 0.0));
         return json{{"frequenciesHz", curves.frequenciesHz},
                     {"standardDb", curves.standardDb},
                     {"worstCaseDb", curves.worstCaseDb}}.dump();

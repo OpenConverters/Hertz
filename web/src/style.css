@@ -306,3 +306,24 @@ pre.code {
 /* compact rail cards: info moved into tooltips (dotted-underlined ⓘ labels) */
 .acc-body .field { margin-bottom: 0.45rem; }
 .acc-body .field span[title] { cursor: help; text-decoration: underline dotted var(--ink-dim); text-underline-offset: 3px; }
+
+/* ── printable report sheet (#293): hidden on screen, the ONLY thing on paper ── */
+.report-sheet { display: none; }
+@media print {
+  body * { visibility: hidden; }
+  .report-sheet, .report-sheet * { visibility: visible; }
+  .report-sheet {
+    display: block; position: absolute; inset: 0; padding: 1.2cm;
+    background: #fff; color: #111; font-size: 11pt;
+  }
+  .report-sheet h1 { font-size: 16pt; margin: 0 0 0.2cm; }
+  .report-sheet h2 { font-size: 12pt; margin: 0.5cm 0 0.15cm; border-bottom: 1px solid #999; }
+  .report-sheet table { border-collapse: collapse; width: 100%; }
+  .report-sheet td, .report-sheet th { border: 1px solid #bbb; padding: 2pt 6pt; text-align: left; }
+  .report-sheet pre { font-size: 7.5pt; white-space: pre-wrap; }
+  .report-sheet .rep-meta { color: #555; font-size: 9pt; }
+  .report-sheet .screen { background: #fff; border: 1px solid #ccc; }
+  .report-sheet svg text { fill: #333 !important; }
+  .report-sheet svg [stroke] { stroke: #333; }
+}
+.report-btn { margin-left: auto; }

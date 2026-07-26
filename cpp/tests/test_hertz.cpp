@@ -14,6 +14,7 @@
 #include "hertz/Detector.hpp"
 #include "hertz/FilterDesign.hpp"
 #include "hertz/Limits.hpp"
+#include "hertz/Network.hpp"
 #include "hertz/Radiated.hpp"
 #include "hertz/Lisn.hpp"
 #include "hertz/Separation.hpp"
@@ -275,6 +276,22 @@ TEST_CASE("dBuA current spectra pass through with their unit reported", "[traces
     CHECK(trace.levelsDbuv[0] == Approx(20.0));
     auto voltage = Hertz::parse_spectrum_csv("Frequency (MHz),Level (dBuV)\n1,40\n2,41\n");
     CHECK(voltage.levelUnit == "dbuv");
+}
+
+TEST_CASE("Cap ESL caps the high-frequency insertion loss (#290)", "[network]") {
+    // 1 uF with 20 nH ESL self-resonates at 1.125 MHz; above it the branch is
+    // inductive and IL must fall away from the ideal curve
+    double ideal = Hertz::insertion_loss_db(
+        Hertz::lc_filter_abcd(10e6, 14.6e-6, 1e-6, 1), {100.0, 0.0}, {100.0, 0.0});
+    double real = Hertz::insertion_loss_db(
+        Hertz::lc_filter_abcd(10e6, 14.6e-6, 1e-6, 1, 20e-9), {100.0, 0.0}, {100.0, 0.0});
+    CHECK(real < ideal - 10.0);
+    double loI = Hertz::insertion_loss_db(
+        Hertz::lc_filter_abcd(150e3, 14.6e-6, 1e-6, 1), {100.0, 0.0}, {100.0, 0.0});
+    double loR = Hertz::insertion_loss_db(
+        Hertz::lc_filter_abcd(150e3, 14.6e-6, 1e-6, 1, 20e-9), {100.0, 0.0}, {100.0, 0.0});
+    CHECK(loR == Approx(loI).margin(0.2));
+    CHECK_THROWS_AS(Hertz::lc_filter_abcd(1e6, 1e-3, 1e-6, 1, -1e-9), std::invalid_argument);
 }
 
 TEST_CASE("Margin sign convention", "[limits]") {

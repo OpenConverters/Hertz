@@ -307,7 +307,7 @@ async function designTheFix() {
         if (margin !== null && margin < 16) sets[order[i]].push([t.frequenciesHz[k], 16 - margin])
       })
     })
-    store.handoff = { binding: sets }
+    store.handoff = { binding: sets, scan: scanContext(judged, order) }
     store.mode = 'filter'
     return
   }
@@ -325,8 +325,20 @@ async function designTheFix() {
       if (margin !== null && margin < 10) binding.push([t.frequenciesHz[k], 10 - margin])
     })
   }
-  store.handoff = { binding: { cm: binding, dm: binding } }
+  store.handoff = { binding: { cm: binding, dm: binding },
+                    scan: scanContext(judged, judged.map(() => 'line')) }
   store.mode = 'filter'
+}
+
+// The measured scan travels WITH the hand-off so the designer can show the
+// predicted post-filter residual against the same limit (#289/#291).
+function scanContext(judged, modes) {
+  return {
+    standardId: standardId.value,
+    detector: detector.value,
+    traces: judged.map((t, i) => ({ name: t.name, mode: modes[i],
+      frequenciesHz: [...t.frequenciesHz], levelsDbuv: [...t.levelsDbuv] })),
+  }
 }
 
 function onDrop(event) {

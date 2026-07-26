@@ -39,15 +39,24 @@ def insertion_loss_db(network, z_source, z_load):
     return 20.0 * math.log10(abs(numerator / (z_source + z_load)))
 
 
-def lc_filter_abcd(f_hz, inductance_h, capacitance_f, stages):
-    """Identical ANP015 stages: series L from the noise source, shunt C after."""
+def lc_filter_abcd(f_hz, inductance_h, capacitance_f, stages, cap_esl_h=0.0, cap_esr_ohm=0.0):
+    """Identical ANP015 stages: series L from the noise source, shunt C after.
+
+    cap_esl_h / cap_esr_ohm: series parasitics of the shunt capacitor (#290) —
+    above the cap's self-resonance 1/(2*pi*sqrt(ESL*C)) the branch turns
+    inductive and the real filter stops improving. Defaults keep the ideal
+    element.
+    """
     if f_hz <= 0.0 or inductance_h <= 0.0 or capacitance_f <= 0.0:
         raise ValueError("frequency, inductance and capacitance must be positive")
     if stages not in (1, 2, 3, 4):
         raise ValueError("stages must be 1..4")
+    if cap_esl_h < 0.0 or cap_esr_ohm < 0.0:
+        raise ValueError("capacitor parasitics must be non-negative")
     w = 2.0 * math.pi * f_hz
+    shunt_z = cap_esr_ohm + 1j * (w * cap_esl_h - 1.0 / (w * capacitance_f))
     stage = cascade(series_impedance(1j * w * inductance_h),
-                    shunt_admittance(1j * w * capacitance_f))
+                    shunt_admittance(1.0 / shunt_z))
     network = Abcd()
     for _ in range(stages):
         network = cascade(network, stage)

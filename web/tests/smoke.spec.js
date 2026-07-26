@@ -724,3 +724,89 @@ test('filter: a failing-scan handoff shows every binding point as a requirement 
   const markers = await page.getByTestId('il-chart').locator('circle').count()
   expect(markers).toBeGreaterThan(10)
 })
+
+test('filter: the predicted post-filter residual judges the demo scan (ABT #289/#291)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('demo')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await page.getByTestId('design-fix').click()
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('pane-select-a').selectOption('result')
+  // the designed filter must actually fix the scan it was designed FROM
+  await expect(page.getByTestId('predicted-verdict')).toContainText('PREDICTED PASS')
+  await expect(page.getByTestId('predicted-chart')).toBeVisible()
+})
+
+test('filter: PRINT REPORT produces the pre-compliance sheet (ABT #293)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('demo')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await page.getByTestId('design-fix').click()
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.evaluate(() => { window.__printed = 0; window.print = () => { window.__printed += 1 } })
+  await page.getByTestId('print-report').click()
+  await expect.poll(() => page.evaluate(() => window.__printed)).toBe(1)
+  const sheet = await page.getByTestId('report-sheet').textContent()
+  expect(sheet).toContain('Hertz pre-compliance report')
+  expect(sheet).toContain('Measurement')       // scan context section made it in
+  expect(sheet).toContain('Filter design')
+  expect(sheet).toContain('NOT a certification')
+})
+
+test('filter: a parallel capacitor bank binds as n x MPN through BOM and CIAS (ABT #294)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('areq-cm').fill('35')
+  await page.getByTestId('sec-comp').click()
+  // a ~1 uF target: no single part is exact, so 2 x 470 nF / 2 x 560 nF banks rank
+  await page.getByTestId('dm-mode').selectOption('inductance')
+  await page.getByTestId('ldm-input').fill('28.1')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('sch-CX1').click()
+  const bankRow = page.getByTestId('part-panel').locator('tr', { hasText: 'parallel bank' }).first()
+  await expect(bankRow).toBeVisible()
+  await bankRow.getByTestId('bind-part').click()
+  await page.getByTestId('pane-select-b').selectOption('bom')
+  await expect(page.getByTestId('bom')).toContainText(/[234] × /)
+})
+
+test('filter: the DC/CISPR 25 topology drops the touch budget and swaps the 5 uH LISN (ABT #292)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('topology').selectOption('dc')
+  await page.getByTestId('areq-cm').fill('30')   // the >=1 A stub pool tops out at 2.2 mH
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  // chassis-referenced DC port: no IEC touch-current budget to chip
+  await expect(page.getByTestId('touch-verdict')).not.toBeVisible()
+  await page.getByTestId('pane-select-a').selectOption('netlist')
+  await expect(page.getByTestId('netlist')).toContainText('5e-06')   // CISPR 25 5 uH LISN
+  await expect(page.getByTestId('netlist')).toContainText('ESL/ESR not modeled')
+})
+
+test('filter: a 20 A line current raises saturation warnings on undersized chokes (ABT #290)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('areq-cm').fill('35')
+  await page.getByTestId('sec-comp').click()
+  await page.getByTestId('mfr-filter').selectOption('Würth Elektronik')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('line-current').fill('20')
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('sch-CMC1').click()
+  // 20 A RMS -> 28.3 A peak; the WE stub parts saturate at 2 / 10 A peak
+  await expect(page.getByTestId('saturation-warn').first()).toContainText('A pk >')
+})

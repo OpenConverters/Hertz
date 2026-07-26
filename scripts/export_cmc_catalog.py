@@ -186,6 +186,7 @@ def main(source_path, output_path, curves_path=None):
                                         max(rated) if rated else None),
                 "ratedVoltageAcV": electrical.get("ratedVoltageAC"),
                 "ratedVoltageDcV": electrical.get("ratedVoltageDC"),
+                "saturationCurrentPeakA": electrical.get("saturationCurrentPeak"),
             }
             if part["mpn"] and part["manufacturer"]:
                 if curve_cm or curve_dm:

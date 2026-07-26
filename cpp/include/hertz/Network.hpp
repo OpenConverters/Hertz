@@ -42,16 +42,25 @@ inline double insertion_loss_db(const Abcd& network, Complex zSource, Complex zL
 
 // One LC low-pass stage per ANP015: series inductor from the noise source,
 // shunt capacitor at the measurement side; identical stages cascaded.
-inline Abcd lc_filter_abcd(double fHz, double inductanceH, double capacitanceF, int stages) {
+// capEslH / capEsrOhm: series parasitics of the SHUNT capacitor branch (#290)
+// — above the cap's self-resonance 1/(2*pi*sqrt(ESL*C)) the branch turns
+// inductive and the real filter stops improving. Defaults of 0 keep the ideal
+// element.
+inline Abcd lc_filter_abcd(double fHz, double inductanceH, double capacitanceF, int stages,
+                           double capEslH = 0.0, double capEsrOhm = 0.0) {
     if (fHz <= 0.0 || inductanceH <= 0.0 || capacitanceF <= 0.0) {
         throw std::invalid_argument("frequency, inductance and capacitance must be positive");
     }
     if (stages < 1 || stages > 4) {
         throw std::invalid_argument("stages must be 1..4");
     }
+    if (capEslH < 0.0 || capEsrOhm < 0.0) {
+        throw std::invalid_argument("capacitor parasitics must be non-negative");
+    }
     double w = 2.0 * std::numbers::pi * fHz;
+    Complex shuntZ(capEsrOhm, w * capEslH - 1.0 / (w * capacitanceF));
     Abcd stage = cascade(series_impedance(Complex(0.0, w * inductanceH)),
-                         shunt_admittance(Complex(0.0, w * capacitanceF)));
+                         shunt_admittance(Complex(1.0, 0.0) / shuntZ));
     Abcd network;
     for (int s = 0; s < stages; ++s) {
         network = cascade(network, stage);
@@ -77,7 +86,8 @@ struct InsertionLossCurves {
 inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capacitanceF,
                                                  int stages, double referenceImpedanceOhm,
                                                  double fMinHz, double fMaxHz,
-                                                 int pointsPerDecade = 40) {
+                                                 int pointsPerDecade = 40,
+                                                 double capEslH = 0.0, double capEsrOhm = 0.0) {
     if (!(0.0 < fMinHz && fMinHz < fMaxHz) || pointsPerDecade < 2) {
         throw std::invalid_argument("bad frequency range");
     }
@@ -91,7 +101,7 @@ inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capa
     Complex reference(referenceImpedanceOhm, 0.0);
     for (int i = 0; i <= steps; ++i) {
         double f = std::pow(10.0, logMin + (logMax - logMin) * i / steps);
-        Abcd network = lc_filter_abcd(f, inductanceH, capacitanceF, stages);
+        Abcd network = lc_filter_abcd(f, inductanceH, capacitanceF, stages, capEslH, capEsrOhm);
         curves.frequenciesHz.push_back(f);
         curves.standardDb.push_back(insertion_loss_db(network, reference, reference));
         curves.worstCaseDb.push_back(insertion_loss_worst_case_db(network));

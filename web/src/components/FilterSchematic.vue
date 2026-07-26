@@ -17,6 +17,8 @@ const props = defineProps({
   labels: { type: Object, required: true },    // ref -> value label ("3.3 mH")
   bindings: { type: Object, required: true },  // ref -> {mpn} | undefined
   selected: { type: String, default: '' },
+  dc: { type: Boolean, default: false },       // 12/48 V variant: +/RTN/CH port labels
+  interactive: { type: Boolean, default: true },  // false = static illustration (report sheet)
 })
 const emit = defineEmits(['select'])
 
@@ -140,18 +142,19 @@ const cls = (ref) => ({
       <g font-family="var(--mono)" font-size="12" fill="var(--ink-dim)">
         <circle v-for="p in [[30, yLine], [30, yNeutral], [30, yPe], [width - 40, yLine], [width - 40, yNeutral]]"
                 :key="p.join()" :cx="p[0]" :cy="p[1]" r="3.5" fill="var(--bg-deep)" stroke="var(--ink-dim)" stroke-width="1.6" />
-        <text :x="14" :y="yLine + 4">L</text>
-        <text :x="14" :y="yNeutral + 4">N</text>
-        <text :x="10" :y="yPe + 4">PE</text>
-        <text :x="width - 30" :y="yLine + 4">L'</text>
-        <text :x="width - 30" :y="yNeutral + 4">N'</text>
+        <text :x="dc ? 10 : 14" :y="yLine + 4">{{ dc ? '+' : 'L' }}</text>
+        <text :x="dc ? 2 : 14" :y="yNeutral + 4">{{ dc ? 'RTN' : 'N' }}</text>
+        <text :x="dc ? 4 : 10" :y="yPe + 4">{{ dc ? 'CH' : 'PE' }}</text>
+        <text :x="width - 30" :y="yLine + 4">{{ dc ? "+'" : "L'" }}</text>
+        <text :x="width - 36" :y="yNeutral + 4">{{ dc ? "RTN'" : "N'" }}</text>
       </g>
 
       <template v-for="s in stages" :key="'stage' + s">
         <!-- CMC: one compact coupled choke — windings jogged toward the shared
              two-bar core, humps facing the core, dots on the same (left) end -->
-        <g :class="cls(`CMC${s}`)" :data-test="`sch-CMC${s}`" @click="hotspot(`CMC${s}`)"
-           @keydown.enter="hotspot(`CMC${s}`)" tabindex="0" role="button" :aria-label="`Select CMC${s}`">
+        <g :class="cls(`CMC${s}`)" :data-test="interactive ? `sch-CMC${s}` : null" @click="hotspot(`CMC${s}`)"
+           @keydown.enter="hotspot(`CMC${s}`)" :tabindex="interactive ? 0 : null"
+           :role="interactive ? 'button' : null" :aria-label="`Select CMC${s}`">
           <rect :x="xCmc(s) - 8" :y="yLine - 16" width="76" :height="yNeutral - yLine + 32" fill="transparent" />
           <g stroke="currentColor" stroke-width="2" fill="none">
             <!-- jogs from the rails into the symbol -->
@@ -178,8 +181,9 @@ const cls = (ref) => ({
         </g>
 
         <!-- X capacitor between the lines, plates centered in the span -->
-        <g :class="cls(`C_X${s}`)" :data-test="`sch-CX${s}`" @click="hotspot(`C_X${s}`)"
-           @keydown.enter="hotspot(`C_X${s}`)" tabindex="0" role="button" :aria-label="`Select C_X${s}`">
+        <g :class="cls(`C_X${s}`)" :data-test="interactive ? `sch-CX${s}` : null" @click="hotspot(`C_X${s}`)"
+           @keydown.enter="hotspot(`C_X${s}`)" :tabindex="interactive ? 0 : null"
+           :role="interactive ? 'button' : null" :aria-label="`Select C_X${s}`">
           <rect :x="xCx(s) - 20" :y="yLine + 4" width="40" :height="yNeutral - yLine - 8" fill="transparent" />
           <g stroke="currentColor" stroke-width="1.6">
             <line :x1="xCx(s)" :y1="yLine" :x2="xCx(s)" :y2="yCapMid - 4" />
@@ -200,8 +204,9 @@ const cls = (ref) => ({
 
         <!-- Y capacitors: both between N and PE, side by side. The L-side one
              HOPS the neutral rail (no-connection arc). Bound as a pair. -->
-        <g :class="cls(`C_YL${s}`)" :data-test="`sch-CY${s}`" @click="hotspot(`C_YL${s}`)"
-           @keydown.enter="hotspot(`C_YL${s}`)" tabindex="0" role="button" :aria-label="`Select Y capacitors, stage ${s}`">
+        <g :class="cls(`C_YL${s}`)" :data-test="interactive ? `sch-CY${s}` : null" @click="hotspot(`C_YL${s}`)"
+           @keydown.enter="hotspot(`C_YL${s}`)" :tabindex="interactive ? 0 : null"
+           :role="interactive ? 'button' : null" :aria-label="`Select Y capacitors, stage ${s}`">
           <rect :x="xCyL(s) - 16" :y="yLine + 4" width="58" :height="yPe - yLine - 8" fill="transparent" />
           <g stroke="currentColor" stroke-width="1.6" fill="none">
             <!-- L-side: down from L, hop over N, into the cap, on to PE -->

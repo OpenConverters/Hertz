@@ -95,3 +95,31 @@ test('view-model and brick share one truth', () => {
   const nets = filterNets(2)
   assert.equal(new Set(nets.map((n) => n.name)).size, nets.length)
 })
+
+test('a quantity-2 X-cap bank expands into parallel siblings and validates (#294)', () => {
+  const bindings = { ...BINDINGS, C_X1: { ...BINDINGS.C_X1, quantity: 2 } }
+  const brick = buildFilterCias(1, bindings)
+  assert.ok(validate(brick), JSON.stringify(validate.errors, null, 1))
+  const names = brick.components.map((c) => c.name)
+  assert.ok(names.includes('C_X1.1') && names.includes('C_X1.2') && !names.includes('C_X1'))
+  // both siblings sit on BOTH X-cap nets (true parallel), and every endpoint
+  // still references a declared component
+  for (const netName of ['line_1', 'neutral_1']) {
+    const pins = brick.connections.find((n) => n.name === netName)
+      .endpoints.filter((e) => e.component).map((e) => e.component)
+    assert.ok(pins.includes('C_X1.1') && pins.includes('C_X1.2'), netName)
+  }
+  const componentNames = new Set(names)
+  for (const net of brick.connections) {
+    for (const ep of net.endpoints) {
+      if (ep.component) assert.ok(componentNames.has(ep.component), `${net.name}: ${ep.component}`)
+    }
+  }
+})
+
+test('the DC-supply topology brick validates with chassis-role ports (#292)', () => {
+  const brick = buildFilterCias(1, BINDINGS, 'dc')
+  assert.ok(validate(brick), JSON.stringify(validate.errors, null, 1))
+  assert.equal(brick.name, 'dc-supply-filter-1stage')
+  assert.match(brick.ports.find((p) => p.name === 'pe').description, /chassis/)
+})

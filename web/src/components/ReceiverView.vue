@@ -116,8 +116,24 @@ function designFromModes() {
   // f_co = min_i(f_i / 10^(A_i/(40 n))) for ITS stage count — the only
   // reduction that guarantees every binding frequency without pairing one
   // frequency with a requirement measured at another.
+  const inBand = (r) => {
+    const freqs = [], levels = []
+    for (let i = 0; i < r.frequenciesHz.length; i += 1) {
+      const f = r.frequenciesHz[i]
+      if (f >= BAND_RANGE[band.value][0] && f <= BAND_RANGE[band.value][1] && Number.isFinite(r.quasiPeakDbuv[i])) {
+        freqs.push(f); levels.push(r.quasiPeakDbuv[i])
+      }
+    }
+    return { freqs, levels }
+  }
+  const cm = inBand(modal.value.cm)
+  const dm = inBand(modal.value.dm)
   store.handoff = { binding: targets.value.binding,
-                    aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm }
+                    aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm,
+                    scan: { standardId: targetStandard.value, detector: 'quasi_peak', traces: [
+                      { name: 'CM (receiver QP)', mode: 'cm', frequenciesHz: cm.freqs, levelsDbuv: cm.levels },
+                      { name: 'DM (receiver QP)', mode: 'dm', frequenciesHz: dm.freqs, levelsDbuv: dm.levels },
+                    ] } }
   store.mode = 'filter'
 }
 
