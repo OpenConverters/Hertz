@@ -96,7 +96,10 @@ async function computeTargets() {
 }
 
 function designFromModes() {
-  store.handoff = { aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm }
+  // carry the worst-offender frequency so the designer works where the noise is
+  const worstFreq = targets.value.lineL?.frequencyHz ?? targets.value.lineN?.frequencyHz ?? null
+  store.handoff = { aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm,
+                    fSwHz: worstFreq }
   store.mode = 'filter'
 }
 

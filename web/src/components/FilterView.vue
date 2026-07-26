@@ -142,6 +142,10 @@ async function compute() {
   design.value = null
   netlist.value = ''
   escalated.value = false
+  interaction.value = null
+  ilCm.value = null
+  ilDm.value = null
+  worstCaseAt.value = null
   try {
     const engine = await api()
     if (lCmSource.value === 'catalog' && catalogState.value === 'ready' && !catalogCandidates().length) {
@@ -212,10 +216,14 @@ async function compute() {
     ilCm.value = attempt.cm
     ilDm.value = attempt.dm
     worstCaseAt.value = attempt.at
-    netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16', netlistMode.value)
     const d = design.value
     interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF,
       Number(vInMin.value), Number(pIn.value))
+    try {
+      netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16', netlistMode.value)
+    } catch (netlistError) {
+      netlist.value = '* netlist unavailable: ' + netlistError.message
+    }
   } catch (e) {
     error.value = e.message
   }
@@ -240,7 +248,8 @@ const ilSeries = () => [
     points: ilDm.value.frequenciesHz.map((f, i) => ({ f, v: ilDm.value.worstCaseDb[i] })) },
 ]
 const requirementMarkers = () => [
-  { f: design.value.fDesignHz, v: Number(aReqCm.value) },
+  { f: design.value.fDesignHz, v: Number(aReqCm.value), color: 'var(--s-1)' },
+  { f: design.value.fDesignHz, v: Number(aReqDm.value), color: 'var(--s-2)' },
 ]
 
 const schematicLabels = () => {
@@ -291,7 +300,7 @@ const recommendations = () => {
   if (!pool.length) return { kind, target, parts: [], unavailable: true }
   const parts = pool
     .map((p) => ({ ...p, deviation: Math.abs(p.valueF - target) / target }))
-    .sort((a, b) => a.deviation - b.deviation || (b.ratedVoltageV ?? 0) - (a.ratedVoltageV ?? 0))
+    .sort((a, b) => a.deviation - b.deviation || String(a.mpn).localeCompare(String(b.mpn)))
     .slice(0, 8)
   return { kind, target, parts, unavailable: false }
 }
@@ -340,6 +349,9 @@ async function bindPart(part) {
   }
 }
 
+// CMCs only, by design: the caps catalog's ratedVoltageV mixes AC-class and DC
+// ratings, and comparing an X2's 305 VAC class number to the grid PEAK would
+// false-alarm on nearly every legitimate safety cap. Do not "fix" this.
 const bindingVoltageWarning = (binding) => {
   if (!binding || !binding.maxRatedV) return null
   const peak = Number(gridVrms.value) * Math.SQRT2
@@ -533,7 +545,7 @@ function downloadNetlist() {
             <tr><td>L<sub>CM</sub> required</td><td>{{ fmtSi(design.lCmRequiredH, 'H') }}</td></tr>
             <tr><td>L<sub>CM</sub> selected</td><td data-test="lcm"><strong>{{ fmtSi(design.lCmSelectedH, 'H') }}</strong> (per stage)</td></tr>
             <tr><td>C<sub>Y</sub></td><td>2 × {{ fmtSi(design.cYPerLineF, 'F') }} per stage</td></tr>
-            <tr><td>Sizing asymptote (ideal 40·n·log₁₀ estimate — the worst-case chip above is the verdict)</td>
+            <tr><td>Sizing asymptote (ideal 40·n·log₁₀ estimate — the in-circuit chip above is the verdict)</td>
               <td data-test="il-cm">{{ fmtDb(design.attenuationCmDb) }} dB</td></tr>
           </tbody>
         </table>
@@ -546,7 +558,7 @@ function downloadNetlist() {
             <tr><td>L<sub>DM</sub> (leakage)</td><td>{{ fmtSi(design.lDmH, 'H') }}</td></tr>
             <tr><td>C<sub>X</sub> required</td><td>{{ fmtSi(design.cXRequiredF, 'F') }}</td></tr>
             <tr><td>C<sub>X</sub> selected</td><td><strong>{{ fmtSi(design.cXSelectedF, 'F') }}</strong> (per stage)</td></tr>
-            <tr><td>Sizing asymptote (ideal — see worst-case chip above)</td>
+            <tr><td>Sizing asymptote (ideal — see the in-circuit chip above)</td>
               <td>{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
           </tbody>
         </table>

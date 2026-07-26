@@ -9,6 +9,7 @@ import { fmtHz, fmtDb } from '../format.js'
 
 const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis, uncovered}
 const rawFiles = ref([])        // {name, text} — kept so unit changes re-read files
+const parseProblems = ref([])   // per-file failures — never erased by a later analyze()
 const comb = ref(null)
 const U_CISPR_DB = 3.6          // CISPR 16-4-2 measurement uncertainty, conducted mains
 const standardId = ref('cispr32_class_b')
@@ -44,22 +45,31 @@ async function parseAll() {
     const parsed = []
     const problems = []
     for (const { name, text } of rawFiles.value) {
-      try {
-        // the file's own header wins; the override only fills silent headers
-        let trace
+      // MINIMAL override: each stated header unit always wins; an override may
+      // only fill an axis the header left silent. Trying (none), (freq only),
+      // (level only), (both) in order guarantees a stated dBm header can never
+      // be clobbered into dBuV by the level dropdown.
+      const attempts = [['', ''], [freqUnit.value, ''], ['', levelUnit.value],
+                        [freqUnit.value, levelUnit.value]]
+      let trace = null, lastError = null
+      for (const [fu, lu] of attempts) {
         try {
-          trace = engine.parseSpectrumCsv(text, '', '')
-        } catch {
-          trace = engine.parseSpectrumCsv(text, freqUnit.value, levelUnit.value)
+          trace = engine.parseSpectrumCsv(text, fu, lu)
+          break
+        } catch (attemptError) {
+          lastError = attemptError
         }
+      }
+      if (trace) {
         parsed.push({ name, ...trace, analysis: null, uncovered: false })
-      } catch (fileError) {
-        problems.push(`${name}: ${fileError.message}`)
+      } else {
+        problems.push(`${name}: ${lastError.message}`)
       }
     }
     traces.value = parsed
-    if (problems.length) error.value = problems.join(' · ')
+    parseProblems.value = problems
     if (parsed.length) await analyze()
+    else if (problems.length) error.value = problems.join(' · ')
   } catch (e) {
     error.value = e.message
   } finally {
@@ -89,8 +99,12 @@ async function analyze() {
       throw new Error('no trace point falls inside the selected limit — check the standard and the frequency units')
     }
     limitRuns.value = engine.limitPolyline(standardId.value, detector.value, fMin, fMax)
-    const first = traces.value[0]
-    comb.value = engine.detectComb(first.frequenciesHz, first.levelsDbuv)
+    try {
+      const first = traces.value.find((t) => t.analysis) ?? traces.value[0]
+      comb.value = engine.detectComb(first.frequenciesHz, first.levelsDbuv)
+    } catch {
+      comb.value = null  // ancillary: must never poison the limit verdict
+    }
     traces.value = [...traces.value]
   } catch (e) {
     error.value = e.message
@@ -237,6 +251,8 @@ function onDrop(event) {
           protected broadcast bands — points between the bands are shown grey and never judged.</p>
       </div>
 
+      <div v-if="parseProblems.length" class="err" data-test="file-problems">
+        Files not read: {{ parseProblems.join(' · ') }}</div>
       <div v-if="error" class="err" data-test="error">{{ error }}</div>
     </div>
 
@@ -276,8 +292,9 @@ function onDrop(event) {
           Not covered by this limit (ignored in the verdict): {{ uncoveredNames.join(', ') }}</p>
         <p v-if="uncoveredPointSummary.length" class="note" data-test="uncovered-points" style="color: var(--amber)">
           Outside the limit's bands and therefore NOT judged (grey dashes on the chart):
-          {{ uncoveredPointSummary.join(' · ') }} — CISPR 25 defines no limit between the protected
-          broadcast bands, but other services may.</p>
+          {{ uncoveredPointSummary.join(' · ') }}{{ standardId.startsWith('cispr25')
+            ? ' — CISPR 25 defines no limit between the protected broadcast bands, but other services may.'
+            : ' — this limit does not extend to those frequencies.' }}</p>
         <div style="margin-top: 0.8rem">
           <button v-if="verdictState !== 'pass'" class="act" data-test="design-fix" @click="designTheFix">Design the fix →</button>
         </div>

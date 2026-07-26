@@ -103,6 +103,10 @@ const legend = computed(() => [
     <svg v-if="domain" :viewBox="`0 0 ${width} ${height}`" role="img" :aria-label="yLabel + ' vs frequency'"
          style="width: 100%; height: auto; display: block" @mousemove="onMove" @mouseleave="hover = null">
       <defs>
+        <clipPath id="plotarea">
+          <rect :x="margins.left" :y="margins.top" :width="width - margins.left - margins.right"
+                :height="height - margins.top - margins.bottom" />
+        </clipPath>
         <filter id="phosphor" x="-20%" y="-20%" width="140%" height="140%">
           <feGaussianBlur stdDeviation="2.2" result="blur" />
           <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
@@ -133,9 +137,11 @@ const legend = computed(() => [
               font-family="var(--mono)" font-size="11" :fill="r.color">{{ r.label }}</text>
       </g>
 
-      <!-- measured traces: thin phosphor with a soft glow -->
-      <path v-for="s in series" :key="s.id" :d="path(s.points)" fill="none" :stroke="s.color"
-            stroke-width="2" :stroke-dasharray="s.dash || 'none'" filter="url(#phosphor)" />
+      <!-- measured traces: thin phosphor with a soft glow, clipped to the plot -->
+      <g clip-path="url(#plotarea)">
+        <path v-for="s in series" :key="s.id" :d="path(s.points)" fill="none" :stroke="s.color"
+              stroke-width="2" :stroke-dasharray="s.dash || 'none'" filter="url(#phosphor)" />
+      </g>
 
       <!-- violations: status red, ringed for overlap -->
       <circle v-for="(p, i) in violations" :key="'v' + i" :cx="x(p.f)" :cy="y(p.v)" r="3.2"

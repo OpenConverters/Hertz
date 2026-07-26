@@ -182,3 +182,31 @@ test('receiver: co-frequency CM+DM no longer under-states the requirement (Berge
   const cm = parseFloat(await page.getByTestId('target-cm').textContent())
   expect(cm).toBeGreaterThanOrEqual(12)
 })
+
+test('spectrum: a stated dBm header survives a dBuV override (Berger R-1 blocker)', async ({ page }) => {
+  // header states dBm but not the frequency unit; user must supply MHz. The
+  // level override must NOT clobber the stated dBm (-10 dBm = 97 dBuV = FAIL).
+  const lines = ['Frequency,Level (dBm)']
+  for (let f = 0.15; f <= 30; f *= 1.05) lines.push(f.toFixed(4) + ',-10')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('select').first().selectOption('MHz')       // frequency unit
+  await page.locator('select').nth(1).selectOption('dBuV')       // level override (must lose)
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'dbm_header.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('offenders')).toContainText('97.0')
+})
+
+test('spectrum: a broken file is reported, not silently dropped (Berger R-2)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles([
+    { name: 'good.csv', mimeType: 'text/csv',
+      buffer: Buffer.from('Frequency [MHz];Level [dBµV]\n0.2;40\n0.5;41\n1.0;42\n') },
+    { name: 'broken.csv', mimeType: 'text/csv', buffer: Buffer.from('not a spectrum at all') },
+  ])
+  await expect(page.getByTestId('verdict')).toBeVisible()
+  await expect(page.getByTestId('file-problems')).toContainText('broken.csv')
+})
