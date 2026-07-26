@@ -12,6 +12,7 @@ const props = defineProps({
   yLabel: { type: String, required: true },
   height: { type: Number, default: 380 },
   violationLabel: { type: String, default: 'over limit' },
+  clampRangeDb: { type: Number, default: 0 },  // 0 = off; else vMin >= vMax - clamp
 })
 
 const width = 920
@@ -27,6 +28,7 @@ const domain = computed(() => {
   props.series.forEach((s) => s.points.forEach(scanPoint))
   props.refRuns.forEach((r) => r.runs.forEach((run) => run.forEach(scanPoint)))
   if (!isFinite(fMin)) return null
+  if (props.clampRangeDb > 0) vMin = Math.max(vMin, vMax - props.clampRangeDb)
   const pad = Math.max(4, (vMax - vMin) * 0.08)
   return { fMin, fMax, vMin: Math.floor((vMin - pad) / 10) * 10, vMax: Math.ceil((vMax + pad) / 10) * 10 }
 })
@@ -137,7 +139,7 @@ const legend = computed(() => [
 
       <!-- violations: status red, ringed for overlap -->
       <circle v-for="(p, i) in violations" :key="'v' + i" :cx="x(p.f)" :cy="y(p.v)" r="3.2"
-              fill="var(--fault)" stroke="var(--bg-deep)" stroke-width="1.5" />
+              :fill="p.color || 'var(--fault)'" stroke="var(--bg-deep)" stroke-width="1.5" />
 
       <!-- hover crosshair + tooltip -->
       <g v-if="hover">

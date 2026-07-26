@@ -86,11 +86,11 @@ def read_spectrum_csv(path, freq_unit=None, level_unit=None, z0_ohm=50.0):
         level_unit = "dbuv"
     if freq_unit not in _FREQ_UNITS:
         raise TraceFormatError(
-            f"{path}: frequency unit not stated in header — pass freq_unit explicitly"
+            f"{path}: frequency unit not stated in the file header — select it in the unit control"
         )
     if level_unit not in ("dbuv", "dbm"):
         raise TraceFormatError(
-            f"{path}: level unit not stated in header — pass level_unit explicitly"
+            f"{path}: level unit not stated in the file header — select it in the unit control"
         )
 
     data = np.asarray(rows, dtype=float)

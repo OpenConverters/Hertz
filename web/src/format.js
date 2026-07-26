@@ -1,4 +1,5 @@
 export function fmtHz(f) {
+  if (f >= 1e12) return trim(f / 1e12) + ' THz'
   if (f >= 1e9) return trim(f / 1e9) + ' GHz'
   if (f >= 1e6) return trim(f / 1e6) + ' MHz'
   if (f >= 1e3) return trim(f / 1e3) + ' kHz'

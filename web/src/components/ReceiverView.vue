@@ -14,7 +14,8 @@ const band = ref('B')
 const reading = ref(null)
 const modal = ref(null)         // dual-channel result: {cm: reading, dm: reading}
 const targetStandard = ref('cispr32_class_b')
-const targets = ref(null)       // {aReqCm, aReqDm} from the modal spectra vs the limit
+const targets = ref(null)       // {aReqCm, aReqDm, lineWorst} — judged on the LINE voltages
+const channels = ref(null)      // retained raw channels for line-spectrum judgement
 const sourceName = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -35,6 +36,7 @@ async function run(samples, fsHz, name, secondChannel = null) {
       // two synchronized line channels: exact CM/DM separation, then a
       // receiver run per mode — the only honest way to split the modes
       const separated = engine.separateTraces(samples, secondChannel)
+      channels.value = { v1: samples, v2: secondChannel, fsHz }
       modal.value = {
         cm: engine.measureWaveform(separated.commonMode, fsHz, band.value),
         dm: engine.measureWaveform(separated.differentialMode, fsHz, band.value),
@@ -53,18 +55,41 @@ async function computeTargets() {
   error.value = ''
   try {
     const engine = await api()
-    const requirement = (r) => {
+    const inBand = (r) => {
       const freqs = [], levels = []
       for (let i = 0; i < r.frequenciesHz.length; i += 1) {
         const f = r.frequenciesHz[i]
-        if (f >= BAND_RANGE[band.value][0] && f <= BAND_RANGE[band.value][1] && isFinite(r.quasiPeakDbuv[i])) {
+        if (f >= BAND_RANGE[band.value][0] && f <= BAND_RANGE[band.value][1] && Number.isFinite(r.quasiPeakDbuv[i])) {
           freqs.push(f); levels.push(r.quasiPeakDbuv[i])
         }
       }
-      const analysis = engine.limitAnalysis(targetStandard.value, 'quasi_peak', freqs, levels)
-      return Math.max(0, Math.ceil(analysis.requiredAttenuationDb))
+      return { freqs, levels }
     }
-    targets.value = { aReqCm: requirement(modal.value.cm), aReqDm: requirement(modal.value.dm) }
+    // What CISPR limits is each LINE voltage V_L, V_N — judge those first.
+    const lineL = engine.measureWaveform(channels.value.v1, channels.value.fsHz, band.value)
+    const lineN = engine.measureWaveform(channels.value.v2, channels.value.fsHz, band.value)
+    const judge = (r, marginBufferDb) => {
+      const { freqs, levels } = inBand(r)
+      if (!freqs.length) return { required: 0, worst: null }  // silent channel/mode
+      const analysis = engine.limitAnalysis(targetStandard.value, 'quasi_peak', freqs, levels, marginBufferDb)
+      return { required: Math.max(0, Math.ceil(analysis.requiredAttenuationDb)), worst: analysis.worst }
+    }
+    const jL = judge(lineL, 10), jN = judge(lineN, 10)
+    // Per-mode targets carry a 6 dB in-phase summation allowance on top of the
+    // 10 dB margin: at a frequency where CM and DM are comparable, each mode
+    // must sit ~6 dB below the limit for their SUM on one line to meet it.
+    const jCm = judge(modal.value.cm, 16), jDm = judge(modal.value.dm, 16)
+    targets.value = {
+      aReqCm: jCm.required,
+      aReqDm: jDm.required,
+      lineL: jL.worst, lineN: jN.worst,
+      lineRequired: Math.max(jL.required, jN.required),
+    }
+    // never hand over per-mode targets that jointly under-shoot the line requirement
+    if (targets.value.aReqCm + targets.value.aReqDm < targets.value.lineRequired) {
+      targets.value.aReqCm = Math.max(targets.value.aReqCm, targets.value.lineRequired)
+      targets.value.aReqDm = Math.max(targets.value.aReqDm, targets.value.lineRequired)
+    }
   } catch (e) {
     error.value = 'targets: ' + e.message
   }
@@ -88,7 +113,7 @@ async function ingest(files) {
     const text = await file.text()
     const rows = []
     for (const line of text.split(/\r?\n/)) {
-      const nums = line.split(/[,;\t]/).map(Number).filter((x) => isFinite(x))
+      const nums = line.split(/[,;\t]/).map(Number).filter((x) => Number.isFinite(x))
       if (nums.length >= 2) rows.push(nums)
     }
     if (rows.length < 100) throw new Error('expected a time,voltage CSV (or time,v_line,v_neutral for CM/DM) with at least 100 rows')
@@ -107,7 +132,7 @@ async function ingest(files) {
   }
 }
 
-const clampToBand = (p) => p.f >= BAND_RANGE[band.value][0] && p.f <= BAND_RANGE[band.value][1] && isFinite(p.v)
+const clampToBand = (p) => p.f >= BAND_RANGE[band.value][0] && p.f <= BAND_RANGE[band.value][1] && Number.isFinite(p.v)
 const seriesFor = (r) => [
   { id: 'qp', label: 'quasi-peak', color: 'var(--s-1)',
     points: r.frequenciesHz.map((f, i) => ({ f, v: r.quasiPeakDbuv[i] })).filter(clampToBand) },
@@ -162,7 +187,7 @@ const modalSeries = () => [
     <div>
       <div v-if="busy" class="panel"><p class="note">Measuring… the receiver chains run over every envelope sample.</p></div>
       <template v-else-if="modal">
-        <LogChart :series="modalSeries()" y-label="dBµV" data-test="receiver-chart" />
+        <LogChart :series="modalSeries()" y-label="dBµV" :clamp-range-db="110" data-test="receiver-chart" />
         <div class="panel" style="margin-top: 1rem">
           <p class="section-label">Design targets from the separated modes</p>
           <div class="row">
@@ -173,13 +198,22 @@ const modalSeries = () => [
             <button class="ghost" data-test="compute-targets" @click="computeTargets" style="align-self: end">Compute CM/DM targets</button>
           </div>
           <div v-if="targets" class="readout">
+            <div class="cell"><b>Line L worst (the limited quantity)</b>
+              <span>{{ targets.lineL ? fmtDb(targets.lineL.levelDbuv) : '—' }}</span>
+              <span class="unit">{{ targets.lineL ? 'dBµV vs ' + fmtDb(targets.lineL.limitDbuv) + ' @ ' + fmtHz(targets.lineL.frequencyHz) : 'silent' }}</span></div>
+            <div class="cell"><b>Line N worst</b>
+              <span>{{ targets.lineN ? fmtDb(targets.lineN.levelDbuv) : '—' }}</span>
+              <span class="unit">{{ targets.lineN ? 'dBµV vs ' + fmtDb(targets.lineN.limitDbuv) : 'silent' }}</span></div>
             <div class="cell"><b>Required CM attenuation</b><span data-test="target-cm">{{ fmtDb(targets.aReqCm, 0) }}</span><span class="unit">dB</span></div>
             <div class="cell"><b>Required DM attenuation</b><span>{{ fmtDb(targets.aReqDm, 0) }}</span><span class="unit">dB</span></div>
           </div>
+          <p v-if="targets" class="note">Targets are judged on the reconstructed LINE voltages
+            (what the standard limits), with a 6 dB in-phase mode-summation allowance folded into
+            each per-mode requirement, plus the 10 dB engineering margin.</p>
           <button v-if="targets" class="act" data-test="design-from-modes" style="margin-top: 0.6rem" @click="designFromModes">Design filter for these modes →</button>
         </div>
       </template>
-      <LogChart v-else-if="reading" :series="seriesFor(reading)" y-label="dBµV" data-test="receiver-chart" />
+      <LogChart v-else-if="reading" :series="seriesFor(reading)" y-label="dBµV" :clamp-range-db="110" data-test="receiver-chart" />
       <div v-else class="screen"><p class="note" style="padding: 2rem 1rem">Feed a waveform or run the demo — the three detector traces land here.</p></div>
       <p v-if="reading" class="note" style="margin-top: 0.5rem">{{ sourceName }} — band {{ band }}</p>
     </div>

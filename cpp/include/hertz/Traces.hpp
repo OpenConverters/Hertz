@@ -199,10 +199,10 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
     } else if (freq == "ghz") {
         freqScale = 1e9;
     } else {
-        throw TraceFormatError("frequency unit not stated in header — pass freqUnit explicitly");
+        throw TraceFormatError("frequency unit not stated in the file header — select it in the unit control");
     }
     if (level != "dbuv" && level != "dbm") {
-        throw TraceFormatError("level unit not stated in header — pass levelUnit explicitly");
+        throw TraceFormatError("level unit not stated in the file header — select it in the unit control");
     }
 
     std::vector<size_t> order(rows.size());

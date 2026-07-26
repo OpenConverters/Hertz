@@ -120,9 +120,12 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
     try {
         lCmSelected = round_up_to(lCmRequired, lCmCandidates);
     } catch (const std::invalid_argument&) {
-        throw std::invalid_argument("no CM-choke candidate >= the required " +
-                                    std::to_string(lCmRequired * 1e3) +
-                                    " mH — add a larger part, raise C_Y, or relax the requirement");
+        char msg[160];
+        std::snprintf(msg, sizeof(msg),
+                      "no CM-choke candidate >= the required %.3g mH — add a larger part, raise "
+                      "C_Y, relax the requirement, or loosen the catalog filters",
+                      lCmRequired * 1e3);
+        throw std::invalid_argument(msg);
     }
     double attenuationCm = achieved_attenuation_db(fDesign, lCmSelected, cYg, stages);
 
@@ -131,9 +134,11 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
     try {
         cXSelected = round_up_to(cXRequired, cXCandidates);
     } catch (const std::invalid_argument&) {
-        throw std::invalid_argument("no X-capacitor candidate >= the required " +
-                                    std::to_string(cXRequired * 1e6) +
-                                    " uF — add a larger part or relax the DM requirement");
+        char msg[160];
+        std::snprintf(msg, sizeof(msg),
+                      "no X-capacitor candidate >= the required %.3g uF — add a larger part or "
+                      "relax the DM requirement", cXRequired * 1e6);
+        throw std::invalid_argument(msg);
     }
     double attenuationDm = achieved_attenuation_db(fDesign, lDmH, cXSelected, stages);
 

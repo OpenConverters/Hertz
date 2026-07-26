@@ -43,6 +43,10 @@ def resolve_dimensional(value):
 
 SAFE_TECHNOLOGY_PREFIXES = ("film", "ceramic")
 MIN_RATED_VOLTAGE = {"X2": 275.0, "Y2": 250.0}
+# Physical range of parts that actually hold the safety approval. Review found
+# Vishay MKP1848 DC-LINK caps (4-100 uF) whose ordering code ends in "Y2": a
+# "100 uF Y capacitor" would pass 7 A line-to-earth — no such approval exists.
+CAPACITANCE_RANGE = {"X2": (1e-9, 15e-6), "Y2": (100e-12, 100e-9)}
 
 
 def classify(part_number, series):
@@ -86,6 +90,9 @@ def main(source_path, output_path):
                 capacitance_f = resolve_dimensional(capacitance)
             except ValueError:
                 skipped += 1
+                continue
+            lo, hi = CAPACITANCE_RANGE[safety_class]
+            if not lo <= capacitance_f <= hi:
                 continue
             entry = {
                 "mpn": part.get("partNumber"),

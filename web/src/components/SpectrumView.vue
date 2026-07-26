@@ -41,14 +41,27 @@ async function parseAll() {
   busy.value = true
   try {
     const engine = await api()
-    traces.value = rawFiles.value.map(({ name, text }) => {
-      const trace = engine.parseSpectrumCsv(text, freqUnit.value, levelUnit.value)
-      return { name, ...trace, analysis: null, uncovered: false }
-    })
-    await analyze()
+    const parsed = []
+    const problems = []
+    for (const { name, text } of rawFiles.value) {
+      try {
+        // the file's own header wins; the override only fills silent headers
+        let trace
+        try {
+          trace = engine.parseSpectrumCsv(text, '', '')
+        } catch {
+          trace = engine.parseSpectrumCsv(text, freqUnit.value, levelUnit.value)
+        }
+        parsed.push({ name, ...trace, analysis: null, uncovered: false })
+      } catch (fileError) {
+        problems.push(`${name}: ${fileError.message}`)
+      }
+    }
+    traces.value = parsed
+    if (problems.length) error.value = problems.join(' · ')
+    if (parsed.length) await analyze()
   } catch (e) {
-    error.value = e.message +
-      (e.message.includes('explicitly') ? ' — select the unit above; files are re-read automatically.' : '')
+    error.value = e.message
   } finally {
     busy.value = false
   }
@@ -118,10 +131,36 @@ const offenders = computed(() => {
   return rows.sort((a, b) => a.margin - b.margin).slice(0, 8)
 })
 
-const chartSeries = computed(() => traces.value.map((t, i) => ({
-  id: t.name + i, label: t.name, color: seriesColors[i],
-  points: t.frequenciesHz.map((f, k) => ({ f, v: t.levelsDbuv[k] })),
-})))
+const chartSeries = computed(() => {
+  const series = []
+  traces.value.forEach((t, i) => {
+    if (t.analysis) {
+      const covered = [], uncovered = []
+      t.analysis.covered.forEach((isCovered, k) => {
+        (isCovered ? covered : uncovered).push({ f: t.frequenciesHz[k], v: t.levelsDbuv[k] })
+      })
+      series.push({ id: t.name + i, label: t.name, color: seriesColors[i], points: covered })
+      if (uncovered.length) {
+        series.push({ id: t.name + i + 'u', label: `${t.name} — outside limit coverage (not judged)`,
+                      color: 'var(--ink-dim)', dash: '2 3', points: uncovered })
+      }
+    } else {
+      series.push({ id: t.name + i, label: t.name + (t.uncovered ? ' (not covered)' : ''),
+                    color: t.uncovered ? 'var(--ink-dim)' : seriesColors[i],
+                    points: t.frequenciesHz.map((f, k) => ({ f, v: t.levelsDbuv[k] })) })
+    }
+  })
+  return series
+})
+const uncoveredPointSummary = computed(() => {
+  const rows = []
+  for (const t of traces.value) {
+    if (!t.analysis) continue
+    const n = t.analysis.covered.filter((c) => !c).length
+    if (n > 0) rows.push(`${t.name}: ${n} of ${t.analysis.covered.length} points`)
+  }
+  return rows
+})
 const chartRefRuns = computed(() => (limitRuns.value ? [{
   label: detector.value === 'average' ? 'AVG limit' : detector.value === 'peak' ? 'PK limit' : 'QP limit',
   color: 'var(--s-limit)', dash: '7 5', runs: limitRuns.value.runs,
@@ -194,7 +233,8 @@ function onDrop(event) {
             <option v-for="d in detectors" :key="d" :value="d">{{ d.replace('_', '-') }}</option>
           </select>
         </label>
-        <p class="note">CISPR 25 defines limits only inside protected broadcast bands — points between bands are reported as not covered, never as passing.</p>
+        <p v-if="standardId.startsWith('cispr25')" class="note">CISPR 25 defines limits only inside
+          protected broadcast bands — points between the bands are shown grey and never judged.</p>
       </div>
 
       <div v-if="error" class="err" data-test="error">{{ error }}</div>
@@ -217,7 +257,8 @@ function onDrop(event) {
             <span>{{ fmtDb(worst.levelDbuv) }} / {{ fmtDb(worst.limitDbuv) }}</span><span class="unit">dBµV</span>
           </div>
           <div class="cell"><b>Attenuation for a 10 dB margin</b>
-            <span data-test="areq">{{ fmtDb(requiredAttenuation) }}</span><span class="unit">dB</span>
+            <span data-test="areq">{{ requiredAttenuation !== null && requiredAttenuation <= 0 ? '0' : fmtDb(requiredAttenuation) }}</span>
+            <span class="unit">{{ requiredAttenuation !== null && requiredAttenuation <= 0 ? '(≥10 dB in hand)' : 'dB' }}</span>
           </div>
           <div v-if="comb" class="cell"><b>Switching frequency</b>
             <span v-if="comb.found" data-test="fsw-detected">{{ fmtHz(comb.fSwHz) }}</span>
@@ -225,11 +266,18 @@ function onDrop(event) {
             <span v-if="comb.found" class="unit">{{ comb.harmonics.length }} harmonics</span>
           </div>
         </div>
+        <p v-if="verdictState === 'fail' && worst.marginDb > -U_CISPR_DB" class="note" style="color: var(--amber)">
+          FAIL by less than the ±{{ U_CISPR_DB }} dB measurement uncertainty — an accredited chamber
+          might pass this article, but resolve it with margin, not hope.</p>
         <p v-if="verdictState === 'marginal'" class="note" style="color: var(--amber)">
           Worst margin is inside the ±{{ U_CISPR_DB }} dB CISPR 16-4-2 measurement uncertainty — an
           accredited chamber can read this either way. Treat as unresolved, not as passing.</p>
         <p v-if="uncoveredNames.length" class="note" data-test="uncovered-note">
           Not covered by this limit (ignored in the verdict): {{ uncoveredNames.join(', ') }}</p>
+        <p v-if="uncoveredPointSummary.length" class="note" data-test="uncovered-points" style="color: var(--amber)">
+          Outside the limit's bands and therefore NOT judged (grey dashes on the chart):
+          {{ uncoveredPointSummary.join(' · ') }} — CISPR 25 defines no limit between the protected
+          broadcast bands, but other services may.</p>
         <div style="margin-top: 0.8rem">
           <button v-if="verdictState !== 'pass'" class="act" data-test="design-fix" @click="designTheFix">Design the fix →</button>
         </div>

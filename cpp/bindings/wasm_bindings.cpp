@@ -35,11 +35,14 @@ Hertz::Detector detector_from_string(const std::string& name) {
 
 Hertz::LimitLine limit_line_for(const std::string& standardId, const std::string& detectorName) {
     Hertz::Detector detector = detector_from_string(detectorName);
-    if (standardId == "cispr32_class_b") {
-        return detector == Hertz::Detector::AVERAGE ? Hertz::cispr32_class_b_mains_avg()
-                                                    : Hertz::cispr32_class_b_mains_qp();
-    }
-    if (standardId == "cispr32_class_a") {
+    if (standardId == "cispr32_class_b" || standardId == "cispr32_class_a") {
+        if (detector == Hertz::Detector::PEAK) {
+            throw std::invalid_argument("CISPR 32 defines no conducted peak limit");
+        }
+        if (standardId == "cispr32_class_b") {
+            return detector == Hertz::Detector::AVERAGE ? Hertz::cispr32_class_b_mains_avg()
+                                                        : Hertz::cispr32_class_b_mains_qp();
+        }
         return detector == Hertz::Detector::AVERAGE ? Hertz::cispr32_class_a_mains_avg()
                                                     : Hertz::cispr32_class_a_mains_qp();
     }
@@ -236,7 +239,8 @@ std::string design_filter_js(const std::string& paramsJson)  {
 
 // SPICE netlist of the designed filter between a noise port and the LISN, ready
 // for Kirchhoff/ngspice/LTspice (.ac analysis of insertion loss).
-std::string filter_spice_netlist_js(const std::string& designJson, const std::string& lisnKind)  {
+std::string filter_spice_netlist_js(const std::string& designJson, const std::string& lisnKind,
+                                    const std::string& mode)  {
     return guarded([&]() -> std::string {
     json design = json::parse(designJson);
     Hertz::Lisn lisn = lisnKind == "cispr25" ? Hertz::cispr25_lisn() : Hertz::cispr16_lisn();
@@ -282,9 +286,15 @@ std::string filter_spice_netlist_js(const std::string& designJson, const std::st
     }
     netlist += "XlisnL line_out mains_l measL LISN\nXlisnN neut_out mains_n measN LISN\n";
     netlist += "Vmains mains_l 0 DC 0\nRmains mains_n 0 1m\n";
-    netlist += "* drive: replace with the converter noise source\n";
-    netlist += "Vnoise line_src neut_src AC 1\n";
-    netlist += ".ac dec 100 150k 30meg\n.end\n";
+    netlist += "* LISN model omissions (see LISN screen): band-A branch, mains 1uF, 1k bleed\n";
+    if (mode == "cm") {
+        netlist += "* COMMON-MODE drive: both lines together against PE (exercises choke + Y caps)\n";
+        netlist += "Vnoise cm_src 0 AC 1\nRsrcL cm_src line_src 1m\nRsrcN cm_src neut_src 1m\n";
+    } else {
+        netlist += "* DIFFERENTIAL-MODE drive: line against neutral\n";
+        netlist += "Vnoise line_src neut_src AC 1\n";
+    }
+    netlist += ".ac dec 100 150k 30meg\n.print ac vdb(measL) vdb(measN)\n.end\n";
     return netlist;
 });
 }

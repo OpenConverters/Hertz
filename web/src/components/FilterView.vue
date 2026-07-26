@@ -22,12 +22,15 @@ const lCandidatesMh = ref('0.47, 0.68, 1, 1.5, 2.2, 3.3, 4.7, 6.8, 10')
 const cxCandidatesUf = ref('0.1, 0.15, 0.22, 0.33, 0.47, 0.68, 1, 1.5, 2.2, 3.3')
 const gridVrms = ref(230)
 const gridHz = ref(50)
+const touchLimitMa = ref(3.5)   // selected compliance tier for the touch-current verdict
 const design = ref(null)
 const netlist = ref('')
+const netlistMode = ref('dm')
 const error = ref('')
 const ilCm = ref(null)
 const ilDm = ref(null)
 const worstCaseAt = ref(null)   // {cm: {standard, worst}, dm: {...}} at f_design
+const escalated = ref(false)    // selector had to go beyond the asymptote sizing
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
 const pIn = ref(25)
@@ -37,7 +40,6 @@ const catalog = ref(null)            // {count, parts:[{mpn,manufacturer,family,
 const catalogState = ref('loading')  // 'loading' | 'ready' | 'unavailable'
 const mfrFilter = ref('')
 const minRatedA = ref(1)
-const minRatedV = ref(0)
 const capsCatalog = ref(null)
 const selectedRef = ref('')
 const bindings = ref({})
@@ -74,9 +76,7 @@ function catalogPartsAnyL() {
   if (!catalog.value) return []
   return catalog.value.parts.filter((p) =>
     (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
-    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)) &&
-    (Number(minRatedV.value) <= 0 ||
-      Math.max(p.ratedVoltageAcV ?? 0, p.ratedVoltageDcV ?? 0) >= Number(minRatedV.value)))
+    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)))
 }
 
 function catalogParts() {
@@ -131,7 +131,7 @@ const matchedParts = () => (!design.value || !catalog.value) ? [] : catalogParts
 
 function parseList(text, scale) {
   const values = text.split(/[,;\s]+/).filter(Boolean).map(Number)
-  if (!values.length || values.some((x) => !isFinite(x) || x <= 0)) {
+  if (!values.length || values.some((x) => !Number.isFinite(x) || x <= 0)) {
     throw new Error('candidate list must be positive numbers')
   }
   return values.map((x) => x * scale)
@@ -141,8 +141,12 @@ async function compute() {
   error.value = ''
   design.value = null
   netlist.value = ''
+  escalated.value = false
   try {
     const engine = await api()
+    if (lCmSource.value === 'catalog' && catalogState.value === 'ready' && !catalogCandidates().length) {
+      throw new Error('the manufacturer / rated-current filters removed every catalog part — loosen them')
+    }
     const params = {
       fSwHz: fSwKhz.value * 1e3,
       aReqCmDb: Number(aReqCm.value),
@@ -164,24 +168,54 @@ async function compute() {
     selectedRef.value = ''
     measured.value = null
     measuredIlAt.value = {}
-    design.value = engine.designFilter(params)
-    netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16')
-    const d = design.value
+    // The verdict criterion is the nominal in-circuit insertion loss (25 Ω CM /
+    // 100 Ω DM — the terminations a CISPR 16 AMN actually presents). The ANP015
+    // asymptote only SIZES; if the sized part misses the in-circuit criterion,
+    // escalate through the candidate list until it passes or runs out.
     const span = { fMinHz: 150e3, fMaxHz: 30e6, pointsPerDecade: 30 }
-    ilCm.value = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
-      stages: d.stages, referenceImpedanceOhm: 25, ...span })
-    ilDm.value = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
-      stages: d.stages, referenceImpedanceOhm: 100, ...span })
+    const evaluate = (p) => {
+      const d = engine.designFilter(p)
+      const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
+        stages: d.stages, referenceImpedanceOhm: 25, ...span })
+      const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
+        stages: d.stages, referenceImpedanceOhm: 100, ...span })
+      const at = (il) => {
+        let nearest = 0
+        for (let k = 1; k < il.frequenciesHz.length; k += 1) {
+          if (Math.abs(il.frequenciesHz[k] - d.fDesignHz) < Math.abs(il.frequenciesHz[nearest] - d.fDesignHz)) nearest = k
+        }
+        return { standard: il.standardDb[nearest], worst: il.worstCaseDb[nearest] }
+      }
+      return { d, cm, dm, at: { cm: at(cm), dm: at(dm) } }
+    }
+    let attempt = evaluate(params)
+    for (let guard = 0; guard < 8; guard += 1) {
+      const needCm = attempt.at.cm.standard < Number(params.aReqCmDb)
+      const needDm = attempt.at.dm.standard < Number(params.aReqDmDb)
+      if (!needCm && !needDm) break
+      const next = { ...params }
+      let changed = false
+      if (needCm) {
+        const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH)
+        if (larger.length) { next.lCmCandidatesH = larger; changed = true }
+      }
+      if (needDm) {
+        const larger = params.cXCandidatesF.filter((v) => v > attempt.d.cXSelectedF)
+        if (larger.length) { next.cXCandidatesF = larger; changed = true }
+      }
+      if (!changed) break
+      Object.assign(params, next)
+      attempt = evaluate(params)
+      escalated.value = true
+    }
+    design.value = attempt.d
+    ilCm.value = attempt.cm
+    ilDm.value = attempt.dm
+    worstCaseAt.value = attempt.at
+    netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16', netlistMode.value)
+    const d = design.value
     interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF,
       Number(vInMin.value), Number(pIn.value))
-    const at = (il) => {
-      let nearest = 0
-      for (let k = 1; k < il.frequenciesHz.length; k += 1) {
-        if (Math.abs(il.frequenciesHz[k] - d.fDesignHz) < Math.abs(il.frequenciesHz[nearest] - d.fDesignHz)) nearest = k
-      }
-      return { standard: il.standardDb[nearest], worst: il.worstCaseDb[nearest] }
-    }
-    worstCaseAt.value = { cm: at(ilCm.value), dm: at(ilDm.value) }
   } catch (e) {
     error.value = e.message
   }
@@ -269,7 +303,8 @@ watch(selectedRef, (ref_) => {
 async function bindPart(part) {
   const kind = kindOf(selectedRef.value)
   for (const c of filterComponents(design.value.stages)) {
-    if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer }
+    if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer,
+      maxRatedV: Math.max(part.ratedVoltageAcV ?? 0, part.ratedVoltageDcV ?? 0) || null }
   }
   bindings.value = { ...bindings.value }
   if (kind !== 'cmc') return
@@ -305,10 +340,17 @@ async function bindPart(part) {
   }
 }
 
+const bindingVoltageWarning = (binding) => {
+  if (!binding || !binding.maxRatedV) return null
+  const peak = Number(gridVrms.value) * Math.SQRT2
+  return binding.maxRatedV < peak
+    ? `rated ${binding.maxRatedV} V < ${Math.round(peak)} V grid peak — NOT a mains part` : null
+}
 const bomRows = () => filterComponents(design.value.stages).map((c) => ({
   ref: c.ref,
   value: schematicLabels()[c.ref],
   binding: bindings.value[c.ref] ?? null,
+  warning: bindingVoltageWarning(bindings.value[c.ref]),
 }))
 const allBound = () => filterComponents(design.value.stages).every((c) => bindings.value[c.ref]?.mpn)
 
@@ -382,8 +424,6 @@ function downloadNetlist() {
               <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
           <label class="field"><span>Min. rated current (A)</span>
             <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
-          <label class="field"><span>Min. rated voltage (V, 0 = any)</span>
-            <input v-model.number="minRatedV" type="number" min="0" /></label>
         </div>
         <label class="field"><span>X capacitor candidates (µF)</span>
           <input v-model="cxCandidatesUf" type="text" /></label>
@@ -403,19 +443,24 @@ function downloadNetlist() {
           <div class="cell"><b>Design frequency</b><span>{{ fmtHz(design.fDesignHz) }}</span></div>
           <div class="cell"><b>Target cutoff</b><span>{{ fmtHz(design.fCutoffTargetHz) }}</span></div>
           <div class="cell"><b>Stages</b><span>{{ design.stages }}</span></div>
-          <div v-if="worstCaseAt" class="cell"><b>CM worst case @ f<sub>design</sub></b>
-            <span class="chip" :class="worstCaseAt.cm.worst >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">
-              {{ fmtDb(worstCaseAt.cm.worst) }} dB {{ worstCaseAt.cm.worst >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }}</span>
+          <div v-if="worstCaseAt" class="cell"><b>CM in-circuit @ f<sub>design</sub> (25 Ω LISN)</b>
+            <span class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">
+              {{ fmtDb(worstCaseAt.cm.standard) }} dB {{ worstCaseAt.cm.standard >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }}</span>
           </div>
-          <div v-if="worstCaseAt" class="cell"><b>DM worst case @ f<sub>design</sub></b>
-            <span class="chip" :class="worstCaseAt.dm.worst >= Number(aReqDm) ? 'pass' : 'fail'" data-test="wc-verdict-dm">
-              {{ fmtDb(worstCaseAt.dm.worst) }} dB {{ worstCaseAt.dm.worst >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
+          <div v-if="worstCaseAt" class="cell"><b>DM in-circuit @ f<sub>design</sub> (100 Ω LISN)</b>
+            <span class="chip" :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'pass' : 'fail'" data-test="wc-verdict-dm">
+              {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
           </div>
         </div>
-        <p v-if="worstCaseAt && (worstCaseAt.cm.worst < Number(aReqCm) || worstCaseAt.dm.worst < Number(aReqDm))"
-           class="note" style="color: var(--fault)" data-test="wc-warning">
-          The CISPR 17 worst-case terminations eat the margin the ideal sizing promises — add a stage,
-          raise the component values, or verify the real source/load impedances before trusting this design.</p>
+        <p v-if="escalated" class="note" data-test="escalated-note">
+          The asymptote-sized parts missed the in-circuit criterion, so the selector escalated to
+          larger candidates until it passed — the verdict above scores what was actually selected.</p>
+        <p v-if="worstCaseAt" class="note">
+          Robustness caveat — CISPR 17 worst case (0.1 Ω/100 Ω, both orientations, worst kept):
+          CM {{ fmtDb(worstCaseAt.cm.worst) }} dB, DM {{ fmtDb(worstCaseAt.dm.worst) }} dB at
+          f<sub>design</sub>. The 0.1 Ω-source orientation is NOT the LISN measurement condition
+          (an AMN presents 25 Ω CM / 100 Ω DM by construction); it bounds sensitivity to an unknown
+          converter-side impedance, and single-stage DM filters score near 0 dB against it by nature.</p>
       </div>
 
       <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
@@ -443,11 +488,14 @@ function downloadNetlist() {
                 {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
               <td>{{ kindOf(selectedRef) === 'cmc'
                 ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify')
-                : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V' : '') }}</td>
+                : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V*' : '') }}</td>
               <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
             </tr>
           </tbody>
         </table>
+        <p v-if="kindOf(selectedRef) !== 'cmc'" class="note">*Datasheet rated voltage — MIXED
+          AC and DC bases: the X2/Y2 class itself is defined for ≤310 VAC mains; values like
+          630 V are DC ratings on the same film part. Verify the AC rating on the datasheet.</p>
         <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
           Most catalogued chokes carry no voltage rating — for mains use, verify insulation class
           against the datasheet before committing; chip-scale data-line chokes are never mains parts.</p>
@@ -464,7 +512,8 @@ function downloadNetlist() {
           <tbody>
             <tr v-for="row in bomRows()" :key="row.ref">
               <td>{{ row.ref }}</td><td>{{ row.value }}</td>
-              <td v-if="row.binding"><strong>{{ row.binding.mpn }}</strong> <span class="note">{{ row.binding.manufacturer }}</span></td>
+              <td v-if="row.binding"><strong>{{ row.binding.mpn }}</strong> <span class="note">{{ row.binding.manufacturer }}</span>
+                <span v-if="row.warning" style="color: var(--fault)" data-test="bom-voltage-warning"> — {{ row.warning }}</span></td>
               <td v-else class="note">unbound — click the part in the schematic</td>
             </tr>
           </tbody>
@@ -519,7 +568,7 @@ function downloadNetlist() {
 
       <div class="panel" v-if="ilCm && ilDm">
         <p class="section-label">In-circuit insertion loss — solid: nominal terminations · dashed: CISPR 17 worst case (0.1 Ω/100 Ω) · dot: your requirement</p>
-        <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirement" y-label="dB" :height="300" data-test="il-chart" />
+        <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirements (CM green, DM blue)" y-label="dB" :height="300" data-test="il-chart" />
         <p class="note">If the dashed worst-case curve still clears your requirement at the design frequency, termination uncertainty cannot eat the margin.</p>
         <p class="note">Ideal-element curves ignore self-resonance, ESL and winding capacitance —
           above a few MHz a real single-stage filter plateaus at 50–70 dB. Bind a part with a
@@ -561,9 +610,15 @@ function downloadNetlist() {
         <p class="section-label">Safety checks (worst case: V+10 %, C+20 %)</p>
         <table class="data">
           <tbody>
-            <tr><td>PE touch current (single line-side Y path per IEC 60990 — worst case V+10 %, C+20 %)</td>
-              <td :class="design.leakageCurrentA < 3.5e-3 ? 'pos' : 'neg'">
-                {{ fmtSi(design.leakageCurrentA, 'A') }} <span class="note">(limits: 3.5 mA IEC 62368-1 Class I · 0.75 mA some appliance standards · 0.5 mA medical)</span></td></tr>
+            <tr><td>PE touch current (single line-side Y path per IEC 60990 — worst case V+10 %, C+20 %)
+                <select v-model.number="touchLimitMa" style="width: auto; margin-left: 0.5em" data-test="touch-tier">
+                  <option :value="3.5">vs 3.5 mA (IEC 62368-1 Class I)</option>
+                  <option :value="0.75">vs 0.75 mA (appliance)</option>
+                  <option :value="0.5">vs 0.5 mA (medical)</option>
+                </select></td>
+              <td :class="design.leakageCurrentA < touchLimitMa * 1e-3 ? 'pos' : 'neg'" data-test="touch-verdict">
+                {{ fmtSi(design.leakageCurrentA, 'A') }}
+                {{ design.leakageCurrentA < touchLimitMa * 1e-3 ? 'passes' : 'EXCEEDS' }} {{ touchLimitMa }} mA</td></tr>
             <tr><td>X discharge resistor (V+10 %, C+20 %)</td>
               <td>≤ {{ fmtSi(design.dischargeResistorMaxOhm, 'Ω') }} → <strong>{{ fmtSi(design.dischargeResistorOhm, 'Ω') }}</strong>
                 ({{ fmtSi(design.dischargeResistorPowerW, 'W') }} continuous — mind no-load standby budgets,
@@ -574,6 +629,11 @@ function downloadNetlist() {
 
       <div class="panel">
         <p class="section-label">SPICE export — filter + CISPR 16 LISN, ready for Kirchhoff / ngspice / LTspice</p>
+        <label class="field"><span>Excitation deck</span>
+          <select v-model="netlistMode" data-test="netlist-mode" @change="api().then((e) => { netlist = e.filterSpiceNetlist(design, 'cispr16', netlistMode) })">
+            <option value="dm">differential-mode drive (C_X path)</option>
+            <option value="cm">common-mode drive (choke + Y caps)</option>
+          </select></label>
         <pre class="code" data-test="netlist">{{ netlist }}</pre>
         <div class="row" style="margin-top: 0.6rem">
           <button class="ghost" @click="downloadNetlist">Download .cir</button>

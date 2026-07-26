@@ -22,6 +22,17 @@ import sys
 
 # Slice-level canonicalization of manufacturer spellings (duplicates found in
 # review; upstream data fix tracked in ABT). Majority spelling wins.
+def plausible_dcr(dcr_ohm, rated_a):
+    """None unless the value can be a real winding DC resistance. Review found
+    Z@100MHz specs stored as dcResistance (3000 ohm 'DCR' on a 1.5 A part) and
+    0.0 sentinels; showing either as DCR poisons thermal judgement."""
+    if dcr_ohm is None or dcr_ohm <= 0.0 or dcr_ohm > 50.0:
+        return None
+    if rated_a is not None and dcr_ohm * rated_a * rated_a > 5.0:
+        return None
+    return dcr_ohm
+
+
 MANUFACTURER_CANONICAL = {
     "ABRACON": "Abracon",
     "Murata Electronics": "Murata",
@@ -115,7 +126,8 @@ def main(source_path, output_path, curves_path=None):
                 "family": info.get("family") or "",
                 "inductanceH": inductance_h,
                 "ratedCurrentA": max(rated) if rated else None,
-                "dcrOhm": resolve_dimensional(dcr) if dcr is not None else None,
+                "dcrOhm": plausible_dcr(resolve_dimensional(dcr) if dcr is not None else None,
+                                        max(rated) if rated else None),
                 "ratedVoltageAcV": electrical.get("ratedVoltageAC"),
                 "ratedVoltageDcV": electrical.get("ratedVoltageDC"),
             }

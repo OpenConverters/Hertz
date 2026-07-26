@@ -142,3 +142,43 @@ test('receiver: 2-channel capture separates CM/DM and hands per-mode targets to 
   await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
   await expect(page.getByTestId('bom')).toBeVisible()
 })
+
+test('spectrum: CISPR 25 between-band points are visibly excluded, never silently passed', async ({ page }) => {
+  // Berger NEW-2 repro: quiet inside the protected bands, 115 dBuV between them
+  const lines = ['Frequency [MHz];Level [dBµV]']
+  for (let f = 150e3; f <= 30e6; f *= 1.03) {
+    const inBand = (f >= 150e3 && f <= 300e3) || (f >= 530e3 && f <= 1.8e6) ||
+      (f >= 5.9e6 && f <= 6.2e6) || (f >= 26e6 && f <= 28e6)
+    lines.push((f / 1e6).toFixed(5) + ';' + (inBand ? '20.0' : '115.0'))
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('standard').selectOption('cispr25_class_5')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'between_bands.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
+  await expect(page.getByTestId('uncovered-points')).toContainText('NOT judged')
+})
+
+test('receiver: co-frequency CM+DM no longer under-states the requirement (Berger NEW-3)', async ({ page }) => {
+  // v_line = 2 mV tone, v_neutral = 0 -> CM = DM = 1 mV at the same frequency.
+  // The line voltage is 63 dBuV vs a 60.2 limit: true need ~12.8 dB, not 7.
+  const fs = 3e6
+  const lines = ['t,v_line,v_neutral']
+  for (let i = 0; i < 0.05 * fs; i += 1) {
+    const t_ = i / fs
+    lines.push(t_.toFixed(9) + ',' + (2e-3 * Math.sin(2 * Math.PI * 300e3 * t_)).toPrecision(6) + ',0')
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'cofreq.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 60_000 })
+  await page.getByTestId('compute-targets').click()
+  await expect(page.getByTestId('target-cm')).toBeVisible()
+  const cm = parseFloat(await page.getByTestId('target-cm').textContent())
+  expect(cm).toBeGreaterThanOrEqual(12)
+})
