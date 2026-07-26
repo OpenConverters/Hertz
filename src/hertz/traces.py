@@ -135,12 +135,37 @@ def _column_header_cell(scan, column):
     return cells[token_index] if token_index < len(cells) else ""
 
 
+def _frequency_column(scan):
+    """1-based numeric column carrying the frequency axis. Column 1 unless the
+    header names exactly one OTHER column as frequency (a frequency unit token
+    or "freq" in its cell) — the "No.,Frequency (MHz),Level" index-first
+    export shape is common, and reading the index as megahertz fabricates the
+    whole axis. Two frequency-looking columns are ambiguous and raise."""
+    candidates = []
+    for k in range(1, scan.numeric_columns + 1):
+        cell = _column_header_cell(scan, k).lower()
+        if not cell:
+            continue
+        unit_hit = any(
+            re.search(rf"(?<![a-z0-9]){unit}(?![a-z0-9])", cell) for unit in _FREQ_UNITS
+        )
+        if unit_hit or "freq" in cell:
+            candidates.append(k)
+    if len(candidates) > 1:
+        raise TraceFormatError(
+            "several columns look like the frequency axis — clean the export so exactly "
+            "one column names a frequency"
+        )
+    return candidates[0] if candidates else 1
+
+
 def spectrum_csv_columns(path):
-    """(count, names) of the numeric columns, for callers that must offer a
-    level-column choice on multi-trace exports. names[k] labels 1-based
-    numeric column k+1 ("" when the header has no cell for it)."""
+    """(count, frequency_column, names) of the numeric columns, for callers
+    that must offer a level-column choice on multi-trace exports. names[k]
+    labels 1-based numeric column k+1 ("" when the header has no cell for
+    it)."""
     scan = _scan_csv(path)
-    return scan.numeric_columns, [
+    return scan.numeric_columns, _frequency_column(scan), [
         _column_header_cell(scan, k) for k in range(1, scan.numeric_columns + 1)
     ]
 
@@ -154,27 +179,36 @@ def read_spectrum_csv(path, freq_unit=None, level_unit=None, z0_ohm=50.0, level_
     numeric columns (multi-trace export).
     """
     scan = _scan_csv(path)
+    freq_column = _frequency_column(scan)
 
-    if level_column is None and scan.numeric_columns > 2:
+    if level_column is not None:
+        level = int(level_column)
+        if not 1 <= level <= scan.numeric_columns:
+            raise TraceFormatError(
+                f"{path}: level column {level} out of range — the file has "
+                f"{scan.numeric_columns} numeric columns"
+            )
+        if level == freq_column:
+            raise TraceFormatError(
+                f"{path}: level column {level} is the frequency column — pick a level trace"
+            )
+    elif scan.numeric_columns == 2:
+        level = 2 if freq_column == 1 else 1
+    else:
         names = ", ".join(
             f'{k}: "{_column_header_cell(scan, k) or f"column {k}"}"'
-            for k in range(2, scan.numeric_columns + 1)
+            for k in range(1, scan.numeric_columns + 1)
+            if k != freq_column
         )
         raise TraceFormatError(
             f"{path}: multiple level columns: the file carries {scan.numeric_columns} numeric "
             f"columns (a multi-trace export) — say which one to judge: {names}"
         )
-    level = 2 if level_column is None else int(level_column)
-    if not 2 <= level <= scan.numeric_columns:
-        raise TraceFormatError(
-            f"{path}: level column {level} out of range — the file has "
-            f"{scan.numeric_columns} numeric columns"
-        )
 
     column_line = scan.header_lines[-1] if scan.header_lines else ""
     preamble = " ".join(scan.header_lines[:-1])
     file_freq_unit = _find_unit_tiered(
-        (_column_header_cell(scan, 1), column_line, preamble),
+        (_column_header_cell(scan, freq_column), column_line, preamble),
         tuple(_FREQ_UNITS), "frequency", bool(freq_unit))
     file_level_unit = _find_unit_tiered(
         (_column_header_cell(scan, level), column_line, preamble),
@@ -194,12 +228,13 @@ def read_spectrum_csv(path, freq_unit=None, level_unit=None, z0_ohm=50.0, level_
             f"{path}: level unit not stated in the file header — select it in the unit control"
         )
 
+    needed = max(freq_column, level)
     for index, row in enumerate(scan.rows, start=1):
-        if len(row) < level:
+        if len(row) < needed:
             raise TraceFormatError(
-                f"{path}: data row {index} has only {len(row)} numeric columns — needed {level}"
+                f"{path}: data row {index} has only {len(row)} numeric columns — needed {needed}"
             )
-        f = row[0] * _FREQ_UNITS[freq_unit]
+        f = row[freq_column - 1] * _FREQ_UNITS[freq_unit]
         if not math.isfinite(f) or not math.isfinite(row[level - 1]):
             raise TraceFormatError(
                 f"{path}: non-finite value in data row {index} — clean the export before judging it"
@@ -210,7 +245,7 @@ def read_spectrum_csv(path, freq_unit=None, level_unit=None, z0_ohm=50.0, level_
                 "DC/index rows, and check the delimiter/decimal convention"
             )
 
-    data = np.asarray([(row[0], row[level - 1]) for row in scan.rows], dtype=float)
+    data = np.asarray([(row[freq_column - 1], row[level - 1]) for row in scan.rows], dtype=float)
     freqs = data[:, 0] * _FREQ_UNITS[freq_unit]
     levels = data[:, 1]
     if level_unit == "dbm":

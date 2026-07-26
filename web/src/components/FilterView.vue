@@ -70,7 +70,7 @@ function deriveFromBindings() {
   aReqDm.value = dm ? Math.ceil(dm[1]) : 0
   fCritCmHz.value = cm ? cm[0] : dm[0]
   fCritDmHz.value = dm ? dm[0] : cm[0]
-  fSwKhz.value = Math.min(fCritCmHz.value, fCritDmHz.value) / 1e3
+  fSwKhz.value = Math.round(Math.min(fCritCmHz.value, fCritDmHz.value)) / 1e3
   const label = (mode, best, points) => best
     ? `${mode} ${Math.ceil(best[1])} dB @ ${(best[0] / 1e3).toFixed(0)} kHz (${points} pts)`
     : `${mode} silent`
@@ -270,20 +270,44 @@ async function compute() {
       return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25, d.fDesignCmHz),
                                 dm: exactAt(d.lDmH, d.cXSelectedF, 100, d.fDesignDmHz) } }
     }
+    // in-circuit IL at exactly f_design — the same criterion the verdict chip
+    // scores, so the escalation target and the verdict can never disagree
+    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages) => {
+      const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: nStages,
+        referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
+        pointsPerDecade: 20000 })
+      return il.standardDb[Math.floor(il.frequenciesHz.length / 2)]
+    }
     let attempt = evaluate(params)
-    for (let guard = 0; guard < 8; guard += 1) {
+    for (let guard = 0; guard < 4; guard += 1) {
       const needCm = attempt.at.cm.standard < Number(params.aReqCmDb)
       const needDm = attempt.at.dm.standard < Number(params.aReqDmDb)
       if (!needCm && !needDm) break
       const next = { ...params }
       let changed = false
+      // Jump straight to the SMALLEST candidate meeting the in-circuit
+      // criterion (or to the largest available, reported honestly as a
+      // shortfall) — stepping one value per iteration never crossed a
+      // 600-value parts catalog within any sane iteration cap.
       if (needCm) {
-        const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH)
-        if (larger.length) { next.lCmCandidatesH = larger; changed = true }
+        const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH).sort((a, b) => a - b)
+        if (larger.length) {
+          const pass = larger.find((v) =>
+            ilAtDesign(v, attempt.d.cYgF, 25, attempt.d.fDesignCmHz, attempt.d.stages) >= Number(params.aReqCmDb))
+          next.lCmCandidatesH = pass !== undefined
+            ? params.lCmCandidatesH.filter((v) => v >= pass) : [larger[larger.length - 1]]
+          changed = true
+        }
       }
       if (needDm) {
-        const larger = params.cXCandidatesF.filter((v) => v > attempt.d.cXSelectedF)
-        if (larger.length) { next.cXCandidatesF = larger; changed = true }
+        const larger = params.cXCandidatesF.filter((v) => v > attempt.d.cXSelectedF).sort((a, b) => a - b)
+        if (larger.length) {
+          const pass = larger.find((v) =>
+            ilAtDesign(attempt.d.lDmH, v, 100, attempt.d.fDesignDmHz, attempt.d.stages) >= Number(params.aReqDmDb))
+          next.cXCandidatesF = pass !== undefined
+            ? params.cXCandidatesF.filter((v) => v >= pass) : [larger[larger.length - 1]]
+          changed = true
+        }
       }
       if (!changed) break
       Object.assign(params, next)
@@ -444,6 +468,11 @@ const bomRows = () => filterComponents(design.value.stages).map((c) => ({
 }))
 const allBound = () => filterComponents(design.value.stages).every((c) => bindings.value[c.ref]?.mpn)
 
+// A coupled pair cannot leak more than its full loop: K = 1 - L_dm/(2 L_cm)
+// must stay in (0,1). The netlist already refuses; the design panel must not
+// present an unbuildable BOM as valid either.
+const unrealizable = () => design.value && design.value.lDmH >= 2 * design.value.lCmSelectedH
+
 function downloadCias() {
   const brick = buildFilterCias(design.value.stages, bindings.value)
   const blob = new Blob([JSON.stringify(brick, null, 2)], { type: 'application/json' })
@@ -494,7 +523,7 @@ function downloadNetlist() {
         <label class="field"><span>Y capacitor per line (nF) — bounded by leakage current</span>
           <select v-model.number="cYnF"><option>1</option><option>2.2</option><option>3.3</option><option>4.7</option><option>10</option></select></label>
         <label class="field"><span>DM inductance source</span>
-          <select v-model="dmMode">
+          <select v-model="dmMode" data-test="dm-mode">
             <option value="impedance">from choke DM impedance curve (Z at f)</option>
             <option value="inductance">total loop leakage inductance directly</option>
           </select></label>
@@ -503,7 +532,7 @@ function downloadNetlist() {
           <label class="field"><span>at (MHz)</span><input v-model.number="dmImpedanceMhz" type="number" /></label>
         </div>
         <label v-else class="field"><span>Total loop leakage (µH) — line+neutral in series opposition (≈ 2× per-winding)</span>
-          <input v-model.number="lDmUh" type="number" /></label>
+          <input v-model.number="lDmUh" type="number" data-test="ldm-input" /></label>
         <label class="field"><span>CM choke source</span>
           <select v-model="lCmSource" data-test="lcm-source">
             <option value="manual">manual value list</option>
@@ -551,6 +580,11 @@ function downloadNetlist() {
               {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
           </div>
         </div>
+        <p v-if="unrealizable()" class="err" data-test="k-warning">
+          Not realizable as drawn: the DM (leakage) inductance {{ fmtSi(design.lDmH, 'H') }} is
+          ≥ 2 × the selected CM choke {{ fmtSi(design.lCmSelectedH, 'H') }} — a coupled pair cannot
+          leak more than 2·L<sub>CM</sub> (coupling K would leave (0,1)). Enter a real leakage value
+          or pick a larger choke; the CIAS export is disabled until this is resolved.</p>
         <p v-if="escalated" class="note" data-test="escalated-note">
           The asymptote-sized parts missed the in-circuit criterion, so the selector escalated to
           larger candidates until it passed — the verdict above scores what was actually selected.</p>
@@ -618,8 +652,9 @@ function downloadNetlist() {
           </tbody>
         </table>
         <div class="row" style="margin-top: 0.6rem">
-          <button class="ghost" data-test="download-cias" :disabled="!allBound()" @click="downloadCias()"
-                  :title="allBound() ? 'Download the CIAS circuit brick' : 'Bind every component first — a CIAS with placeholder parts is never produced'">
+          <button class="ghost" data-test="download-cias" :disabled="!allBound() || unrealizable()" @click="downloadCias()"
+                  :title="unrealizable() ? 'The leakage/choke pair is not physically realizable — fix it first'
+                    : allBound() ? 'Download the CIAS circuit brick' : 'Bind every component first — a CIAS with placeholder parts is never produced'">
             Download CIAS brick
           </button>
         </div>

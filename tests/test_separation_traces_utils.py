@@ -104,8 +104,9 @@ def test_multitrace_export_requires_column_choice(tmp_path):
     )
     with pytest.raises(TraceFormatError, match="multiple level columns"):
         read_spectrum_csv(path)
-    count, names = spectrum_csv_columns(path)
+    count, freq_column, names = spectrum_csv_columns(path)
     assert count == 3
+    assert freq_column == 1
     assert names == ["Frequency (MHz)", "Average (dBuV)", "Quasi-peak (dBuV)"]
     freqs, levels = read_spectrum_csv(path, level_column=3)
     assert levels.tolist() == [72.0, 69.0]
@@ -171,3 +172,32 @@ def test_preamble_units_still_resolve_unlabelled_columns(tmp_path):
         read_spectrum_csv(path, level_unit="dBuV")
     freqs, _ = read_spectrum_csv(path, freq_unit="MHz", level_unit="dBuV")
     assert freqs[0] == pytest.approx(150e3)
+
+def test_index_first_export_uses_the_stated_frequency_column(tmp_path):
+    # R7-1 (round 7): "No.,Frequency (MHz),QP" — the row index must never be
+    # read as megahertz; the header names the frequency column.
+    path = tmp_path / "idx_first.csv"
+    path.write_text(
+        "No.,Frequency (MHz),Quasi-peak (dBuV)\n1,0.15,72\n2,0.30,69\n3,0.50,62\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TraceFormatError, match='1: "No."') as info:
+        read_spectrum_csv(path)
+    assert '2: "Frequency' not in str(info.value)  # the freq column is not a level option
+    count, freq_column, names = spectrum_csv_columns(path)
+    assert (count, freq_column) == (3, 2)
+    freqs, levels = read_spectrum_csv(path, level_column=3)
+    np.testing.assert_allclose(freqs, [150e3, 300e3, 500e3])   # NOT [1e6, 2e6, 3e6]
+    np.testing.assert_allclose(levels, [72.0, 69.0, 62.0])
+    with pytest.raises(TraceFormatError, match="is the frequency column"):
+        read_spectrum_csv(path, level_column=2)
+
+
+def test_two_frequency_looking_columns_are_ambiguous(tmp_path):
+    path = tmp_path / "twofreq.csv"
+    path.write_text(
+        "Frequency (Hz),Start Frequency (Hz),Level (dBuV)\n150000,1,72\n500000,2,62\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TraceFormatError, match="look like the frequency axis"):
+        read_spectrum_csv(path, level_column=3)

@@ -259,6 +259,7 @@ TEST_CASE("Multi-trace export requires a level-column choice (F-1, round 6)", "[
                       Catch::Matchers::ContainsSubstring("multiple level columns"));
     auto columns = Hertz::spectrum_csv_columns(multi);
     CHECK(columns.count == 3);
+    CHECK(columns.frequencyColumn == 1);
     REQUIRE(columns.names.size() == 3);
     CHECK(columns.names[2] == "Quasi-peak (dBuV)");
     auto qp = Hertz::parse_spectrum_csv(multi, std::nullopt, std::nullopt, 50.0, 3);
@@ -267,6 +268,28 @@ TEST_CASE("Multi-trace export requires a level-column choice (F-1, round 6)", "[
     CHECK(avg.levelsDbuv[0] == Approx(50.0));
     CHECK_THROWS_AS(Hertz::parse_spectrum_csv(multi, std::nullopt, std::nullopt, 50.0, 4),
                     Hertz::TraceFormatError);
+}
+
+TEST_CASE("Index-first export uses the stated frequency column (R7-1, round 7)", "[traces]") {
+    // "No.,Frequency (MHz),QP" — the row index must never be read as megahertz.
+    const std::string idx =
+        "No.,Frequency (MHz),Quasi-peak (dBuV)\n1,0.15,72\n2,0.30,69\n3,0.50,62\n";
+    CHECK_THROWS_WITH(Hertz::parse_spectrum_csv(idx),
+                      Catch::Matchers::ContainsSubstring("1: \"No.\""));
+    auto columns = Hertz::spectrum_csv_columns(idx);
+    CHECK(columns.frequencyColumn == 2);
+    auto trace = Hertz::parse_spectrum_csv(idx, std::nullopt, std::nullopt, 50.0, 3);
+    REQUIRE(trace.frequenciesHz.size() == 3);
+    CHECK(trace.frequenciesHz[0] == Approx(150e3));  // NOT 1 MHz
+    CHECK(trace.frequenciesHz[2] == Approx(500e3));
+    CHECK(trace.levelsDbuv[0] == Approx(72.0));
+    CHECK_THROWS_WITH(Hertz::parse_spectrum_csv(idx, std::nullopt, std::nullopt, 50.0, 2),
+                      Catch::Matchers::ContainsSubstring("is the frequency column"));
+    // two frequency-looking columns are ambiguous, never guessed between
+    const std::string twoFreq =
+        "Frequency (Hz),Start Frequency (Hz),Level (dBuV)\n150000,1,72\n500000,2,62\n";
+    CHECK_THROWS_WITH(Hertz::parse_spectrum_csv(twoFreq, std::nullopt, std::nullopt, 50.0, 3),
+                      Catch::Matchers::ContainsSubstring("look like the frequency axis"));
 }
 
 TEST_CASE("Decimal-comma semicolon export (F-3, round 6)", "[traces]") {

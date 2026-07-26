@@ -46,14 +46,18 @@ async function parseAll() {
     const engine = await api()
     const parsed = []
     const problems = []
+    // every numeric column except the (header-identified) frequency axis is a
+    // candidate level trace
+    const pickerFor = (name, info) => ({
+      name,
+      chosen: columnChoice.value[name] ?? '',
+      options: info.names
+        .map((label, i) => ({ index: i + 1, label: label || `column ${i + 1}` }))
+        .filter((option) => option.index !== info.frequencyColumn),
+    })
     const pickers = rawFiles.value
       .filter(({ name }) => columnChoice.value[name])
-      .map(({ name, text }) => {
-        const info = engine.spectrumCsvColumns(text)
-        return { name, chosen: columnChoice.value[name], options: Array.from(
-          { length: info.count - 1 },
-          (_, k) => ({ index: k + 2, label: info.names[k + 1] || `column ${k + 2}` })) }
-      })
+      .map(({ name, text }) => pickerFor(name, engine.spectrumCsvColumns(text)))
     for (const { name, text } of rawFiles.value) {
       // MINIMAL override: each stated header unit always wins; an override may
       // only fill an axis the header left silent. Trying (none), (freq only),
@@ -87,10 +91,7 @@ async function parseAll() {
       } else if (lastError.message.startsWith('multiple level columns')) {
         // a multi-trace export: never guess which trace to judge — ask
         try {
-          const info = engine.spectrumCsvColumns(text)
-          pickers.push({ name, chosen: '', options: Array.from(
-            { length: info.count - 1 },
-            (_, k) => ({ index: k + 2, label: info.names[k + 1] || `column ${k + 2}` })) })
+          pickers.push(pickerFor(name, engine.spectrumCsvColumns(text)))
         } catch (columnsError) {
           problems.push(`${name}: ${columnsError.message}`)
         }

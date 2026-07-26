@@ -99,7 +99,9 @@ std::string parse_spectrum_csv_js(const std::string& content, const std::string&
 std::string spectrum_csv_columns_js(const std::string& content) {
     return guarded([&]() -> std::string {
         auto columns = Hertz::spectrum_csv_columns(content);
-        return json{{"count", columns.count}, {"names", columns.names}}.dump();
+        return json{{"count", columns.count},
+                    {"frequencyColumn", columns.frequencyColumn},
+                    {"names", columns.names}}.dump();
     });
 }
 

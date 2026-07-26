@@ -302,3 +302,51 @@ test('spectrum: a 0 Hz row is refused loudly instead of crashing the chart (Berg
   await expect(page.getByTestId('verdict')).not.toBeVisible()
   expect(pageErrors).toEqual([])   // was: 2x uncaught RangeError from the tick loop
 })
+
+test('spectrum: an index-first export is judged on the stated frequency column (Berger round-7 R7-1)', async ({ page }) => {
+  // "No.,Frequency (MHz),QP" — reading the row index as megahertz fabricated
+  // the whole axis (wrong corner frequency, wrong required attenuation).
+  const csv = ['No.,Frequency (MHz),Quasi-peak (dBuV)',
+    '1,0.20,70', '2,0.30,69', '3,3.00,40'].join('\n')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'idx_first.csv', mimeType: 'text/csv', buffer: Buffer.from(csv),
+  })
+  await expect(page.getByTestId('column-picker')).toBeVisible()
+  // the frequency column is never offered as a level trace
+  await expect(page.getByTestId('column-select').locator('option', { hasText: 'Frequency' })).toHaveCount(0)
+  await page.getByTestId('column-select').selectOption({ label: 'Quasi-peak (dBuV)' })
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  // worst offender at the REAL 200 kHz (70 vs 63.6), not at a fabricated 1 MHz
+  await expect(page.getByTestId('offenders')).toContainText('kHz')
+})
+
+test('filter: catalog escalation reaches a passing part in one jump (Berger round-7 R7-2)', async ({ page }) => {
+  // 26 dB CM @ 2 MHz: hundreds of catalog parts satisfy this, but the old
+  // one-candidate-per-iteration walk gave up after 8 steps and reported a
+  // shortfall. The selector must land on a passing part.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('fsw').fill('2000')
+  await page.getByTestId('areq-cm').fill('26')
+  await page.getByTestId('areq-dm').fill('10')
+  await page.getByTestId('lcm-source').selectOption('catalog')
+  await page.getByTestId('min-rated').fill('0')
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('wc-verdict-cm')).toHaveClass(/pass/, { timeout: 30_000 })
+  await expect(page.getByTestId('wc-verdict-cm')).toContainText('≥ 26')
+})
+
+test('filter: an unrealizable leakage/choke pair is flagged in the verdict panel (Berger round-7 R7-3)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('dm-mode').selectOption('inductance')
+  await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs a 3.3 mH choke
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('k-warning')).toContainText('Not realizable')
+  await expect(page.getByTestId('download-cias')).toBeDisabled()
+  await expect(page.getByTestId('netlist')).toContainText('netlist unavailable')
+})

@@ -215,6 +215,37 @@ inline std::string column_header_cell(const CsvScan& scan, size_t column) {
     return tokenIndex < cells.size() ? trim(cells[tokenIndex]) : "";
 }
 
+// 1-based numeric column carrying the frequency axis. Column 1 unless the
+// header names exactly one OTHER column as frequency (a frequency unit token
+// or "freq" in its cell) — the "No.,Frequency (MHz),Level" index-first export
+// shape is common, and reading the index as megahertz fabricates the whole
+// axis. Two frequency-looking columns are ambiguous and throw.
+inline size_t frequency_column(const CsvScan& scan) {
+    std::vector<size_t> candidates;
+    for (size_t k = 1; k <= scan.numericColumns; ++k) {
+        std::string cell = normalize(column_header_cell(scan, k));
+        if (cell.empty()) {
+            continue;
+        }
+        auto tokens = alnum_tokens(cell);
+        bool unitHit = false;
+        for (const char* unit : {"ghz", "mhz", "khz", "hz"}) {
+            if (std::find(tokens.begin(), tokens.end(), unit) != tokens.end()) {
+                unitHit = true;
+            }
+        }
+        if (unitHit || cell.find("freq") != std::string::npos) {
+            candidates.push_back(k);
+        }
+    }
+    if (candidates.size() > 1) {
+        throw TraceFormatError(
+            "several columns look like the frequency axis — clean the export so exactly one "
+            "column names a frequency");
+    }
+    return candidates.empty() ? 1 : candidates[0];
+}
+
 // Unit search from the most specific context outward: the column's own header
 // cell, then the column-header line, then the analyzer preamble above it. The
 // first tier that mentions any candidate decides — so "RBW 9 kHz" in the
@@ -253,6 +284,7 @@ inline std::optional<std::string> find_unit_tiered(const std::vector<std::string
 // column k+1 from the header row ("" when the header has no cell for it).
 struct SpectrumCsvColumns {
     size_t count = 0;
+    size_t frequencyColumn = 1;
     std::vector<std::string> names;
 };
 
@@ -260,6 +292,7 @@ inline SpectrumCsvColumns spectrum_csv_columns(const std::string& content) {
     auto scan = detail::scan_csv(content);
     SpectrumCsvColumns columns;
     columns.count = scan.numericColumns;
+    columns.frequencyColumn = detail::frequency_column(scan);
     for (size_t k = 1; k <= scan.numericColumns; ++k) {
         columns.names.push_back(detail::column_header_cell(scan, k));
     }
@@ -272,22 +305,34 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
                                         double z0Ohm = 50.0,
                                         std::optional<int> levelColumn = std::nullopt) {
     auto scan = detail::scan_csv(content);
+    size_t freqColumn = detail::frequency_column(scan);
 
-    if (!levelColumn.has_value() && scan.numericColumns > 2) {
+    size_t level;
+    if (levelColumn.has_value()) {
+        level = static_cast<size_t>(*levelColumn);
+        if (level < 1 || level > scan.numericColumns) {
+            throw TraceFormatError("level column " + std::to_string(level) + " out of range — the file has " +
+                                   std::to_string(scan.numericColumns) + " numeric columns");
+        }
+        if (level == freqColumn) {
+            throw TraceFormatError("level column " + std::to_string(level) +
+                                   " is the frequency column — pick a level trace");
+        }
+    } else if (scan.numericColumns == 2) {
+        level = freqColumn == 1 ? 2 : 1;
+    } else {
         std::string message =
             "multiple level columns: the file carries " + std::to_string(scan.numericColumns) +
             " numeric columns (a multi-trace export) — say which one to judge:";
-        for (size_t k = 2; k <= scan.numericColumns; ++k) {
+        for (size_t k = 1; k <= scan.numericColumns; ++k) {
+            if (k == freqColumn) {
+                continue;
+            }
             std::string cell = detail::column_header_cell(scan, k);
             message += " " + std::to_string(k) + ": \"" +
                        (cell.empty() ? "column " + std::to_string(k) : cell) + "\"";
         }
         throw TraceFormatError(message);
-    }
-    size_t level = static_cast<size_t>(levelColumn.value_or(2));
-    if (level < 2 || level > scan.numericColumns) {
-        throw TraceFormatError("level column " + std::to_string(level) + " out of range — the file has " +
-                               std::to_string(scan.numericColumns) + " numeric columns");
     }
 
     std::string columnLine = scan.headerLines.empty() ? "" : scan.headerLines.back();
@@ -296,7 +341,7 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
         preamble += " " + scan.headerLines[i];
     }
     auto fileFreqUnit = detail::find_unit_tiered(
-        {detail::column_header_cell(scan, 1), columnLine, preamble},
+        {detail::column_header_cell(scan, freqColumn), columnLine, preamble},
         {"ghz", "mhz", "khz", "hz"}, "frequency", freqUnit.has_value());
     auto fileLevelUnit = detail::find_unit_tiered(
         {detail::column_header_cell(scan, level), columnLine, preamble},
@@ -324,14 +369,15 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
         throw TraceFormatError("level unit not stated in the file header — select it in the unit control");
     }
 
+    size_t needed = std::max(freqColumn, level);
     for (size_t r = 0; r < scan.rows.size(); ++r) {
         const auto& row = scan.rows[r];
-        if (row.size() < level) {
+        if (row.size() < needed) {
             throw TraceFormatError("data row " + std::to_string(r + 1) + " has only " +
                                    std::to_string(row.size()) + " numeric columns — needed " +
-                                   std::to_string(level));
+                                   std::to_string(needed));
         }
-        double f = row[0] * freqScale;
+        double f = row[freqColumn - 1] * freqScale;
         if (!std::isfinite(f) || !std::isfinite(row[level - 1])) {
             throw TraceFormatError("non-finite value in data row " + std::to_string(r + 1) +
                                    " — clean the export before judging it");
@@ -345,15 +391,15 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
 
     std::vector<size_t> order(scan.rows.size());
     std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(), [&scan](size_t a, size_t b) {
-        return scan.rows[a][0] < scan.rows[b][0];
+    std::sort(order.begin(), order.end(), [&scan, freqColumn](size_t a, size_t b) {
+        return scan.rows[a][freqColumn - 1] < scan.rows[b][freqColumn - 1];
     });
 
     SpectrumTrace trace;
     trace.frequenciesHz.reserve(scan.rows.size());
     trace.levelsDbuv.reserve(scan.rows.size());
     for (size_t index : order) {
-        trace.frequenciesHz.push_back(scan.rows[index][0] * freqScale);
+        trace.frequenciesHz.push_back(scan.rows[index][freqColumn - 1] * freqScale);
         double value = scan.rows[index][level - 1];
         trace.levelsDbuv.push_back(levelUnitName == "dbm" ? dbuv_from_dbm(value, z0Ohm) : value);
     }
