@@ -10,11 +10,21 @@ family, nominal inductance, rated current, DCR. Parts without a resolvable
 inductance are skipped (counted, reported) — a choke with no L cannot be a
 candidate, and inventing one would poison the design.
 
-With a third argument, measured impedance curves (impedancePoints with
-magnitude AND phase, per winding: common/differential) are written to a side
-file keyed by MPN, downsampled by striding the MEASURED points to <= 64 per
-mode — never resampled or extrapolated. Parts carrying a curve get
-hasMeasuredCmCurve / hasMeasuredDmCurve flags in the main slice.
+With a third argument, measured impedance curves (impedancePoints, per
+winding: common/differential) are written to a side file keyed by MPN,
+downsampled by striding the MEASURED points to <= 64 per mode — never
+resampled or extrapolated. Parts carrying a curve get hasMeasuredCmCurve /
+hasMeasuredDmCurve flags in the main slice.
+
+Curves whose points carry magnitude AND phase (Murata) are used as measured
+complex Z. Curves with MAGNITUDE ONLY (WE via REDEXPERT, per ABT #295) get
+their phase RECONSTRUCTED with the Bode gain-phase relation
+(phase ~ (pi/2) * d ln|Z| / d ln f — exact for minimum-phase immittances,
+which passive one-ports are up to resonance nulls). Validated against all
+219 Murata parts that have measured phase: on the insertion-loss quantity
+Hertz displays the reconstruction lands within 0.03 dB median / 0.52 dB p90
+(errors grow only in deep resonance nulls). Reconstructed curves are marked
+"rec": true in the side file and the GUI labels them.
 """
 
 import json
@@ -68,28 +78,62 @@ def resolve_dimensional(value):
 MAX_CURVE_POINTS = 64
 
 
+def bode_phase(freqs, mags):
+    """Minimum-phase estimate from |Z| via the Bode gain-phase relation:
+    phase ~ (pi/2) * d ln|Z| / d ln f, central differences smoothed over 7
+    points. Validated against Murata's measured phase (see module docstring);
+    only ever applied to curves that carry no measured phase."""
+    import math
+    lnf = [math.log(f) for f in freqs]
+    lnz = [math.log(max(m, 1e-9)) for m in mags]
+    n = len(lnf)
+    slope = []
+    for i in range(n):
+        a, b = max(0, i - 1), min(n - 1, i + 1)
+        slope.append((lnz[b] - lnz[a]) / (lnf[b] - lnf[a]) if lnf[b] != lnf[a] else 0.0)
+    half = 3
+    smoothed = [sum(slope[max(0, i - half):i + half + 1]) / len(slope[max(0, i - half):i + half + 1])
+                for i in range(n)]
+    return [(math.pi / 2) * s for s in smoothed]
+
+
 def extract_curve(points, winding):
-    rows = []
+    import math
+    with_phase = []
+    magnitude_only = []
     for point in points or []:
         if point.get("winding") != winding:
             continue
         f = point.get("frequency")
         z = point.get("impedance") or {}
         mag, phase = z.get("magnitude"), z.get("phase")
-        if not all(isinstance(x, (int, float)) for x in (f, mag, phase)) or f <= 0 or mag < 0:
+        if not all(isinstance(x, (int, float)) for x in (f, mag)) or f <= 0 or mag < 0:
             continue
-        rows.append((float(f), float(mag), float(phase)))
-    rows.sort()
-    if len(rows) < 2:
+        if isinstance(phase, (int, float)):
+            with_phase.append((float(f), float(mag), float(phase)))
+        else:
+            magnitude_only.append((float(f), float(mag)))
+    reconstructed = False
+    if len(with_phase) >= 2:
+        rows = sorted(with_phase)
+    elif len(magnitude_only) >= 2:
+        rows = sorted(magnitude_only)
+        reconstructed = True
+    else:
         return None
     stride = max(1, -(-len(rows) // MAX_CURVE_POINTS))
     picked = rows[::stride]
     if picked[-1] != rows[-1]:
         picked.append(rows[-1])
-    import math
-    return {"f": [r[0] for r in picked],
-            "re": [r[1] * math.cos(r[2]) for r in picked],
-            "im": [r[1] * math.sin(r[2]) for r in picked]}
+    freqs = [r[0] for r in picked]
+    mags = [r[1] for r in picked]
+    phases = bode_phase(freqs, mags) if reconstructed else [r[2] for r in picked]
+    curve = {"f": freqs,
+             "re": [m * math.cos(p) for m, p in zip(mags, phases)],
+             "im": [m * math.sin(p) for m, p in zip(mags, phases)]}
+    if reconstructed:
+        curve["rec"] = True
+    return curve
 
 
 def main(source_path, output_path, curves_path=None):

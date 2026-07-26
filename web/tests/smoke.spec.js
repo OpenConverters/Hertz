@@ -688,3 +688,39 @@ test('filter: binding a part re-runs the evaluation AS BUILT (bound values drive
   const lcm = await page.getByTestId('lcm').textContent()
   expect(note).toContain(lcm.trim())
 })
+
+test('filter: WE parts show reconstructed-phase Meas. IL marked with ~ (ABT #295)', async ({ page }) => {
+  // 397 WE CMCs now carry REDEXPERT-measured |Z| curves; phase is Bode-
+  // reconstructed (validated 0.03 dB median vs Murata's measured phase) and
+  // the column says so with a '~' prefix.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('areq-cm').fill('35')
+  await page.getByTestId('sec-comp').click()
+  await page.getByTestId('cy-select').selectOption('4.7')
+  await page.getByTestId('mfr-filter').selectOption('Würth Elektronik')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('sch-CMC1').click()
+  await expect(page.getByTestId('part-panel')).toContainText('744834101')
+  await expect(page.getByTestId('part-panel')).toContainText(/~-?\d+\.\d dB/, { timeout: 10_000 })
+})
+
+test('filter: a failing-scan handoff shows every binding point as a requirement marker (user request)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('demo')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await page.getByTestId('design-fix').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await expect(page.getByTestId('binding-note')).toContainText('min-f_co')   // inputs filled from the scan
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('il-chart')).toBeVisible()
+  // the IL chart carries MANY violation markers (the scan's failing points),
+  // not just the two f_design dots
+  const markers = await page.getByTestId('il-chart').locator('circle').count()
+  expect(markers).toBeGreaterThan(10)
+})

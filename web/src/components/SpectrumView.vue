@@ -311,10 +311,21 @@ async function designTheFix() {
     store.mode = 'filter'
     return
   }
-  store.handoff = {
-    aReqDb: Math.ceil((requiredAttenuation.value ?? 40) / 5) * 5,
-    fSwHz: comb.value?.found ? comb.value.fSwHz : null,
+  // a line scan constrains BOTH modes (the standard limits the line voltage;
+  // without separation either mode may dominate): the same binding set — every
+  // failing point with its own local requirement — goes to CM and DM, and the
+  // designer reduces each with the min-f_co rule and shows the points as
+  // requirement markers on the insertion-loss chart
+  const engine = await api()
+  const binding = []
+  for (const t of judged) {
+    const analysis = engine.limitAnalysis(standardId.value, detector.value,
+                                          t.frequenciesHz, t.levelsDbuv, 10)
+    analysis.marginsDb.forEach((margin, k) => {
+      if (margin !== null && margin < 10) binding.push([t.frequenciesHz[k], 10 - margin])
+    })
   }
+  store.handoff = { binding: { cm: binding, dm: binding } }
   store.mode = 'filter'
 }
 

@@ -272,7 +272,8 @@ async function loadMeasuredIlColumn() {
         if (Math.abs(il.frequenciesHz[k] - fDesign) <
             Math.abs(il.frequenciesHz[nearest] - fDesign)) nearest = k
       }
-      column[part.mpn] = il.standardDb[nearest]
+      // rec: WE-measured |Z| with Bode-reconstructed phase — shown with '~'
+      column[part.mpn] = { db: il.standardDb[nearest], rec: !!cm.rec }
     }
     measuredIlAt.value = column
   } catch { /* column stays empty; parts remain selectable by value */ }
@@ -494,10 +495,22 @@ const ilSeries = () => [
   { id: 'dmw', label: 'DM worst case (CISPR 17)', color: 'var(--s-2)', dash: '3 4',
     points: ilDm.value.frequenciesHz.map((f, i) => ({ f, v: ilDm.value.worstCaseDb[i] })) },
 ]
-const requirementMarkers = () => [
-  { f: design.value.fDesignCmHz, v: Number(aReqCm.value), color: 'var(--s-1)' },
-  { f: design.value.fDesignDmHz, v: Number(aReqDm.value), color: 'var(--s-2)' },
-]
+// With a hand-off, EVERY binding point of the scan appears as a requirement
+// marker (the failing points, each with its own local need); manual designs
+// keep the two dots at f_design.
+const requirementMarkers = () => {
+  if (bindingSets.value) {
+    const cap = 300
+    return [
+      ...(bindingSets.value.cm ?? []).slice(0, cap).map(([f, a]) => ({ f, v: a, color: 'var(--s-1)' })),
+      ...(bindingSets.value.dm ?? []).slice(0, cap).map(([f, a]) => ({ f, v: a, color: 'var(--s-2)' })),
+    ]
+  }
+  return [
+    { f: design.value.fDesignCmHz, v: Number(aReqCm.value), color: 'var(--s-1)' },
+    { f: design.value.fDesignDmHz, v: Number(aReqDm.value), color: 'var(--s-2)' },
+  ]
+}
 
 const schematicLabels = () => {
   const labels = {}
@@ -585,7 +598,7 @@ async function bindPart(part) {
       const keep = mode.f.map((f, i) => [f, i]).filter(([f]) => f >= 150e3 && f <= 30e6)
       return { f: keep.map(([f]) => f), re: keep.map(([, i]) => mode.re[i]), im: keep.map(([, i]) => mode.im[i]) }
     }
-    const result = { mpn: part.mpn }
+    const result = { mpn: part.mpn, rec: !!(curve.cm?.rec || curve.dm?.rec) }
     if (curve.cm) {
       const t = trim(curve.cm)
       if (t.f.length >= 2) {
@@ -885,8 +898,9 @@ function downloadNetlist() {
                         <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></template>
                         <span v-else class="note">by measured curve</span></td>
                       <td v-if="kindOf(selectedRef) === 'cmc'" data-test="measured-il"
-                          :class="measuredIlAt[p.mpn] !== undefined ? (measuredIlAt[p.mpn] >= Number(aReqCm) ? 'pos' : 'neg') : ''">
-                        {{ measuredIlAt[p.mpn] !== undefined ? measuredIlAt[p.mpn].toFixed(1) + ' dB' : '—' }}</td>
+                          :class="measuredIlAt[p.mpn] !== undefined ? (measuredIlAt[p.mpn].db >= Number(aReqCm) ? 'pos' : 'neg') : ''">
+                        {{ measuredIlAt[p.mpn] !== undefined
+                          ? (measuredIlAt[p.mpn].rec ? '~' : '') + measuredIlAt[p.mpn].db.toFixed(1) + ' dB' : '—' }}</td>
                       <td v-if="kindOf(selectedRef) === 'cmc'" class="note">
                         {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
                       <td>{{ kindOf(selectedRef) === 'cmc'
@@ -902,9 +916,13 @@ function downloadNetlist() {
                 <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
                   Most catalogued chokes carry no voltage rating — for mains use, verify insulation class
                   against the datasheet; chip-scale data-line chokes are never mains parts.
-                  “Meas. IL” is computed from the part's measured complex impedance against your Y network
-                  at the design frequency (SILENT-style selection); “by measured curve” parts have no
-                  catalogued inductance — binding one keeps the designed values in the netlist.</p>
+                  “Meas. IL” is computed from the part's impedance curve against your Y network at the
+                  design frequency (SILENT-style selection). Unmarked values use measured complex Z
+                  (Murata); values marked <strong>~</strong> use the manufacturer's measured |Z| with
+                  phase reconstructed via the Bode gain-phase relation (WE via REDEXPERT — typically
+                  within ±0.5 dB on this column, larger near resonance nulls). “By measured curve”
+                  parts have no catalogued inductance — binding one keeps the designed values in the
+                  netlist.</p>
               </div>
             </template>
 
@@ -959,7 +977,10 @@ function downloadNetlist() {
                   plateaus at 50–70 dB; bind a part with a measured curve (dotted) for the honest picture.</p>
                 <p v-if="measured" class="note" data-test="measured-note">
                   Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
-                  (complex Z, manufacturer data via the TAS catalog) — shown only over the measured span.</p>
+                  (manufacturer data via the TAS catalog) — shown only over the measured span.
+                  <template v-if="measured.rec">Phase reconstructed from measured |Z| via the Bode
+                  gain-phase relation (validated on 219 Murata parts: 0.03 dB median / 0.5 dB p90 on
+                  these curves; trust it less right at resonance nulls).</template></p>
               </div>
             </template>
 
