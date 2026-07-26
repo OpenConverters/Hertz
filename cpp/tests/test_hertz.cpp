@@ -640,3 +640,76 @@ TEST_CASE("Signal too short throws", "[detector]") {
     CHECK_THROWS_AS(Hertz::measure(make_tone(0.0001, FS_HZ, TONE_HZ, AMPLITUDE), FS_HZ, Hertz::BAND_B),
                     std::invalid_argument);
 }
+
+#include "hertz/SpiceDeck.hpp"
+
+TEST_CASE("three-phase design: one Y per line and the delta X factor", "[filter3ph]") {
+    auto design = [](int nLines) {
+        return Hertz::design_line_filter(150e3, 40.0, 40.0, 4.7e-9, 30e-6, 1, {1.0}, {1.0},
+                                         std::nullopt, std::nullopt, nLines);
+    };
+    auto d2 = design(2);
+    auto d3 = design(3);
+    auto d4 = design(4);
+    CHECK(d3.cYgF == Catch::Approx(3.0 * 4.7e-9));
+    CHECK(d4.cYgF == Catch::Approx(4.0 * 4.7e-9));
+    // same CM cutoff, so the required choke scales inversely with C_YG
+    CHECK(d3.lCmRequiredH == Catch::Approx(d2.lCmRequiredH * 2.0 / 3.0));
+    CHECK(d4.lCmRequiredH == Catch::Approx(d2.lCmRequiredH * 2.0 / 4.0));
+    // delta X: every line pair sees 1.5 C, so the part to buy is 1/1.5 of the pair value
+    CHECK(d3.cXDmFactor == 1.5);
+    CHECK(d3.cXRequiredF == Catch::Approx(d2.cXRequiredF / 1.5));
+    // star X (4-wire) sits directly across the phase-neutral DM loop
+    CHECK(d4.cXDmFactor == 1.0);
+    CHECK(d4.cXRequiredF == Catch::Approx(d2.cXRequiredF));
+    CHECK_THROWS(design(1));
+    CHECK_THROWS(design(5));
+    // the DM resonance judged with the EFFECTIVE capacitance: identical required
+    // effective C -> identical achieved attenuation when candidates are ideal
+    auto exact3 = Hertz::design_line_filter(150e3, 40.0, 40.0, 4.7e-9, 30e-6, 1, {1.0},
+                                            {d3.cXRequiredF}, std::nullopt, std::nullopt, 3);
+    auto exact2 = Hertz::design_line_filter(150e3, 40.0, 40.0, 4.7e-9, 30e-6, 1, {1.0},
+                                            {d2.cXRequiredF}, std::nullopt, std::nullopt, 2);
+    CHECK(exact3.attenuationDmDb == Catch::Approx(exact2.attenuationDmDb).margin(1e-9));
+}
+
+TEST_CASE("three-phase SPICE deck: all-pairs K, delta X, one LISN per line", "[filter3ph]") {
+    auto deck3 = Hertz::filter_spice_deck(1, 3.3e-3, 470e-9, 4.7e-9, 30e-6,
+                                          Hertz::cispr16_lisn(), "dm", 3);
+    for (const char* needle :
+         {"Lcm_l1_1", "Lcm_l2_1", "Lcm_l3_1", "Kcm1_12", "Kcm1_13", "Kcm1_23", "Cx1_12", "Cx1_23",
+          "Cx1_31", "Cy_l1_1", "Cy_l2_1", "Cy_l3_1", "Xlisn_l1", "Xlisn_l2", "Xlisn_l3",
+          "Vnoise l1_src l2_src AC 1", "vdb(meas_l3)"}) {
+        INFO(needle);
+        CHECK(deck3.find(needle) != std::string::npos);
+    }
+    // 3 windings x all pairs = exactly 3 K statements per stage
+    size_t kCount = 0;
+    for (size_t at = deck3.find("Kcm"); at != std::string::npos; at = deck3.find("Kcm", at + 1)) {
+        ++kCount;
+    }
+    CHECK(kCount == 3);
+
+    auto deck4 = Hertz::filter_spice_deck(1, 3.3e-3, 470e-9, 4.7e-9, 30e-6,
+                                          Hertz::cispr16_lisn(), "dm", 4);
+    for (const char* needle : {"Lcm_neut_1", "Kcm1_14", "Kcm1_34", "Cx1_1n", "Cx1_2n", "Cx1_3n",
+                               "Cy_neut_1", "Xlisn_neut", "Vnoise l1_src neut_src AC 1"}) {
+        INFO(needle);
+        CHECK(deck4.find(needle) != std::string::npos);
+    }
+    CHECK(deck4.find("Cx1_12") == std::string::npos);  // star, not delta
+
+    // the 2-line deck keeps its legacy shape
+    auto deck2 = Hertz::filter_spice_deck(2, 3.3e-3, 470e-9, 4.7e-9, 30e-6,
+                                          Hertz::cispr16_lisn(), "cm", 2);
+    for (const char* needle : {"Lcm_line_1", "Lcm_neut_2", "Kcm1_12", "Cx1 ", "Cy_line_1",
+                               ".subckt LISN", "Rsrc_line", "Rsrc_neut"}) {
+        INFO(needle);
+        CHECK(deck2.find(needle) != std::string::npos);
+    }
+    CHECK_THROWS(Hertz::filter_spice_deck(1, 3.3e-3, 470e-9, 4.7e-9, 30e-6,
+                                          Hertz::cispr16_lisn(), "dm", 5));
+    // K out of (0,1): leakage bigger than 2 L_cm
+    CHECK_THROWS(Hertz::filter_spice_deck(1, 1e-3, 470e-9, 4.7e-9, 3e-3,
+                                          Hertz::cispr16_lisn(), "dm", 3));
+}

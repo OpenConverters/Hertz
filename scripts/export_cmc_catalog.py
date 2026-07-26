@@ -149,6 +149,11 @@ def main(source_path, output_path, curves_path=None):
                 electrical = info["datasheetInfo"]["electrical"][0]
             except (KeyError, IndexError, json.JSONDecodeError):
                 continue
+            # Winding count from the coil description where TAS has one (3-phase
+            # chokes carry 3-4 windings and must never be offered for a 1-phase
+            # slot, nor vice versa). None = unknown, NOT 2 — do not invent.
+            coil_windings = (magnetic.get("coil") or {}).get("functionalDescription") or []
+            windings = len(coil_windings) if len(coil_windings) >= 2 else None
             subtype = str(electrical.get("subtype", "")).lower().replace("_", "").replace("-", "")
             if subtype != "commonmodechoke":
                 continue
@@ -187,6 +192,7 @@ def main(source_path, output_path, curves_path=None):
                 "ratedVoltageAcV": electrical.get("ratedVoltageAC"),
                 "ratedVoltageDcV": electrical.get("ratedVoltageDC"),
                 "saturationCurrentPeakA": electrical.get("saturationCurrentPeak"),
+                "windings": windings,
             }
             if part["mpn"] and part["manufacturer"]:
                 if curve_cm or curve_dm:

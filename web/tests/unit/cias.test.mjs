@@ -123,3 +123,42 @@ test('the DC-supply topology brick validates with chassis-role ports (#292)', ()
   assert.equal(brick.name, 'dc-supply-filter-1stage')
   assert.match(brick.ports.find((p) => p.name === 'pe').description, /chassis/)
 })
+
+// #292 3-phase: bindings keyed by the n-line refs
+const bindAll = (topology) => {
+  const nLines = topology === '3ph' ? 3 : 4
+  const b = {}
+  for (const c of filterComponents(1, nLines)) {
+    b[c.ref] = c.kind === 'cmc' ? { mpn: '744837010290', manufacturer: 'Würth Elektronik' }
+      : c.kind === 'cx' ? { mpn: 'EFX2S30M225C102LH', manufacturer: 'Eaton' }
+      : { mpn: 'MKY22W14703F00JB00', manufacturer: 'WIMA' }
+  }
+  return b
+}
+
+test('the 3-phase delta brick validates: 3 X caps across pairs, 3 Y caps, W-pins (#292)', () => {
+  const brick = buildFilterCias(1, bindAll('3ph'), '3ph')
+  assert.ok(validate(brick), JSON.stringify(validate.errors, null, 1))
+  assert.equal(brick.name, 'three-phase-line-filter-1stage')
+  assert.equal(brick.ports.length, 7)   // 3 in + 3 out + pe
+  assert.equal(brick.components.filter((c) => c.name.startsWith('C_X')).length, 3)
+  assert.equal(brick.components.filter((c) => c.name.startsWith('C_Y')).length, 3)
+  // the wrap capacitor closes the delta: l3 net carries C_X1_31 pin 1
+  const l3 = brick.connections.find((n) => n.name === 'l3_1')
+  assert.ok(l3.endpoints.some((e) => e.component === 'C_X1_31' && e.pin === '1'))
+  const l1 = brick.connections.find((n) => n.name === 'l1_1')
+  assert.ok(l1.endpoints.some((e) => e.component === 'C_X1_31' && e.pin === '2'))
+  assert.ok(l1.endpoints.some((e) => e.component === 'CMC1' && e.pin === 'W1B'))
+})
+
+test('the 3-phase + neutral brick validates: star X to the neutral rail, 4 Y caps (#292)', () => {
+  const brick = buildFilterCias(1, bindAll('3phn'), '3phn')
+  assert.ok(validate(brick), JSON.stringify(validate.errors, null, 1))
+  assert.equal(brick.name, 'three-phase-neutral-line-filter-1stage')
+  assert.equal(brick.ports.length, 9)   // 4 in + 4 out + pe
+  assert.equal(brick.components.filter((c) => c.name.startsWith('C_Y')).length, 4)
+  const neutral = brick.connections.find((n) => n.name === 'n_1')
+  assert.equal(neutral.endpoints.filter((e) => e.component?.startsWith('C_X')).length, 3)
+  // no line-to-line X capacitors in the star variant
+  assert.ok(!brick.components.some((c) => c.name === 'C_X1_12'))
+})

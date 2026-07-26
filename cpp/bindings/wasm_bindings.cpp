@@ -20,6 +20,7 @@
 #include "hertz/Network.hpp"
 #include "hertz/Radiated.hpp"
 #include "hertz/Separation.hpp"
+#include "hertz/SpiceDeck.hpp"
 #include "hertz/Traces.hpp"
 #include "hertz/Utils.hpp"
 
@@ -220,12 +221,13 @@ std::string design_filter_js(const std::string& paramsJson)  {
                    ? std::make_optional(params.at(key).get<double>())
                    : std::nullopt;
     };
+    int nLines = params.value("nLines", 2);
     auto design = Hertz::design_line_filter(
         params.at("fSwHz").get<double>(), params.at("aReqCmDb").get<double>(),
         params.at("aReqDmDb").get<double>(), params.at("cYPerLineF").get<double>(), lDm,
         params.at("stages").get<int>(), params.at("lCmCandidatesH").get<std::vector<double>>(),
         params.at("cXCandidatesF").get<std::vector<double>>(),
-        optionalHz("fDesignCmHz"), optionalHz("fDesignDmHz"));
+        optionalHz("fDesignCmHz"), optionalHz("fDesignDmHz"), nLines);
 
     json result{{"stages", design.stages},
                 {"fDesignCmHz", design.fDesignCmHz},
@@ -240,12 +242,19 @@ std::string design_filter_js(const std::string& paramsJson)  {
                 {"lDmH", design.lDmH},
                 {"cXRequiredF", design.cXRequiredF},
                 {"cXSelectedF", design.cXSelectedF},
-                {"attenuationDmDb", design.attenuationDmDb}};
+                {"attenuationDmDb", design.attenuationDmDb},
+                {"nLines", design.nLines},
+                {"cXDmFactor", design.cXDmFactor}};
 
     if (params.contains("grid")) {
         const json& grid = params.at("grid");
         double vRms = grid.at("vRms").get<double>();
         double fGrid = grid.at("fHz").get<double>();
+        // 3-phase grids state vRms LINE-TO-LINE; a Y capacitor (and a touching
+        // person) sees phase-to-earth, and a star X capacitor phase-to-neutral.
+        // Delta X capacitors sit across the full line-to-line voltage.
+        double vPhase = nLines >= 3 ? vRms / std::sqrt(3.0) : vRms;
+        double vAcrossX = nLines == 3 ? vRms : vPhase;
         // Worst case V+10 %, C+20 % applied consistently to BOTH safety rows.
         // Touch current per the IEC 60990 model: neutral sits at earth, so the
         // compliance figure is the single line-side Y capacitor (the naive
@@ -253,15 +262,15 @@ std::string design_filter_js(const std::string& paramsJson)  {
         double cXTotal = design.cXSelectedF * design.stages * 1.2;
         double cY = design.cYPerLineF * 1.2 * design.stages;
         result["leakageCurrentA"] =
-            Hertz::y_capacitor_leakage_current(vRms * 1.1, fGrid, cY, 0.0, cXTotal);
+            Hertz::y_capacitor_leakage_current(vPhase * 1.1, fGrid, cY, 0.0, cXTotal);
         double cTotalWorst = design.cXSelectedF * design.stages * 1.2;
         double rMax = Hertz::max_discharge_resistance(
-            cTotalWorst, vRms * 1.1 * std::numbers::sqrt2, grid.at("vSafe").get<double>(),
+            cTotalWorst, vAcrossX * 1.1 * std::numbers::sqrt2, grid.at("vSafe").get<double>(),
             grid.at("tDischargeS").get<double>());
         double rChosen = Hertz::round_down_to_series(rMax, Hertz::E24);
         result["dischargeResistorMaxOhm"] = rMax;
         result["dischargeResistorOhm"] = rChosen;
-        result["dischargeResistorPowerW"] = Hertz::discharge_resistor_power(vRms * 1.1, rChosen);
+        result["dischargeResistorPowerW"] = Hertz::discharge_resistor_power(vAcrossX * 1.1, rChosen);
     }
     return result.dump();
 });
@@ -274,59 +283,10 @@ std::string filter_spice_netlist_js(const std::string& designJson, const std::st
     return guarded([&]() -> std::string {
     json design = json::parse(designJson);
     Hertz::Lisn lisn = lisnKind == "cispr25" ? Hertz::cispr25_lisn() : Hertz::cispr16_lisn();
-    int stages = design.at("stages").get<int>();
-    double lCm = design.at("lCmSelectedH").get<double>();
-    double cX = design.at("cXSelectedF").get<double>();
-    double cY = design.at("cYPerLineF").get<double>();
-    double lDm = design.at("lDmH").get<double>();
-
-    // K derived so the coupled pair reproduces the designed DM (leakage) loop
-    // inductance: L_leak_loop = 2*L*(1-K)  =>  K = 1 - L_dm/(2*L_cm).
-    double coupling = 1.0 - lDm / (2.0 * lCm);
-    if (!(coupling > 0.0 && coupling < 1.0)) {
-        throw std::invalid_argument(
-            "leakage inductance is not consistent with the CM inductance (K out of (0,1))");
-    }
-    char head[256];
-    std::snprintf(head, sizeof(head),
-                  "* Hertz line filter — ANP015 design\n"
-                  "* CM choke per stage: %.6g H, leakage (DM loop) %.6g H -> K=%.6f\n",
-                  lCm, lDm, coupling);
-    std::string netlist = head;
-    netlist += lisn.to_spice_subckt("LISN");
-    char buffer[256];
-    std::string nodeL = "line_src";
-    std::string nodeN = "neut_src";
-    for (int s = 1; s <= stages; ++s) {
-        std::string outL = s == stages ? "line_out" : "line_" + std::to_string(s);
-        std::string outN = s == stages ? "neut_out" : "neut_" + std::to_string(s);
-        std::snprintf(buffer, sizeof(buffer),
-                      "LcmL%d %s %s %.6g\nLcmN%d %s %s %.6g\nKcm%d LcmL%d LcmN%d %.6f\n", s,
-                      nodeL.c_str(), outL.c_str(), lCm, s, nodeN.c_str(), outN.c_str(), lCm, s, s,
-                      s, coupling);
-        netlist += buffer;
-        std::snprintf(buffer, sizeof(buffer), "Cx%d %s %s %.6g\n", s, outL.c_str(), outN.c_str(),
-                      cX);
-        netlist += buffer;
-        std::snprintf(buffer, sizeof(buffer), "CyL%d %s 0 %.6g\nCyN%d %s 0 %.6g\n", s, outL.c_str(),
-                      cY, s, outN.c_str(), cY);
-        netlist += buffer;
-        nodeL = outL;
-        nodeN = outN;
-    }
-    netlist += "XlisnL line_out mains_l measL LISN\nXlisnN neut_out mains_n measN LISN\n";
-    netlist += "Vmains mains_l 0 DC 0\nRmains mains_n 0 1m\n";
-    netlist += "* LISN model omissions (see LISN screen): band-A branch, mains 1uF, 1k bleed\n";
-    netlist += "* capacitor ESL/ESR not modeled in this deck — the IL curves carry the parasitic-aware prediction\n";
-    if (mode == "cm") {
-        netlist += "* COMMON-MODE drive: both lines together against PE (exercises choke + Y caps)\n";
-        netlist += "Vnoise cm_src 0 AC 1\nRsrcL cm_src line_src 1m\nRsrcN cm_src neut_src 1m\n";
-    } else {
-        netlist += "* DIFFERENTIAL-MODE drive: line against neutral\n";
-        netlist += "Vnoise line_src neut_src AC 1\n";
-    }
-    netlist += ".ac dec 100 150k 30meg\n.print ac vdb(measL) vdb(measN)\n.end\n";
-    return netlist;
+    return Hertz::filter_spice_deck(
+        design.at("stages").get<int>(), design.at("lCmSelectedH").get<double>(),
+        design.at("cXSelectedF").get<double>(), design.at("cYPerLineF").get<double>(),
+        design.at("lDmH").get<double>(), lisn, mode, design.value("nLines", 2));
 });
 }
 

@@ -87,6 +87,18 @@ def achieved_attenuation_db(f_design_hz, inductance_h, capacitance_f, stages):
     return 40.0 * stages * math.log10(f_design_hz / f_co)
 
 
+def x_capacitor_dm_factor(n_lines):
+    """X-capacitor connection factor seen by a line-to-line DM loop.
+
+    A 3-wire (delta) X network presents C + C/2 = 1.5 C between any two lines;
+    the line-neutral (2-wire) and phase-neutral star (4-wire) networks present
+    the capacitor directly.
+    """
+    if n_lines not in (2, 3, 4):
+        raise ValueError("n_lines must be 2 (1-phase/DC), 3 (3-phase) or 4 (3-phase + N)")
+    return 1.5 if n_lines == 3 else 1.0
+
+
 @dataclass(frozen=True)
 class LineFilterDesign:
     stages: int
@@ -103,6 +115,8 @@ class LineFilterDesign:
     c_x_required_f: float
     c_x_selected_f: float
     attenuation_dm_db: float
+    n_lines: int = 2
+    c_x_dm_factor: float = 1.0
 
 
 def design_line_filter(
@@ -116,6 +130,7 @@ def design_line_filter(
     c_x_candidates,
     f_design_cm_hz=None,
     f_design_dm_hz=None,
+    n_lines=2,
 ):
     """Full ANP015 sizing pass.
 
@@ -139,14 +154,15 @@ def design_line_filter(
     f_cutoff_cm = cutoff_frequency(f_design_cm, a_req_cm_db, stages)
     f_cutoff_dm = cutoff_frequency(f_design_dm, a_req_dm_db, stages)
 
-    c_yg = 2.0 * c_y_per_line_f
+    x_factor = x_capacitor_dm_factor(n_lines)
+    c_yg = n_lines * c_y_per_line_f
     l_cm_required = cm_inductance(f_cutoff_cm, c_yg)
     l_cm_selected = round_up_to(l_cm_required, l_cm_candidates)
     attenuation_cm = achieved_attenuation_db(f_design_cm, l_cm_selected, c_yg, stages)
 
-    c_x_required = dm_capacitance(f_cutoff_dm, l_dm_h)
+    c_x_required = dm_capacitance(f_cutoff_dm, l_dm_h) / x_factor
     c_x_selected = round_up_to(c_x_required, c_x_candidates)
-    attenuation_dm = achieved_attenuation_db(f_design_dm, l_dm_h, c_x_selected, stages)
+    attenuation_dm = achieved_attenuation_db(f_design_dm, l_dm_h, x_factor * c_x_selected, stages)
 
     return LineFilterDesign(
         stages=stages,
@@ -163,6 +179,8 @@ def design_line_filter(
         c_x_required_f=c_x_required,
         c_x_selected_f=c_x_selected,
         attenuation_dm_db=attenuation_dm,
+        n_lines=n_lines,
+        c_x_dm_factor=x_factor,
     )
 
 

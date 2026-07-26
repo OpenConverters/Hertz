@@ -158,3 +158,21 @@ def test_discharge_resistor_matches_anp015():
 def test_discharge_resistor_rejects_bad_voltages():
     with pytest.raises(ValueError):
         max_discharge_resistance(2.52e-6, 60.0, 60.0, 1.0)
+
+
+def test_three_phase_y_bank_and_delta_x_factor():
+    import hertz.filter_design as fd
+
+    def design(n_lines):
+        return fd.design_line_filter(150e3, 40.0, 40.0, 4.7e-9, 30e-6, 1, [1.0], [1.0],
+                                     n_lines=n_lines)
+
+    d2, d3, d4 = design(2), design(3), design(4)
+    assert d3.c_yg_f == pytest.approx(3 * 4.7e-9)
+    assert d4.c_yg_f == pytest.approx(4 * 4.7e-9)
+    assert d3.l_cm_required_h == pytest.approx(d2.l_cm_required_h * 2 / 3)
+    assert d3.c_x_dm_factor == 1.5
+    assert d3.c_x_required_f == pytest.approx(d2.c_x_required_f / 1.5)
+    assert d4.c_x_required_f == pytest.approx(d2.c_x_required_f)
+    with pytest.raises(ValueError):
+        design(5)

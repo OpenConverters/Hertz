@@ -810,3 +810,42 @@ test('filter: a 20 A line current raises saturation warnings on undersized choke
   // 20 A RMS -> 28.3 A peak; the WE stub parts saturate at 2 / 10 A peak
   await expect(page.getByTestId('saturation-warn').first()).toContainText('A pk >')
 })
+
+test('filter: 3-phase topology designs from 3-winding chokes with delta X and a 16.7 ohm CM bench (ABT #292)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('topology').selectOption('3ph')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  // AC mains: the touch-current budget applies (phase-to-earth voltage)
+  await expect(page.getByTestId('touch-verdict')).toBeVisible()
+  // the catalog slot only offers 3-winding parts
+  await page.getByTestId('sch-CMC1').click()
+  await expect(page.getByTestId('part-panel')).toContainText('744837010290')
+  await expect(page.getByTestId('part-panel')).not.toContainText('744834101')
+  // the deck carries three coupled windings and the delta wrap capacitor
+  await page.getByTestId('pane-select-a').selectOption('netlist')
+  await expect(page.getByTestId('netlist')).toContainText('Kcm1_23')
+  await expect(page.getByTestId('netlist')).toContainText('Cx1_31')
+})
+
+test('filter: 3-phase + neutral refuses the 2-winding catalog loudly, designs from manual candidates (ABT #292)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('topology').selectOption('3phn')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  // no 4-winding chokes exist in the catalog — surfaced, never silently downgraded
+  await expect(page.locator('.err')).toContainText('no 4-winding')
+  await page.getByTestId('sec-comp').click()
+  await page.getByTestId('lcm-source').selectOption('manual')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('pane-select-a').selectOption('netlist')
+  await expect(page.getByTestId('netlist')).toContainText('Lcm_neut_1')
+  await expect(page.getByTestId('netlist')).toContainText('Cx1_1n')   // star, phase-to-neutral
+})

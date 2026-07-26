@@ -9,7 +9,7 @@ import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
 import LisnView from './LisnView.vue'
 import { api } from '../engine.js'
-import { buildFilterCias, filterComponents } from '../ciasFilter.js'
+import { buildFilterCias, filterComponents, topologyLines } from '../ciasFilter.js'
 import { store } from '../store.js'
 import { fmtHz, fmtDb, fmtSi } from '../format.js'
 
@@ -28,7 +28,8 @@ const lCandidatesMh = ref('0.47, 0.68, 1, 1.5, 2.2, 3.3, 4.7, 6.8, 10')
 const cxCandidatesUf = ref('0.1, 0.15, 0.22, 0.33, 0.47, 0.68, 1, 1.5, 2.2, 3.3')
 const cxSource = ref('catalog')     // real parts by default; 'manual' opts out
 const cxMfr = ref('')
-const topology = ref('mains')   // 'mains' (1φ L/N/PE) | 'dc' (12/48 V supply/return/chassis, CISPR 25)
+const topology = ref('mains')   // 'mains' (1φ) | 'dc' (CISPR 25) | '3ph' (3-wire delta X) | '3phn' (3φ+N star X)
+const nLines = computed(() => topologyLines(topology.value))
 const eslXnH = ref(20)          // X-cap ESL (#290) — film-box typical; override from datasheet
 const eslYnH = ref(10)          // per-Y-cap ESL; the parallel pair halves it
 const lineCurrentA = ref(0)     // operating current for saturation screening (0 = off)
@@ -140,7 +141,7 @@ function clearBinding() {
 watch(stages, () => {
   if (bindingSets.value && deriveFromBindings() && design.value) compute()
 })
-watch(topology, (t) => {
+watch(topology, (t, previous) => {
   // DC: no mains, no touch-current story — auto-C_Y (a touch-budget concept)
   // and the 50 uH mains LISN both stop applying
   if (t === 'dc') {
@@ -149,6 +150,11 @@ watch(topology, (t) => {
   } else {
     netlistLisn.value = 'cispr16'
   }
+  // 3-phase grids are stated line-to-line: swap the DEFAULT voltage both ways,
+  // but never overwrite a user-entered value
+  const threePhase = (x) => x === '3ph' || x === '3phn'
+  if (threePhase(t) && !threePhase(previous) && Number(gridVrms.value) === 230) gridVrms.value = 400
+  if (!threePhase(t) && threePhase(previous) && Number(gridVrms.value) === 400) gridVrms.value = 230
 })
 
 // saturation screening (#290): datasheet comparison, not magnetics math —
@@ -156,7 +162,7 @@ watch(topology, (t) => {
 function saturationWarn(p) {
   const i = Number(lineCurrentA.value)
   if (!(i > 0)) return null
-  const peak = topology.value === 'mains' ? i * Math.SQRT2 : i
+  const peak = topology.value === 'dc' ? i : i * Math.SQRT2
   if (p.saturationCurrentPeakA != null && peak > p.saturationCurrentPeakA) {
     return `saturates: ${peak.toFixed(1)} A pk > ${p.saturationCurrentPeakA} A sat`
   }
@@ -187,8 +193,11 @@ const measuredIlAt = ref({})     // mpn -> measured CM IL (dB) at f_design, for 
 // it sets the attenuation requirement; safety sets the C_Y ceiling.
 const CY_STANDARD_NF = [1, 2.2, 3.3, 4.7, 10, 15, 22, 33, 47]
 const autoCyNf = computed(() => {
+  // a Y capacitor (and a touching person) sees phase-to-earth voltage;
+  // 3-phase grids state vRms line-to-line
+  const vTouch = Number(gridVrms.value) / (nLines.value >= 3 ? Math.sqrt(3) : 1)
   const budgetF = (Number(touchLimitMa.value) * 1e-3) /
-    (Number(gridVrms.value) * 1.1 * 2 * Math.PI * Number(gridHz.value) * 1.2 * Number(stages.value))
+    (vTouch * 1.1 * 2 * Math.PI * Number(gridHz.value) * 1.2 * Number(stages.value))
   const fit = CY_STANDARD_NF.filter((nf) => nf * 1e-9 <= budgetF)
   return fit.length ? fit[fit.length - 1] : null
 })
@@ -252,7 +261,14 @@ function catalogPartsAnyL() {
   // null bypass the threshold put an 11.5 A SMD choke into a "100 A" design.
   // Set the threshold to 0 to browse unrated parts explicitly.
   const minRated = Number(minRatedA.value)
+  // winding-count gate (#292): a 3-phase slot needs a 3/4-winding choke and a
+  // 2-line slot must never offer one. Unknown winding count (null) is only
+  // acceptable for 2-line topologies (most catalog rows predate the field).
+  const windingOk = (p) => nLines.value >= 3
+    ? p.windings === nLines.value
+    : (p.windings == null || p.windings <= 2)
   return catalog.value.parts.filter((p) =>
+    windingOk(p) &&
     (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
     (p.ratedCurrentA !== null ? p.ratedCurrentA >= minRated : minRated <= 0))
 }
@@ -311,7 +327,12 @@ async function loadMeasuredIlColumn() {
 
 function catalogCandidates() {
   const parts = catalogParts()
-  if (!parts.length) throw new Error('no catalog parts match the manufacturer/current filter')
+  if (!parts.length) {
+    const windingHint = nLines.value >= 3
+      ? ` — no ${nLines.value}-winding (${nLines.value === 3 ? '3-phase' : '3-phase + N'}) chokes are catalogued; enter manual candidates from a 3-phase series datasheet (e.g. WE-CMB S)`
+      : ''
+    throw new Error('no catalog parts match the manufacturer/current/winding filters' + windingHint)
+  }
   return [...new Set(parts.map((p) => p.inductanceH))].sort((a, b) => a - b)
 }
 
@@ -361,18 +382,20 @@ function buildParams(overrides = {}) {
     aReqDmDb: Number(aReqDm.value),
     cYPerLineF: resolvedCyNf() * 1e-9,
     stages: Number(stages.value),
-    // #290: shunt-capacitor parasitics — the Y pair in parallel halves its ESL
-    eslCmH: (Number(eslYnH.value) / 2) * 1e-9,
+    nLines: nLines.value,
+    // #290: shunt-capacitor parasitics — the CM path sees the n-per-line Y
+    // bank in parallel, dividing its ESL by n
+    eslCmH: (Number(eslYnH.value) / nLines.value) * 1e-9,
     eslDmH: Number(eslXnH.value) * 1e-9,
     lCmCandidatesH: lCmSource.value === 'catalog'
       ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
     cXCandidatesF: cxSource.value === 'catalog'
       ? cxCatalogCandidates() : parseList(cxCandidatesUf.value, 1e-6),
   }
-  if (topology.value === 'mains') {
-    // touch current / bleeder are a MAINS story; a DC supply filter has
-    // neither (chassis-referenced Y practice differs) — omitting grid skips
-    // both in the engine instead of faking them
+  if (topology.value !== 'dc') {
+    // touch current / bleeder are a MAINS story (1-phase or 3-phase); a DC
+    // supply filter has neither (chassis-referenced Y practice differs) —
+    // omitting grid skips both in the engine instead of faking them
     params.grid = { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 }
   }
   if (bindingSets.value && fCritCmHz.value && fCritDmHz.value) {
@@ -441,9 +464,14 @@ async function runDesign(makeParams, { keepBindings }) {
       const scanF = (scanCtx.value?.traces ?? []).flatMap((t) => [t.frequenciesHz[0], t.frequenciesHz[t.frequenciesHz.length - 1]])
       const span = { fMinHz: Math.min(150e3, fLow / 2, ...scanF.filter((f) => f > 0)),
                      fMaxHz: Math.max(30e6, fHigh * 2, ...scanF), pointsPerDecade: 30 }
+      // CM reference: all line LISN arms in parallel = 50/n Ω. DM stays 100 Ω
+      // (a DM loop always runs out one arm and back another). The DM shunt is
+      // the EFFECTIVE X capacitance (delta: 1.5·C per line pair).
+      const cmRefZ = 50 / (d.nLines ?? 2)
+      const cXEff = d.cXSelectedF * (d.cXDmFactor ?? 1)
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
-        stages: d.stages, referenceImpedanceOhm: 25, capEslH: params.eslCmH, ...span })
-      const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
+        stages: d.stages, referenceImpedanceOhm: cmRefZ, capEslH: params.eslCmH, ...span })
+      const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: cXEff,
         stages: d.stages, referenceImpedanceOhm: 100, capEslH: params.eslDmH, ...span })
       // the chip is a hard pass/fail input: evaluate it AT f_design via a
       // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off)
@@ -454,8 +482,8 @@ async function runDesign(makeParams, { keepBindings }) {
         const mid = Math.floor(il.frequenciesHz.length / 2)
         return { standard: il.standardDb[mid], worst: il.worstCaseDb[mid] }
       }
-      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25, d.fDesignCmHz, params.eslCmH),
-                                dm: exactAt(d.lDmH, d.cXSelectedF, 100, d.fDesignDmHz, params.eslDmH) } }
+      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, cmRefZ, d.fDesignCmHz, params.eslCmH),
+                                dm: exactAt(d.lDmH, cXEff, 100, d.fDesignDmHz, params.eslDmH) } }
     }
     // in-circuit IL at exactly f_design — the same criterion the verdict chip
     // scores, so the escalation target and the verdict can never disagree
@@ -480,7 +508,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(v, attempt.d.cYgF, 25, attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH) >= Number(params.aReqCmDb))
+            ilAtDesign(v, attempt.d.cYgF, 50 / (attempt.d.nLines ?? 2), attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH) >= Number(params.aReqCmDb))
           next.lCmCandidatesH = pass !== undefined
             ? params.lCmCandidatesH.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -490,7 +518,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.cXCandidatesF.filter((v) => v > attempt.d.cXSelectedF).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(attempt.d.lDmH, v, 100, attempt.d.fDesignDmHz, attempt.d.stages, params.eslDmH) >= Number(params.aReqDmDb))
+            ilAtDesign(attempt.d.lDmH, v * (attempt.d.cXDmFactor ?? 1), 100, attempt.d.fDesignDmHz, attempt.d.stages, params.eslDmH) >= Number(params.aReqDmDb))
           next.cXCandidatesF = pass !== undefined
             ? params.cXCandidatesF.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -506,7 +534,7 @@ async function runDesign(makeParams, { keepBindings }) {
     ilDm.value = attempt.dm
     worstCaseAt.value = attempt.at
     const d = design.value
-    interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF,
+    interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF * (d.cXDmFactor ?? 1),
       Number(vInMin.value), Number(pIn.value))
     try {
       netlist.value = engine.filterSpiceNetlist(design.value, netlistLisn.value, netlistMode.value)
@@ -527,7 +555,7 @@ const ilSeries = () => [
     points: measured.value.cm.f.map((f, i) => ({ f, v: measured.value.cm.db[i] })) }] : []),
   ...(measured.value?.dm ? [{ id: 'dmm', label: `DM measured (${measured.value.mpn})`, color: 'var(--s-2)', dash: '1 4',
     points: measured.value.dm.f.map((f, i) => ({ f, v: measured.value.dm.db[i] })) }] : []),
-  { id: 'cm', label: 'CM in-circuit (25 Ω)', color: 'var(--s-1)',
+  { id: 'cm', label: `CM in-circuit (${(50 / nLines.value).toFixed(nLines.value === 3 ? 1 : 0)} Ω)`, color: 'var(--s-1)',
     points: ilCm.value.frequenciesHz.map((f, i) => ({ f, v: ilCm.value.standardDb[i] })) },
   { id: 'cmw', label: 'CM worst case (CISPR 17)', color: 'var(--s-1)', dash: '3 4',
     points: ilCm.value.frequenciesHz.map((f, i) => ({ f, v: ilCm.value.worstCaseDb[i] })) },
@@ -555,11 +583,10 @@ const requirementMarkers = () => {
 
 const schematicLabels = () => {
   const labels = {}
-  for (let s = 1; s <= design.value.stages; s += 1) {
-    labels[`CMC${s}`] = fmtSi(design.value.lCmSelectedH, 'H')
-    labels[`C_X${s}`] = fmtSi(design.value.cXSelectedF, 'F')
-    labels[`C_YL${s}`] = fmtSi(design.value.cYPerLineF, 'F')
-    labels[`C_YN${s}`] = fmtSi(design.value.cYPerLineF, 'F')
+  for (const c of filterComponents(design.value.stages, nLines.value)) {
+    labels[c.ref] = c.kind === 'cmc' ? fmtSi(design.value.lCmSelectedH, 'H')
+      : c.kind === 'cx' ? fmtSi(design.value.cXSelectedF, 'F')
+      : fmtSi(design.value.cYPerLineF, 'F')
   }
   return labels
 }
@@ -628,7 +655,7 @@ watch(selectedRef, (ref_) => {
 
 async function bindPart(part) {
   const kind = kindOf(selectedRef.value)
-  for (const c of filterComponents(design.value.stages)) {
+  for (const c of filterComponents(design.value.stages, nLines.value)) {
     if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer,
       valueF: part.valueF ?? null, quantity: part.quantity ?? 1,
       maxRatedV: Math.max(part.ratedVoltageAcV ?? 0, part.ratedVoltageDcV ?? 0) || null }
@@ -677,13 +704,13 @@ const bindingVoltageWarning = (binding) => {
   return binding.maxRatedV < peak
     ? `rated ${binding.maxRatedV} V < ${Math.round(peak)} V grid peak — NOT a mains part` : null
 }
-const bomRows = () => filterComponents(design.value.stages).map((c) => ({
+const bomRows = () => filterComponents(design.value.stages, nLines.value).map((c) => ({
   ref: c.ref,
   value: schematicLabels()[c.ref],
   binding: bindings.value[c.ref] ?? null,
   warning: bindingVoltageWarning(bindings.value[c.ref]),
 }))
-const allBound = () => filterComponents(design.value.stages).every((c) => bindings.value[c.ref]?.mpn)
+const allBound = () => filterComponents(design.value.stages, nLines.value).every((c) => bindings.value[c.ref]?.mpn)
 
 // Binding a part re-runs the WHOLE evaluation with the bound values — chips,
 // curves, netlist, Middlebrook and safety all describe the filter AS BUILT,
@@ -691,9 +718,13 @@ const allBound = () => filterComponents(design.value.stages).every((c) => bindin
 // values; a bound part too small for the requirement fails loudly.
 async function recomputeAsBuilt() {
   if (!design.value) return
-  const lCm = bindings.value.CMC1?.valueF ?? design.value.lCmSelectedH
-  const cX = bindings.value.C_X1?.valueF ?? design.value.cXSelectedF
-  const cY = bindings.value.C_YL1?.valueF ?? design.value.cYPerLineF
+  const boundByKind = (kind) => {
+    const c = filterComponents(design.value.stages, nLines.value).find((k) => k.kind === kind)
+    return c ? bindings.value[c.ref] : null
+  }
+  const lCm = boundByKind('cmc')?.valueF ?? design.value.lCmSelectedH
+  const cX = boundByKind('cx')?.valueF ?? design.value.cXSelectedF
+  const cY = boundByKind('cy')?.valueF ?? design.value.cYPerLineF
   // loud but non-destructive: if the bound combination cannot meet the sizing
   // (e.g. a much smaller Y capacitor), keep the previous design on screen and
   // surface WHY the as-built rerun failed
@@ -840,6 +871,8 @@ function downloadNetlist() {
         <select v-model="topology" data-test="topology">
           <option value="mains">single-phase mains — L/N/PE (CISPR 32/11)</option>
           <option value="dc">12/48 V DC supply — +/RTN/chassis (CISPR 25)</option>
+          <option value="3ph">3-phase 3-wire — L1/L2/L3/PE, delta X</option>
+          <option value="3phn">3-phase + N — L1/L2/L3/N/PE, star X</option>
         </select></label>
       <div class="row">
         <label class="field"><span>Switching frequency (kHz)</span>
@@ -865,7 +898,7 @@ function downloadNetlist() {
       <div v-show="openSection === 'comp'" class="acc-body">
       <label class="field"><span title="Safety caps C_Y via the touch-current budget, never the spectrum. Within that cap a larger C_Y means a smaller choke — auto takes the largest standard value passing the tier selected under Grid & safety.">Y capacitor per line ⓘ</span>
         <select v-model="cYnF" data-test="cy-select">
-          <option v-if="topology === 'mains'" value="auto">auto — largest within the touch budget{{ autoCyNf !== null ? ` (→ ${autoCyNf} nF)` : '' }}</option>
+          <option v-if="topology !== 'dc'" value="auto">auto — largest within the touch budget{{ autoCyNf !== null ? ` (→ ${autoCyNf} nF)` : '' }}</option>
           <option v-for="v in [1, 2.2, 3.3, 4.7, 10]" :key="v" :value="v">{{ v }} nF (manual)</option>
         </select></label>
       <label class="field"><span title="The DM path is sized from the choke's leakage inductance: one |Z| point from the datasheet's DM curve, several points (fitted, refused if they straddle the self-resonance), or the leakage value directly.">DM (leakage) inductance from ⓘ</span>
@@ -924,13 +957,14 @@ function downloadNetlist() {
               @click="openSection = 'grid'">3 · GRID &amp; SAFETY</button>
       <div v-show="openSection === 'grid'" class="acc-body">
       <div class="row">
-        <label class="field"><span>{{ topology === 'dc' ? 'Bus voltage (V DC)' : 'Grid (V RMS)' }}</span>
+        <label class="field"><span>{{ topology === 'dc' ? 'Bus voltage (V DC)'
+          : nLines >= 3 ? 'Grid (V line-to-line RMS)' : 'Grid (V RMS)' }}</span>
           <input v-model.number="gridVrms" type="number" /></label>
-        <label v-if="topology === 'mains'" class="field"><span>Grid (Hz)</span><input v-model.number="gridHz" type="number" /></label>
+        <label v-if="topology !== 'dc'" class="field"><span>Grid (Hz)</span><input v-model.number="gridHz" type="number" /></label>
         <label class="field"><span title="Operating line/bus current for saturation screening: parts whose datasheet saturation current sits below the operating peak are flagged in the parts pane. 0 disables the check. Full L(I) derating via MKF is planned.">Line current (A) ⓘ</span>
           <input v-model.number="lineCurrentA" type="number" min="0" data-test="line-current" /></label>
       </div>
-      <label v-if="topology === 'mains'" class="field"><span>Touch-current tier (bounds C_Y)</span>
+      <label v-if="topology !== 'dc'" class="field"><span>Touch-current tier (bounds C_Y)</span>
         <select v-model.number="touchLimitMa" data-test="touch-tier">
           <option :value="3.5">3.5 mA — IEC 62368-1 Class I</option>
           <option :value="0.75">0.75 mA — appliance</option>
@@ -976,7 +1010,7 @@ function downloadNetlist() {
             <span v-else>CM {{ fmtHz(design.fCutoffCmHz) }} · DM {{ fmtHz(design.fCutoffDmHz) }}</span></span>
           <span class="fcell"><b>L<sub>CM</sub></b><span data-test="lcm">{{ fmtSi(design.lCmSelectedH, 'H') }}</span></span>
           <span class="fcell"><b>C<sub>X</sub></b><span>{{ fmtSi(design.cXSelectedF, 'F') }}</span></span>
-          <span class="fcell"><b>C<sub>Y</sub></b><span>2×{{ fmtSi(design.cYPerLineF, 'F') }}/stage</span></span>
+          <span class="fcell"><b>C<sub>Y</sub></b><span>{{ nLines }}×{{ fmtSi(design.cYPerLineF, 'F') }}/stage</span></span>
           <span v-if="design.dischargeResistorOhm" class="fcell"><b>R<sub>bleed</sub></b>
             <span>{{ fmtSi(design.dischargeResistorOhm, 'Ω') }} · {{ fmtSi(design.dischargeResistorPowerW, 'W') }}</span></span>
         </div>
@@ -1014,7 +1048,7 @@ function downloadNetlist() {
               </div>
               <div v-else class="view-fill">
                 <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
-                                 :selected="selectedRef" :dc="topology === 'dc'" @select="selectComponent" />
+                                 :selected="selectedRef" :topology="topology" @select="selectComponent" />
                 <p class="note" style="flex: 0 0 auto; margin: 0.2rem 0 0">Click a component — its catalog
                   parts open in the other pane. Amber part numbers are bound; identical stages share bindings.</p>
               </div>
@@ -1283,7 +1317,7 @@ function downloadNetlist() {
         <template v-if="asBuiltNote"> {{ asBuiltNote }}.</template>
       </p>
       <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
-                       selected="" :dc="topology === 'dc'" :interactive="false" @select="() => {}" />
+                       selected="" :topology="topology" :interactive="false" @select="() => {}" />
       <template v-if="predicted && predicted.analysis">
         <h2>Predicted post-filter result</h2>
         <p>Worst predicted margin {{ fmtDb(predicted.analysis.worst.marginDb) }} dB at

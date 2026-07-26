@@ -54,6 +54,17 @@ inline double resonant_cutoff(double inductanceH, double capacitanceF) {
     return 1.0 / (2.0 * std::numbers::pi * std::sqrt(inductanceH * capacitanceF));
 }
 
+// X-capacitor connection factor seen by a line-to-line DM loop: a 3-wire
+// (delta) X network presents C + C/2 = 1.5·C between any two lines; the
+// line-neutral (2-wire) and phase-neutral star (4-wire) networks present the
+// capacitor directly.
+inline double x_capacitor_dm_factor(int nLines) {
+    if (nLines != 2 && nLines != 3 && nLines != 4) {
+        throw std::invalid_argument("nLines must be 2 (1-phase/DC), 3 (3-phase) or 4 (3-phase + N)");
+    }
+    return nLines == 3 ? 1.5 : 1.0;
+}
+
 // L_CM = 1/((2π f_CO)² C_YG) — eq. (7); C_YG = 2·C_Y per line pair, eq. (6).
 inline double cm_inductance(double fCutoffHz, double cYgF) {
     if (fCutoffHz <= 0.0 || cYgF <= 0.0) {
@@ -105,6 +116,8 @@ struct LineFilterDesign {
     double cXRequiredF;
     double cXSelectedF;
     double attenuationDmDb;
+    int nLines;
+    double cXDmFactor;
 };
 
 // Full ANP015 sizing pass. cYPerLineF: the chosen Y capacitor per line (bounded
@@ -119,12 +132,17 @@ struct LineFilterDesign {
 // per-mode design frequencies serve measurement-driven callers whose CM and DM
 // critical points sit at different frequencies; both default to
 // design_frequency(fSwHz).
+// nLines generalizes the note's single-phase pair: 2 = L/N (or a DC +/RTN
+// pair), 3 = 3-phase 3-wire (delta X), 4 = 3-phase + neutral (star X). One Y
+// capacitor per line -> C_YG = nLines·C_Y for the CM resonance.
 inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double aReqDmDb,
                                            double cYPerLineF, double lDmH, int stages,
                                            const std::vector<double>& lCmCandidates,
                                            const std::vector<double>& cXCandidates,
                                            std::optional<double> fDesignCmHz = std::nullopt,
-                                           std::optional<double> fDesignDmHz = std::nullopt) {
+                                           std::optional<double> fDesignDmHz = std::nullopt,
+                                           int nLines = 2) {
+    double xFactor = x_capacitor_dm_factor(nLines);
     double fDesignDefault = design_frequency(fSwHz);
     double fDesignCm = fDesignCmHz.value_or(fDesignDefault);
     double fDesignDm = fDesignDmHz.value_or(fDesignDefault);
@@ -134,7 +152,7 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
     double fCutoffCm = cutoff_frequency(fDesignCm, aReqCmDb, stages);
     double fCutoffDm = cutoff_frequency(fDesignDm, aReqDmDb, stages);
 
-    double cYg = 2.0 * cYPerLineF;
+    double cYg = nLines * cYPerLineF;
     double lCmRequired = cm_inductance(fCutoffCm, cYg);
     double lCmSelected;
     try {
@@ -149,7 +167,7 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
     }
     double attenuationCm = achieved_attenuation_db(fDesignCm, lCmSelected, cYg, stages);
 
-    double cXRequired = dm_capacitance(fCutoffDm, lDmH);
+    double cXRequired = dm_capacitance(fCutoffDm, lDmH) / xFactor;
     double cXSelected;
     try {
         cXSelected = round_up_to(cXRequired, cXCandidates);
@@ -160,11 +178,12 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
                       "relax the DM requirement", cXRequired * 1e6);
         throw std::invalid_argument(msg);
     }
-    double attenuationDm = achieved_attenuation_db(fDesignDm, lDmH, cXSelected, stages);
+    double attenuationDm = achieved_attenuation_db(fDesignDm, lDmH, xFactor * cXSelected, stages);
 
     return LineFilterDesign{stages,     fDesignCm,   fDesignDm,   fCutoffCm,     fCutoffDm,
                             cYPerLineF, cYg,         lCmRequired, lCmSelected,   attenuationCm,
-                            lDmH,       cXRequired,  cXSelected,  attenuationDm};
+                            lDmH,       cXRequired,  cXSelected,  attenuationDm,
+                            nLines,     xFactor};
 }
 
 // Protective-earth leakage current — ANP015 eqs. (29)-(30). Apply worst-case
