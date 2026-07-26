@@ -141,9 +141,13 @@ const manufacturers = () =>
 
 function catalogPartsAnyL() {
   if (!catalog.value) return []
+  // an UNRATED part can never satisfy a positive current requirement — letting
+  // null bypass the threshold put an 11.5 A SMD choke into a "100 A" design.
+  // Set the threshold to 0 to browse unrated parts explicitly.
+  const minRated = Number(minRatedA.value)
   return catalog.value.parts.filter((p) =>
     (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
-    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)))
+    (p.ratedCurrentA !== null ? p.ratedCurrentA >= minRated : minRated <= 0))
 }
 
 function catalogParts() {
@@ -546,7 +550,7 @@ function downloadNetlist() {
           <label class="field"><span>Manufacturer</span>
             <select v-model="mfrFilter" data-test="mfr-filter"><option value="">all manufacturers</option>
               <option v-for="m in manufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
-          <label class="field"><span>Min. rated current (A)</span>
+          <label class="field"><span>Min. rated current (A) — a positive value excludes unrated parts; 0 admits them</span>
             <input v-model.number="minRatedA" type="number" min="0" data-test="min-rated" /></label>
         </div>
         <label class="field"><span>X capacitor candidates (µF)</span>

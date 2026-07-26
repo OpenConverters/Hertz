@@ -70,6 +70,38 @@ TEST_CASE("CISPR 25 class 5 LW band and detector offsets", "[limits]") {
     CHECK_THROWS_AS(qpLevel(5, 29e6), Hertz::OutsideCoverage);  // 28-30 MHz is a real gap
 }
 
+TEST_CASE("Lower limit applies at a segment boundary (F9-1, round 9)", "[limits]") {
+    // CISPR transition rule: at exactly 500 kHz Class A is 73 dBuV, not 79.
+    CHECK(Hertz::cispr32_class_a_mains_qp().level(500e3) == Approx(73.0));
+    CHECK(Hertz::cispr32_class_a_mains_avg().level(500e3) == Approx(60.0));
+    CHECK(Hertz::cispr32_class_b_mains_qp().level(500e3) == Approx(56.0));
+    CHECK(Hertz::cispr32_class_b_mains_qp().level(5e6) == Approx(56.0));  // lower of 56/60
+}
+
+TEST_CASE("Limit polyline emits exact band edges per segment (F9-2, round 9)", "[limits]") {
+    // Decade sampling left CISPR 25's 5.9-6.2 MHz band with one invisible
+    // point; every segment must now be a run with its true endpoints.
+    auto runs = Hertz::limit_polyline_runs(
+        Hertz::cispr25_conducted_voltage(5, Hertz::Detector::QUASI_PEAK), 150e3, 108e6, 40);
+    REQUIRE(runs.size() == 6);
+    CHECK(runs[0].front().first == Approx(150e3));
+    CHECK(runs[0].back().first == Approx(300e3));
+    CHECK(runs[2].front().first == Approx(5.9e6));   // SW: full band, not one point
+    CHECK(runs[2].back().first == Approx(6.2e6));
+    CHECK(runs[2].size() >= 2);
+    CHECK(runs[3].front().first == Approx(26e6));    // CB
+    CHECK(runs[3].back().first == Approx(28e6));
+    CHECK(runs[5].front().first == Approx(68e6));    // 68-108, not inset to 71.7
+    CHECK(runs[5].back().first == Approx(108e6));
+    // a step stays a step: Class A's two segments are separate runs meeting at 500 kHz
+    auto classA = Hertz::limit_polyline_runs(Hertz::cispr32_class_a_mains_qp(), 150e3, 30e6, 40);
+    REQUIRE(classA.size() == 2);
+    CHECK(classA[0].back().first == Approx(500e3));
+    CHECK(classA[0].back().second == Approx(79.0));
+    CHECK(classA[1].front().first == Approx(500e3));
+    CHECK(classA[1].front().second == Approx(73.0));
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);

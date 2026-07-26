@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from hertz.limits import (
+    CISPR32_CLASS_A_MAINS_AVG,
     CISPR32_CLASS_A_MAINS_QP,
     CISPR32_CLASS_B_MAINS_AVG,
     CISPR32_CLASS_B_MAINS_QP,
@@ -71,6 +72,18 @@ def test_cispr25_vhf_bands_exist():
         qp.level(60e6)   # 54-68 MHz is a real gap
     with pytest.raises(OutsideCoverage):
         qp.level(29e6)   # 28-30 MHz is a real gap
+
+
+def test_lower_limit_applies_at_segment_boundary():
+    # F9-1 (round 9), CISPR transition rule: at exactly 500 kHz Class A is 73
+    # dBuV, not 79; the vectorized path must agree with the scalar one.
+    assert CISPR32_CLASS_A_MAINS_QP.level(500e3) == pytest.approx(73.0)
+    assert CISPR32_CLASS_A_MAINS_AVG.level(500e3) == pytest.approx(60.0)
+    assert CISPR32_CLASS_B_MAINS_QP.level(500e3) == pytest.approx(56.0)
+    assert CISPR32_CLASS_B_MAINS_QP.level(5e6) == pytest.approx(56.0)
+    mask, levels = CISPR32_CLASS_A_MAINS_QP.levels_where_covered([400e3, 500e3, 600e3])
+    assert mask.all()
+    np.testing.assert_allclose(levels, [79.0, 73.0, 73.0])
 
 
 def test_cispr25_gap_between_bands_raises():

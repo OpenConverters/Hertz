@@ -175,25 +175,13 @@ std::string limit_analysis_js(const std::string& standardId, const std::string& 
 std::string limit_polyline_js(const std::string& standardId, const std::string& detectorName,
                               double fMinHz, double fMaxHz, int pointsPerDecade)  {
     return guarded([&]() -> std::string {
-    if (!(0.0 < fMinHz && fMinHz < fMaxHz) || pointsPerDecade < 2) {
-        throw std::invalid_argument("bad polyline range");
-    }
     auto line = limit_line_for(standardId, detectorName);
     json runs = json::array();
-    json run = json::array();
-    double logMin = std::log10(fMinHz);
-    double logMax = std::log10(fMaxHz);
-    int steps = static_cast<int>((logMax - logMin) * pointsPerDecade) + 1;
-    for (int i = 0; i <= steps; ++i) {
-        double f = std::pow(10.0, logMin + (logMax - logMin) * i / steps);
-        if (line.covers(f)) {
-            run.push_back({{"f", f}, {"v", line.level(f)}});
-        } else if (!run.empty()) {
-            runs.push_back(run);
-            run = json::array();
+    for (const auto& segmentRun : Hertz::limit_polyline_runs(line, fMinHz, fMaxHz, pointsPerDecade)) {
+        json run = json::array();
+        for (const auto& [f, v] : segmentRun) {
+            run.push_back({{"f", f}, {"v", v}});
         }
-    }
-    if (!run.empty()) {
         runs.push_back(run);
     }
     return json{{"name", line.name()}, {"runs", runs}}.dump();

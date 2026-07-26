@@ -51,10 +51,14 @@ class LimitLine:
         return any(s.f_start_hz <= f_hz <= s.f_stop_hz for s in self.segments)
 
     def level(self, f_hz):
-        for s in self.segments:
-            if s.f_start_hz <= f_hz <= s.f_stop_hz:
-                return float(s.level(f_hz))
-        raise OutsideCoverage(f"{f_hz} Hz is outside limit line {self.name!r}")
+        # At a shared segment boundary the LOWER limit applies (the CISPR
+        # transition rule) — never "whichever segment happens to come first".
+        # Class A at exactly 500 kHz is 73 dBuV, not 79.
+        covering = [float(s.level(f_hz)) for s in self.segments
+                    if s.f_start_hz <= f_hz <= s.f_stop_hz]
+        if not covering:
+            raise OutsideCoverage(f"{f_hz} Hz is outside limit line {self.name!r}")
+        return min(covering)
 
     def levels_where_covered(self, f_hz):
         """(mask, levels) arrays; levels is NaN where the line does not apply."""
@@ -64,7 +68,10 @@ class LimitLine:
         for s in self.segments:
             inside = (f >= s.f_start_hz) & (f <= s.f_stop_hz)
             mask |= inside
-            levels[inside] = s.level(f[inside])
+            # boundary points covered by two segments take the LOWER limit
+            levels[inside] = np.where(
+                np.isnan(levels[inside]), s.level(f[inside]),
+                np.minimum(levels[inside], s.level(f[inside])))
         return mask, levels
 
     def margin(self, f_hz, measured_dbuv):

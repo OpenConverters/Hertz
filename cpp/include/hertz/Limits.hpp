@@ -1,7 +1,9 @@
 #pragma once
 #include <cmath>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Hertz {
@@ -55,6 +57,7 @@ class LimitLine {
 
     const std::string& name() const { return _name; }
     Detector detector() const { return _detector; }
+    const std::vector<LimitSegment>& segments() const { return _segments; }
 
     bool covers(double fHz) const {
         for (const auto& segment : _segments) {
@@ -66,12 +69,22 @@ class LimitLine {
     }
 
     double level(double fHz) const {
+        // At a shared segment boundary the LOWER limit applies (the CISPR
+        // transition rule) — never "whichever segment happens to come first".
+        // Class A at exactly 500 kHz is 73 dBuV, not 79.
+        std::optional<double> best;
         for (const auto& segment : _segments) {
             if (segment.fStartHz <= fHz && fHz <= segment.fStopHz) {
-                return segment.level(fHz);
+                double value = segment.level(fHz);
+                if (!best.has_value() || value < *best) {
+                    best = value;
+                }
             }
         }
-        throw OutsideCoverage(std::to_string(fHz) + " Hz is outside limit line " + _name);
+        if (!best.has_value()) {
+            throw OutsideCoverage(std::to_string(fHz) + " Hz is outside limit line " + _name);
+        }
+        return *best;
     }
 
     // limit - measured: positive means passing.
@@ -82,6 +95,39 @@ class LimitLine {
     Detector _detector;
     std::vector<LimitSegment> _segments;
 };
+
+// Drawable polyline of a limit line: one run PER SEGMENT with the exact band
+// edges always emitted — decade sampling alone leaves a band narrower than the
+// grid spacing (CISPR 25 SW is 5.9-6.2 MHz) with a single invisible point, and
+// insets every drawn band edge by up to half a grid step. Runs are clipped to
+// [fMinHz, fMaxHz]; interpolated spans get pointsPerDecade points between the
+// exact endpoints. Adjacent segments stay separate runs, so a limit step is
+// drawn as a step, not a slant.
+inline std::vector<std::vector<std::pair<double, double>>> limit_polyline_runs(
+    const LimitLine& line, double fMinHz, double fMaxHz, int pointsPerDecade) {
+    if (!(0.0 < fMinHz && fMinHz < fMaxHz) || pointsPerDecade < 2) {
+        throw std::invalid_argument("bad polyline range");
+    }
+    std::vector<std::vector<std::pair<double, double>>> runs;
+    for (const auto& segment : line.segments()) {
+        double f0 = std::max(segment.fStartHz, fMinHz);
+        double f1 = std::min(segment.fStopHz, fMaxHz);
+        if (f0 > f1) {
+            continue;
+        }
+        std::vector<std::pair<double, double>> run;
+        int steps = std::max(1, static_cast<int>(std::ceil((std::log10(f1) - std::log10(f0)) *
+                                                           pointsPerDecade)));
+        for (int i = 0; i <= steps; ++i) {
+            double f = i == 0 ? f0
+                     : i == steps ? f1
+                     : std::pow(10.0, std::log10(f0) + (std::log10(f1) - std::log10(f0)) * i / steps);
+            run.emplace_back(f, segment.level(f));
+        }
+        runs.push_back(std::move(run));
+    }
+    return runs;
+}
 
 // CISPR 32 / EN 55032, AC mains conducted, 150 kHz - 30 MHz.
 inline const LimitLine& cispr32_class_b_mains_qp() {

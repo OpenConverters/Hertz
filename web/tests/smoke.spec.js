@@ -394,3 +394,49 @@ test('receiver: switching the band re-measures — a too-short record fails loud
   await expect(page.getByTestId('error')).toContainText('too short', { timeout: 60_000 })
   await expect(page.getByTestId('receiver-chart')).not.toBeVisible()
 })
+
+test('spectrum: the lower limit applies at the CISPR 32 Class A 500 kHz boundary (Berger round-9 F9-1)', async ({ page }) => {
+  // At a transition frequency the LOWER limit governs: 73 dBuV, not 79 — the
+  // old first-segment-wins lookup was 6 dB soft exactly on a very common grid
+  // frequency and flipped this FAIL to MARGINAL.
+  const csv = ['Frequency (MHz),Quasi-peak (dBuV)',
+    '0.30,70.0', '0.499,70.0', '0.50,76.0', '0.501,70.0', '1.00,70.0'].join('\n')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('standard').selectOption('cispr32_class_a')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'c32a_500k.csv', mimeType: 'text/csv', buffer: Buffer.from(csv),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('offenders')).toContainText('73.0')
+})
+
+test('filter: a positive min rated current excludes unrated catalog parts (Berger round-9 F9-3)', async ({ page }) => {
+  // 150 catalogued chokes carry no rating; letting null bypass the threshold
+  // satisfied a "100 A" design with an 11.5 A SMD part.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('lcm-source').selectOption('catalog')
+  await page.getByTestId('min-rated').fill('100')
+  await page.getByTestId('compute').click()
+  // no >=100 A part covers a mains CM choke requirement: the designer must
+  // refuse loudly, never fall back to an unrated part
+  await expect(page.getByTestId('error')).toContainText(/no catalog parts match|no CM-choke candidate/)
+})
+
+test('spectrum: judging an Average column against a QP limit raises a detector-mismatch warning (Berger round-9 F9-4)', async ({ page }) => {
+  const csv = ['Frequency (MHz),Quasi-peak (dBuV),Average (dBuV)',
+    '0.15,59,52', '1.00,43,36', '6.00,42,35', '27.00,33,26'].join('\n')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('standard').selectOption('cispr25_class_5')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'detmix.csv', mimeType: 'text/csv', buffer: Buffer.from(csv),
+  })
+  await page.getByTestId('column-select').selectOption({ label: 'Average (dBuV)' })
+  await expect(page.getByTestId('detector-mismatch')).toContainText('quasi-peak')
+  // aligning the detector clears the warning
+  await page.locator('select').nth(3).selectOption('average')
+  await expect(page.getByTestId('detector-mismatch')).not.toBeVisible()
+})

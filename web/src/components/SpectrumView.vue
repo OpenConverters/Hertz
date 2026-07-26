@@ -27,6 +27,23 @@ const fileInput = ref(null)
 const detectors = computed(() =>
   STANDARDS.find((s) => s.id === standardId.value)?.detectors ?? ['quasi_peak'])
 
+// The judged column's header often NAMES its detector ("Average (dBuV)");
+// judging it against another detector's limit reads 6-20 dB wrong. The tool
+// never guesses, but it must not stay silent when both strings are in hand.
+function detectorOfLabel(label) {
+  const lowered = (label || '').toLowerCase()
+  if (/quasi|(^|[^a-z])qp/.test(lowered)) return 'quasi_peak'
+  if (/average|(^|[^a-z])avg/.test(lowered)) return 'average'
+  if (/peak|(^|[^a-z])pk/.test(lowered)) return 'peak'
+  return null
+}
+const detectorMismatches = computed(() => traces.value
+  .filter((t) => {
+    const named = detectorOfLabel(t.columnLabel)
+    return named && named !== detector.value
+  })
+  .map((t) => `${t.name} → ${t.columnLabel}`))
+
 const seriesColors = ['var(--s-1)', 'var(--s-2)', 'var(--s-3)']
 
 async function ingest(files) {
@@ -297,6 +314,10 @@ function onDrop(event) {
         <p class="note">Detector column names come from the file header. Judging a QP limit against
           an Average trace (or vice versa) reads 6–20 dB wrong — that is why nothing is guessed.</p>
       </div>
+      <p v-if="detectorMismatches.length" class="err" data-test="detector-mismatch">
+        Detector mismatch: {{ detectorMismatches.join(' · ') }} names a detector, but the verdict
+        uses the <strong>{{ detector.replace('_', '-') }}</strong> limit — switch the detector
+        selector or the judged column. A QP limit judged on an Average trace reads 6–20 dB soft.</p>
       <p v-if="traces.some((t) => t.columnLabel)" class="note" data-test="column-note">
         Judged column: {{ traces.filter((t) => t.columnLabel).map((t) => `${t.name} → ${t.columnLabel}`).join(' · ') }}</p>
       <div v-if="parseProblems.length" class="err" data-test="file-problems">
