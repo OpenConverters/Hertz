@@ -1,4 +1,6 @@
 import balticLabCsv from './assets/baltic-lab-cispr25-bench.csv?raw'
+import balticLabCmCsv from './assets/baltic-lab-cm.csv?raw'
+import balticLabDmCsv from './assets/baltic-lab-dm.csv?raw'
 
 // A REAL benchtop conducted-emissions measurement: S. Westerhold (Baltic Lab),
 // "A Benchtop Approach to Conducted Emissions Testing According to CISPR 25
@@ -9,6 +11,21 @@ import balticLabCsv from './assets/baltic-lab-cispr25-bench.csv?raw'
 export const REAL_SCAN_NAME = 'baltic-lab-cispr25-bench.csv'
 export function realScanCsv() {
   return balticLabCsv
+}
+
+// The same paper's Fig. 18: the SAME DUT with its noise SEPARATED into common
+// and differential mode by a TekBox TBLM2 LISN Mate (CM PK/AVG, DM PK/AVG).
+// Digitized the same way (y from the gridline raster, x verified via the
+// comb fundamental landing on the DUT's ~404 kHz switching frequency).
+// Reality check worth teaching: CM average FAILS class 5 by 9.3 dB at
+// ~76 MHz; DM meets the raw limit (+5.7 dB) but not the 10+6 dB engineering
+// buffer — real SMPS noise above 30 MHz is usually CM-dominated, and the
+// per-mode designer sizes DM lightly at its own frequency instead of from
+// the CM offence.
+export const REAL_CM_NAME = 'baltic-lab-cm-bench.csv'
+export const REAL_DM_NAME = 'baltic-lab-dm-bench.csv'
+export function realCmDmScans() {
+  return { cm: balticLabCmCsv, dm: balticLabDmCsv }
 }
 
 // Demo data: a failing 300 kHz flyback scan (harmonic comb + broadband floor),

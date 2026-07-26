@@ -664,7 +664,6 @@ function downloadNetlist() {
     <!-- ── input rail ─────────────────────────────────────────────────────── -->
     <aside class="fcontrols panel">
       <div class="rail-head">
-        <button class="act" data-test="compute" @click="compute">DESIGN FILTER</button>
         <select class="example-select" data-test="example-select" :value="exampleId"
                 @change="applyExample($event.target.value); $event.target.value = ''">
           <option value="" disabled selected>load a template…</option>
@@ -692,6 +691,7 @@ function downloadNetlist() {
         these modes</em> (Receiver) fill this section. Below 150 kHz the design moves to the first
         harmonic inside the measured band (ANP015).</p>
       <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
+      <button class="ghost cont" data-test="cont-req" @click="openSection = 'comp'">CONTINUE ▸ COMPONENTS</button>
       </div>
 
       <button class="acc-head" :class="{ open: openSection === 'comp' }" data-test="sec-comp"
@@ -748,6 +748,7 @@ function downloadNetlist() {
       <label v-else class="field"><span>Manufacturer — scopes the X2 candidates AND the recommended X2/Y2 parts</span>
         <select v-model="cxMfr" data-test="cx-mfr"><option value="">all manufacturers</option>
           <option v-for="m in cxManufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
+      <button class="ghost cont" data-test="cont-comp" @click="openSection = 'grid'">CONTINUE ▸ GRID &amp; SAFETY</button>
       </div>
 
       <button class="acc-head" :class="{ open: openSection === 'grid' }" data-test="sec-grid"
@@ -771,6 +772,7 @@ function downloadNetlist() {
       </div>
       <p class="note">V<sub>in</sub>/P feed the Middlebrook stability check; the tier bounds C_Y
         and scores the touch-current verdict.</p>
+      <button class="act cont" data-test="compute" @click="compute">DESIGN FILTER</button>
       </div>
 
       <div v-if="error" class="err" data-test="error">{{ error }}</div>

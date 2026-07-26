@@ -32,6 +32,7 @@ test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
   await page.getByTestId('areq-cm').fill('40')
   await page.getByTestId('sec-comp').click()
   await page.getByTestId('cy-select').selectOption('4.7')   // the note's C_Y — auto would pick larger
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toContainText('3.3 mH')
   await page.getByTestId('pane-select-b').selectOption('values')
@@ -58,6 +59,7 @@ test('filter: bind parts via the schematic and export CIAS', async ({ page }) =>
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
   await page.getByTestId('mode-filter').click()
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await page.getByTestId('pane-select-b').selectOption('bom')
   await expect(page.getByTestId('bom')).toBeVisible()
@@ -89,6 +91,7 @@ test('filter: binding a curve-carrying CMC overlays measured-impedance IL', asyn
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('mfr-filter').selectOption('Murata')
   await page.getByTestId('min-rated').fill('0')
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toBeVisible()
   await page.getByTestId('sch-CMC1').click()
@@ -345,6 +348,7 @@ test('filter: catalog escalation reaches a passing part in one jump (Berger roun
   await page.getByTestId('sec-comp').click()
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('min-rated').fill('0')
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('wc-verdict-cm')).toHaveClass(/pass/, { timeout: 30_000 })
   await expect(page.getByTestId('wc-verdict-cm')).toContainText('≥ 26')
@@ -357,6 +361,7 @@ test('filter: an unrealizable leakage/choke pair is flagged in the verdict panel
   await page.getByTestId('sec-comp').click()
   await page.getByTestId('dm-mode').selectOption('inductance')
   await page.getByTestId('ldm-input').fill('10000')   // 10 mH "leakage" vs the selected choke
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('k-warning')).toContainText('Not realizable')
   await page.getByTestId('pane-select-b').selectOption('bom')
@@ -435,6 +440,7 @@ test('filter: a positive min rated current excludes unrated catalog parts (Berge
   await page.getByTestId('cy-select').selectOption('4.7')
   await page.getByTestId('lcm-source').selectOption('catalog')
   await page.getByTestId('min-rated').fill('100')
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   // no >=100 A part covers a mains CM choke requirement: the designer must
   // refuse loudly, never fall back to an unrated part
@@ -563,6 +569,7 @@ test('filter: the caps manufacturer filter scopes the recommended parts, not onl
   await page.getByTestId('sec-comp').click()
   await page.getByTestId('cx-source').selectOption('catalog')
   await page.getByTestId('cx-mfr').selectOption('Würth Elektronik')
+  await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toBeVisible()
   await page.getByTestId('sch-CX1').click()
@@ -571,4 +578,41 @@ test('filter: the caps manufacturer filter scopes the recommended parts, not onl
   await page.getByTestId('sch-CY1').click()
   await expect(page.getByTestId('part-panel')).toContainText('Würth Elektronik')
   await expect(page.getByTestId('part-panel')).not.toContainText('WIMA')
+})
+
+test('filter: the rail walks Requirement -> Components -> Grid & safety to the DESIGN button', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  // stage 1 open, DESIGN not reachable yet
+  await expect(page.getByTestId('cont-req')).toBeVisible()
+  await expect(page.getByTestId('compute')).not.toBeVisible()
+  await page.getByTestId('cont-req').click()
+  await expect(page.getByTestId('cy-select')).toBeVisible()      // stage 2 opened
+  await page.getByTestId('cont-comp').click()
+  await expect(page.getByTestId('touch-tier')).toBeVisible()     // stage 3 opened
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+})
+
+test('spectrum: the real CM/DM scan hands per-mode targets — hard CM, light DM', async ({ page }) => {
+  // Fig. 18 of the Baltic Lab paper (CC-BY-4.0): CM average fails Class 5 by
+  // 9.3 dB; DM PASSES the raw limit (+5.7 dB) but not the 10+6 dB engineering
+  // buffer — so the per-mode handoff carries a hard CM requirement (~20 dB)
+  // and a small, honestly-derived DM one (~9 dB), each at ITS OWN frequency.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('load-real-cmdm').click()
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('trace-semantics')).toHaveValue('cm-first')
+  await expect(page.getByTestId('real-scan-attribution')).toContainText('Fig. 18')
+  await page.getByTestId('design-fix').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  const note = await page.getByTestId('binding-note').textContent()
+  expect(Number(note.match(/CM (\d+) dB/)[1])).toBeGreaterThanOrEqual(19)  // 9.3 deficit + 10 dB
+  const dmReq = Number(note.match(/DM (\d+) dB/)[1])
+  expect(dmReq).toBeGreaterThanOrEqual(5)
+  expect(dmReq).toBeLessThanOrEqual(12)   // DM must stay LIGHT — never sized from the CM offence
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await expect(page.getByTestId('wc-verdict-dm')).toContainText(`≥ ${dmReq}`)
 })

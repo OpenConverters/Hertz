@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import LogChart from './LogChart.vue'
 import { api, STANDARDS } from '../engine.js'
 import { store } from '../store.js'
-import { demoScanCsv, realScanCsv, REAL_SCAN_NAME } from '../demo.js'
+import { demoScanCsv, realScanCsv, realCmDmScans, REAL_SCAN_NAME, REAL_CM_NAME, REAL_DM_NAME } from '../demo.js'
 import { fmtHz, fmtDb } from '../format.js'
 
 const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis, uncovered}
@@ -287,7 +287,27 @@ const chartViolations = computed(() => {
   return points
 })
 
-function designTheFix() {
+async function designTheFix() {
+  const judged = traces.value.filter((t) => t.analysis)
+  if (traceSemantics.value !== 'lines' && judged.length === 2) {
+    // separated CM/DM pair: hand over PER-MODE binding sets, judged with the
+    // 6 dB in-phase mode-summation allowance on top of the 10 dB margin —
+    // exactly the Receiver's rule, so the designer sizes each mode at its own
+    // critical point (a passing mode arrives empty, never over-designed)
+    const engine = await api()
+    const order = traceSemantics.value === 'cm-first' ? ['cm', 'dm'] : ['dm', 'cm']
+    const sets = { cm: [], dm: [] }
+    judged.forEach((t, i) => {
+      const analysis = engine.limitAnalysis(standardId.value, detector.value,
+                                            t.frequenciesHz, t.levelsDbuv, 16)
+      analysis.marginsDb.forEach((margin, k) => {
+        if (margin !== null && margin < 16) sets[order[i]].push([t.frequenciesHz[k], 16 - margin])
+      })
+    })
+    store.handoff = { binding: sets }
+    store.mode = 'filter'
+    return
+  }
   store.handoff = {
     aReqDb: Math.ceil((requiredAttenuation.value ?? 40) / 5) * 5,
     fSwHz: comb.value?.found ? comb.value.fSwHz : null,
@@ -304,14 +324,30 @@ function onDrop(event) {
 // Average) — the Average column is pre-chosen and judged against the class it
 // actually fails (CISPR 25 Class 5 average; it PASSES the paper's Class 3
 // target). Switch class/detector/column freely afterwards.
-const realScanLoaded = computed(() => traces.value.some((t) => t.name === REAL_SCAN_NAME) ||
-  columnPickers.value.some((p) => p.name === REAL_SCAN_NAME))
+const REAL_NAMES = [REAL_SCAN_NAME, REAL_CM_NAME, REAL_DM_NAME]
+const realScanLoaded = computed(() => traces.value.some((t) => REAL_NAMES.includes(t.name)) ||
+  columnPickers.value.some((p) => REAL_NAMES.includes(p.name)))
+// What two loaded traces ARE decides what "Design the fix" hands over: the
+// two LISN lines share one requirement; a separated CM/DM pair hands over
+// PER-MODE binding sets (the same contract as the Receiver's 2-channel path).
+const traceSemantics = ref('lines')
 async function loadRealScan() {
   standardId.value = 'cispr25_class_5'
   detector.value = 'average'
   columnChoice.value[REAL_SCAN_NAME] = 3
   const file = new File([realScanCsv()], REAL_SCAN_NAME, { type: 'text/csv' })
   await ingest([file])
+}
+
+async function loadRealCmDm() {
+  standardId.value = 'cispr25_class_5'
+  detector.value = 'average'
+  columnChoice.value[REAL_CM_NAME] = 3
+  columnChoice.value[REAL_DM_NAME] = 3
+  traceSemantics.value = 'cm-first'
+  const { cm, dm } = realCmDmScans()
+  await ingest([new File([cm], REAL_CM_NAME, { type: 'text/csv' }),
+                new File([dm], REAL_DM_NAME, { type: 'text/csv' })])
 }
 </script>
 
@@ -331,9 +367,16 @@ async function loadRealScan() {
         <div class="row" style="margin-top: 0.7rem">
           <button class="ghost" data-test="load-demo" @click="ingest([demoScanCsv()])">Demo scan (synthetic)</button>
           <button class="ghost" data-test="load-real" @click="loadRealScan">Real scan (CISPR 25 bench)</button>
+          <button class="ghost" data-test="load-real-cmdm" @click="loadRealCmDm">Real CM/DM scan</button>
           <button v-if="traces.length || columnPickers.length" class="ghost"
-                  @click="traces = []; rawFiles = []; limitRuns = null; comb = null; columnPickers = []; columnChoice = {}; parseProblems = []">Clear</button>
+                  @click="traces = []; rawFiles = []; limitRuns = null; comb = null; columnPickers = []; columnChoice = {}; parseProblems = []; traceSemantics = 'lines'">Clear</button>
         </div>
+        <label v-if="traces.length === 2" class="field" style="margin-top: 0.7rem"><span>What the two traces are</span>
+          <select v-model="traceSemantics" data-test="trace-semantics">
+            <option value="lines">the two LISN lines (L and N)</option>
+            <option value="cm-first">CM &amp; DM separated — first loaded is CM</option>
+            <option value="dm-first">CM &amp; DM separated — first loaded is DM</option>
+          </select></label>
         <div class="row" style="margin-top: 0.7rem">
           <label class="field"><span>Frequency unit</span>
             <select v-model="freqUnit" @change="parseAll"><option value="">from header</option><option>Hz</option><option>kHz</option><option>MHz</option></select>
@@ -368,8 +411,11 @@ async function loadRealScan() {
         Real measurement: S. Westerhold, “A Benchtop Approach to Conducted Emissions Testing
         According to CISPR 25 Using the Voltage Method”, Baltic Lab, Jan 2026 —
         <a href="https://doi.org/10.5281/zenodo.18202069" rel="noopener">DOI 10.5281/zenodo.18202069</a>,
-        CC-BY-4.0. Peak/average traces digitized from Fig. 15; it passes the paper's Class 3
-        target and fails Class 5 average — judged here against Class 5.</p>
+        CC-BY-4.0. Digitized traces: total scan from Fig. 15; CM/DM-separated pair (TekBox LISN
+        Mate) from Fig. 18. The DUT passes the paper's Class 3 target and fails Class 5 average,
+        CM-dominated: DM meets the raw limit but not the 10+6 dB engineering buffer — “Design the
+        fix” therefore hands the designer a hard CM requirement and a light DM one, each at its
+        own critical frequency.</p>
       <div v-for="p in columnPickers" :key="p.name" class="panel" data-test="column-picker">
         <p class="section-label">{{ p.name }} — multi-trace export</p>
         <label class="field"><span>The file carries several traces — which column is the one to judge?</span>
