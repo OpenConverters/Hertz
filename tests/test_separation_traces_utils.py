@@ -201,3 +201,29 @@ def test_two_frequency_looking_columns_are_ambiguous(tmp_path):
     )
     with pytest.raises(TraceFormatError, match="look like the frequency axis"):
         read_spectrum_csv(path, level_column=3)
+
+def test_dbua_current_spectrum_passthrough(tmp_path):
+    # current-probe exports state dBuA — passed through unconverted, with the
+    # unit reported so voltage screens can refuse current spectra
+    path = tmp_path / "probe.csv"
+    path.write_text("Frequency (MHz),CM current (dBuA)\n30,20\n100,14\n", encoding="utf-8")
+    freqs, levels, unit = read_spectrum_csv(path, return_unit=True)
+    assert unit == "dbua"
+    assert levels.tolist() == [20.0, 14.0]
+
+
+def test_radiated_estimator_matches_the_folklore():
+    from hertz.radiated import radiated_efield_dbuvm
+    import numpy as np
+    # 5 uA (14 dBuA) on a 1 m cable at 30 MHz, 3 m: E = 1.257e-6*30e6*1*5e-6/3
+    # = 62.85 uV/m = 35.97 dBuV/m — just under the 40 dBuV/m Class B 3 m limit
+    e = radiated_efield_dbuvm([30e6], [20 * np.log10(5.0)], 1.0, 3.0)
+    assert e[0] == pytest.approx(35.97, abs=0.02)
+    # lambda/4 clamp: at 300 MHz a 1 m cable radiates as 0.25 m
+    e300 = radiated_efield_dbuvm([300e6], [20 * np.log10(5.0)], 1.0, 3.0)
+    e300_short = radiated_efield_dbuvm([300e6], [20 * np.log10(5.0)], 0.25, 3.0)
+    assert e300[0] == pytest.approx(e300_short[0])
+    with pytest.raises(ValueError):
+        radiated_efield_dbuvm([30e6], [10.0], 0.0, 3.0)
+    with pytest.raises(ValueError):
+        radiated_efield_dbuvm([-1.0], [10.0], 1.0, 3.0)

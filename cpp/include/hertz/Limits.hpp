@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -284,6 +285,30 @@ inline std::vector<std::vector<std::pair<double, double>>> limit_polyline_runs(
         runs.push_back(std::move(run));
     }
     return runs;
+}
+
+// CISPR 32 / EN 55032 radiated disturbance limits (Tables A.2 / A.3):
+// quasi-peak, 120 kHz RBW, 30-1000 MHz, breakpoint at 230 MHz. Values in
+// dBuV/m at the STANDARD's measurement distances: 10 m, and the 3 m
+// alternative (+10 dB inverse-distance).
+inline LimitLine cispr32_radiated(char emissionClass, double distanceM) {
+    double base;
+    if (emissionClass == 'B' || emissionClass == 'b') {
+        base = 30.0;
+    } else if (emissionClass == 'A' || emissionClass == 'a') {
+        base = 40.0;
+    } else {
+        throw std::invalid_argument("CISPR 32 radiated class must be A or B");
+    }
+    if (distanceM == 3.0) {
+        base += 10.0;
+    } else if (distanceM != 10.0) {
+        throw std::invalid_argument("CISPR 32 radiated limits are specified at 10 m or 3 m");
+    }
+    return LimitLine("CISPR 32 Class " + std::string(1, std::toupper(emissionClass)) +
+                         " radiated @ " + (distanceM == 3.0 ? "3 m" : "10 m") + " (QP, dBuV/m)",
+                     Detector::QUASI_PEAK,
+                     {{30e6, 230e6, base, base}, {230e6, 1000e6, base + 7.0, base + 7.0}});
 }
 
 // CISPR 32 / EN 55032, AC mains conducted, 150 kHz - 30 MHz.

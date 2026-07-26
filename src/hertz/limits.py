@@ -223,6 +223,26 @@ CISPR32_CLASS_A_MAINS_AVG = LimitLine("CISPR 32 Class A mains (AVG)", "average",
 # CISPR 25 conducted emissions, voltage method, supply lines: limits exist only in
 # the protected broadcast bands. Class 5 QP baseline per CISPR 25:2016 Table 5;
 # peak = QP + 13 dB, average = QP - 7 dB, and each class step relaxes 10 dB.
+def cispr32_radiated(emission_class, distance_m):
+    """CISPR 32 / EN 55032 radiated limits (Tables A.2/A.3): QP, 120 kHz RBW,
+    30-1000 MHz, breakpoint 230 MHz, in dBuV/m at 10 m or the 3 m alternative
+    (+10 dB inverse-distance)."""
+    cls = str(emission_class).upper()
+    if cls == 'B':
+        base = 30.0
+    elif cls == 'A':
+        base = 40.0
+    else:
+        raise ValueError("CISPR 32 radiated class must be A or B")
+    if distance_m == 3.0:
+        base += 10.0
+    elif distance_m != 10.0:
+        raise ValueError("CISPR 32 radiated limits are specified at 10 m or 3 m")
+    return LimitLine(
+        f"CISPR 32 Class {cls} radiated @ {int(distance_m)} m (QP, dBuV/m)", "quasi_peak",
+        [LimitSegment(30e6, 230e6, base, base), LimitSegment(230e6, 1000e6, base + 7.0, base + 7.0)])
+
+
 # CISPR 25 Table 4, conducted voltage method: (name, f0, f1, class-5 QP, class
 # step). The class-to-class step is NOT a flat 10 dB: 10 dB in LW, 8 dB in MW,
 # 6 dB from SW up — deriving class 3/4 as class 5 + 10/20 dB was up to 8 dB too

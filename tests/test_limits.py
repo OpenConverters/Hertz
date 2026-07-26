@@ -10,6 +10,7 @@ from hertz.limits import (
     LimitSegment,
     OutsideCoverage,
     cispr25_conducted_voltage,
+    cispr32_radiated,
     unswept_regions,
     unswept_regions_sampled,
 )
@@ -197,6 +198,22 @@ def test_hole_width_gate_is_frequency_independent():
     # leaves 20 kHz (2.2 RBW bins) at the top of the CB band — not a hole
     c25 = cispr25_conducted_voltage(5, "quasi_peak")
     assert unswept_regions_sampled(c25, list(np.arange(150e3, 108e6 + 1, 60e3))) == []
+
+
+def test_cispr32_radiated_limits():
+    b10 = cispr32_radiated('B', 10.0)
+    assert b10.level(100e6) == pytest.approx(30.0)
+    assert b10.level(500e6) == pytest.approx(37.0)
+    assert b10.level(230e6) == pytest.approx(30.0)   # lower limit at the boundary
+    assert cispr32_radiated('B', 3.0).level(100e6) == pytest.approx(40.0)
+    assert cispr32_radiated('A', 10.0).level(500e6) == pytest.approx(47.0)
+    assert cispr32_radiated('A', 3.0).level(100e6) == pytest.approx(50.0)
+    with pytest.raises(OutsideCoverage):
+        b10.level(29e6)
+    with pytest.raises(ValueError):
+        cispr32_radiated('C', 10.0)
+    with pytest.raises(ValueError):
+        cispr32_radiated('B', 5.0)
 
 
 def test_lower_limit_applies_at_segment_boundary():

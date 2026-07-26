@@ -100,7 +100,9 @@ async function parseAll() {
           lastError = attemptError
         }
       }
-      if (trace) {
+      if (trace && trace.levelUnit === 'dbua') {
+        problems.push(`${name}: a common-mode CURRENT spectrum (dBµA) — judge it on the RADIATED screen, not against voltage limits`)
+      } else if (trace) {
         // per axis: a set selector that the successful parse did not need
         const overrideIgnored = Boolean((freqUnit.value && !usedFu) || (levelUnit.value && !usedLu))
         const picker = pickers.find((p) => p.name === name)

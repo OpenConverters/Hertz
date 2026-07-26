@@ -14,6 +14,7 @@
 #include "hertz/Detector.hpp"
 #include "hertz/FilterDesign.hpp"
 #include "hertz/Limits.hpp"
+#include "hertz/Radiated.hpp"
 #include "hertz/Lisn.hpp"
 #include "hertz/Separation.hpp"
 #include "hertz/Traces.hpp"
@@ -246,6 +247,34 @@ TEST_CASE("Hole width gate is frequency-independent (F15-1, round 15)", "[limits
     for (double f = 150e3; f <= 108e6 + 1.0; f += 60e3) grid.push_back(f);
     CHECK(Hertz::unswept_regions(
               Hertz::cispr25_conducted_voltage(5, Hertz::Detector::QUASI_PEAK), grid).empty());
+}
+
+TEST_CASE("CISPR 32 radiated limits and the CM-radiator screening model", "[radiated]") {
+    auto b10 = Hertz::cispr32_radiated('B', 10.0);
+    CHECK(b10.level(100e6) == Approx(30.0));
+    CHECK(b10.level(500e6) == Approx(37.0));
+    CHECK(b10.level(230e6) == Approx(30.0));  // lower limit at the boundary
+    CHECK(Hertz::cispr32_radiated('B', 3.0).level(100e6) == Approx(40.0));
+    CHECK(Hertz::cispr32_radiated('A', 10.0).level(500e6) == Approx(47.0));
+    CHECK_THROWS_AS(b10.level(29e6), Hertz::OutsideCoverage);
+    CHECK_THROWS_AS(Hertz::cispr32_radiated('C', 10.0), std::invalid_argument);
+    CHECK_THROWS_AS(Hertz::cispr32_radiated('B', 5.0), std::invalid_argument);
+    // 5 uA on 1 m at 30 MHz, 3 m -> 35.97 dBuV/m (the "5 uA fails Class B" folklore)
+    auto e = Hertz::radiated_efield_dbuvm({30e6}, {20.0 * std::log10(5.0)}, 1.0, 3.0);
+    CHECK(e[0] == Approx(35.97).margin(0.02));
+    // lambda/4 clamp above cable resonance
+    auto eLong = Hertz::radiated_efield_dbuvm({300e6}, {14.0}, 1.0, 3.0);
+    auto eQuarter = Hertz::radiated_efield_dbuvm({300e6}, {14.0}, 0.25, 3.0);
+    CHECK(eLong[0] == Approx(eQuarter[0]));
+    CHECK_THROWS_AS(Hertz::radiated_efield_dbuvm({30e6}, {10.0}, 0.0, 3.0), std::invalid_argument);
+}
+
+TEST_CASE("dBuA current spectra pass through with their unit reported", "[traces]") {
+    auto trace = Hertz::parse_spectrum_csv("Frequency (MHz),CM current (dBuA)\n30,20\n100,14\n");
+    CHECK(trace.levelUnit == "dbua");
+    CHECK(trace.levelsDbuv[0] == Approx(20.0));
+    auto voltage = Hertz::parse_spectrum_csv("Frequency (MHz),Level (dBuV)\n1,40\n2,41\n");
+    CHECK(voltage.levelUnit == "dbuv");
 }
 
 TEST_CASE("Margin sign convention", "[limits]") {

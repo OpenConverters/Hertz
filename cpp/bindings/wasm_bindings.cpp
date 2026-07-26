@@ -18,6 +18,7 @@
 #include "hertz/Limits.hpp"
 #include "hertz/Lisn.hpp"
 #include "hertz/Network.hpp"
+#include "hertz/Radiated.hpp"
 #include "hertz/Separation.hpp"
 #include "hertz/Traces.hpp"
 #include "hertz/Utils.hpp"
@@ -45,6 +46,16 @@ Hertz::LimitLine limit_line_for(const std::string& standardId, const std::string
         }
         return detector == Hertz::Detector::AVERAGE ? Hertz::cispr32_class_a_mains_avg()
                                                     : Hertz::cispr32_class_a_mains_qp();
+    }
+    const std::string radPrefix = "cispr32_rad_";
+    if (standardId.rfind(radPrefix, 0) == 0) {
+        // ids: cispr32_rad_b_10m / cispr32_rad_b_3m / cispr32_rad_a_10m / cispr32_rad_a_3m
+        if (detector != Hertz::Detector::QUASI_PEAK) {
+            throw std::invalid_argument("CISPR 32 radiated limits are quasi-peak");
+        }
+        char cls = standardId[radPrefix.size()];
+        double dist = standardId.find("_3m") != std::string::npos ? 3.0 : 10.0;
+        return Hertz::cispr32_radiated(cls, dist);
     }
     const std::string prefix = "cispr25_class_";
     if (standardId.rfind(prefix, 0) == 0) {
@@ -91,7 +102,8 @@ std::string parse_spectrum_csv_js(const std::string& content, const std::string&
         content, freqUnit.empty() ? std::nullopt : std::make_optional(freqUnit),
         levelUnit.empty() ? std::nullopt : std::make_optional(levelUnit), 50.0,
         levelColumn == 0 ? std::nullopt : std::make_optional(levelColumn));
-    return json{{"frequenciesHz", trace.frequenciesHz}, {"levelsDbuv", trace.levelsDbuv}}.dump();
+    return json{{"frequenciesHz", trace.frequenciesHz}, {"levelsDbuv", trace.levelsDbuv},
+                {"levelUnit", trace.levelUnit}}.dump();
 });
 }
 
@@ -434,6 +446,17 @@ std::string input_filter_interaction_js(double inductanceH, double capacitanceF,
     });
 }
 
+std::string radiated_estimate_js(const std::string& freqsJson, const std::string& dbuaJson,
+                                 double cableLengthM, double distanceM) {
+    return guarded([&]() -> std::string {
+        auto efield = Hertz::radiated_efield_dbuvm(
+            json::parse(freqsJson).get<std::vector<double>>(),
+            json::parse(dbuaJson).get<std::vector<double>>(), cableLengthM, distanceM);
+        return json{{"efieldDbuvm", efield},
+                    {"modelUncertaintyDb", Hertz::RADIATED_MODEL_UNCERTAINTY_DB}}.dump();
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(hertz) {
@@ -451,4 +474,5 @@ EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("insertionLossCurves", &insertion_loss_curves_js);
     emscripten::function("inputFilterInteraction", &input_filter_interaction_js);
     emscripten::function("measuredIlCurves", &measured_il_curves_js);
+    emscripten::function("radiatedEstimate", &radiated_estimate_js);
 }

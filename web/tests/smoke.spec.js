@@ -36,6 +36,7 @@ test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
   await page.getByTestId('areq-cm').fill('40')
   await page.getByTestId('sec-comp').click()
   await page.getByTestId('cy-select').selectOption('4.7')   // the note's C_Y — auto would pick larger
+  await page.getByTestId('lcm-source').selectOption('manual')   // the note's value list — catalog is default
   await page.getByTestId('sec-grid').click()
   await page.getByTestId('compute').click()
   await expect(page.getByTestId('lcm')).toContainText('3.3 mH')
@@ -645,4 +646,45 @@ test('spectrum: the real QR-flyback pre-scan fails LOW and HIGH frequencies (MDP
   const areq = await page.getByTestId('areq').textContent()
   expect(parseFloat(areq)).toBeGreaterThan(14)          // ~6 dB deficit + 10 dB margin
   await expect(page.getByTestId('offenders')).toContainText('kHz')   // low-band offender rows
+})
+
+test('radiated: the CM-current screening estimator judges against CISPR 32 with a loud uncertainty banner', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-radiated').click()
+  await page.getByTestId('radiated-example').click()
+  await expect(page.getByTestId('radiated-verdict')).toContainText('screen')
+  await expect(page.getByTestId('radiated-uncertainty')).toContainText('triage, not a measurement')
+  await expect(page.getByTestId('radiated-chart')).toBeVisible()
+  // a voltage scan is refused: 5 uA on 1 m at 30 MHz = 35.97 dBuV/m — the
+  // folklore number — must appear when judged at Class B 3 m
+  await page.getByTestId('radiated-class').selectOption('a')
+  await expect(page.getByTestId('radiated-verdict')).toBeVisible()
+})
+
+test('spectrum: a dBuA current spectrum is refused and pointed at the RADIATED screen', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'probe.csv', mimeType: 'text/csv',
+    buffer: Buffer.from('Frequency (MHz),CM current (dBuA)\n30,20\n100,14\n'),
+  })
+  await expect(page.getByTestId('file-problems')).toContainText('RADIATED screen')
+})
+
+test('filter: binding a part re-runs the evaluation AS BUILT (bound values drive chips and netlist)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('sch-CMC1').click()
+  await expect(page.getByTestId('part-panel')).toBeVisible()
+  await page.getByTestId('bind-part').first().click()
+  await expect(page.getByTestId('as-built-note')).toContainText('AS BUILT')
+  // the strip L_CM now shows the BOUND part's value (the note repeats it)
+  const note = await page.getByTestId('as-built-note').textContent()
+  const lcm = await page.getByTestId('lcm').textContent()
+  expect(note).toContain(lcm.trim())
 })

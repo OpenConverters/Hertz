@@ -28,7 +28,8 @@ class TraceFormatError : public std::runtime_error {
 
 struct SpectrumTrace {
     std::vector<double> frequenciesHz;
-    std::vector<double> levelsDbuv;
+    std::vector<double> levelsDbuv;   // in levelUnit's domain: dBuV (dBm converted), or dBuA passthrough
+    std::string levelUnit;            // "dbuv" | "dbua" — what the numbers ARE
 };
 
 namespace detail {
@@ -345,7 +346,7 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
         {"ghz", "mhz", "khz", "hz"}, "frequency", freqUnit.has_value());
     auto fileLevelUnit = detail::find_unit_tiered(
         {detail::column_header_cell(scan, level), columnLine, preamble},
-        {"dbuv", "dbm"}, "level", levelUnit.has_value());
+        {"dbuv", "dbm", "dbua"}, "level", levelUnit.has_value());
 
     // R-1 contract, enforced HERE and not only in callers: a unit the header
     // STATES always wins; a passed override only fills an axis the header left
@@ -365,7 +366,7 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
     } else {
         throw TraceFormatError("frequency unit not stated in the file header — select it in the unit control");
     }
-    if (levelUnitName != "dbuv" && levelUnitName != "dbm") {
+    if (levelUnitName != "dbuv" && levelUnitName != "dbm" && levelUnitName != "dbua") {
         throw TraceFormatError("level unit not stated in the file header — select it in the unit control");
     }
 
@@ -396,6 +397,7 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
     });
 
     SpectrumTrace trace;
+    trace.levelUnit = levelUnitName == "dbua" ? "dbua" : "dbuv";
     trace.frequenciesHz.reserve(scan.rows.size());
     trace.levelsDbuv.reserve(scan.rows.size());
     for (size_t index : order) {

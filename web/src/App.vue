@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import SpectrumView from './components/SpectrumView.vue'
 import FilterView from './components/FilterView.vue'
 import ReceiverView from './components/ReceiverView.vue'
+import RadiatedView from './components/RadiatedView.vue'
 import { loadEngine } from './engine.js'
 import { store } from './store.js'
 
@@ -24,6 +25,7 @@ onMounted(async () => {
 const measureModes = [
   { id: 'spectrum', label: 'SPECTRUM' },
   { id: 'receiver', label: 'RECEIVER' },
+  { id: 'radiated', label: 'RADIATED (EST.)' },
 ]
 </script>
 
@@ -49,6 +51,7 @@ const measureModes = [
 
     <SpectrumView v-if="store.mode === 'spectrum'" />
     <ReceiverView v-else-if="store.mode === 'receiver'" />
+    <RadiatedView v-else-if="store.mode === 'radiated'" />
     <FilterView v-else />
 
     <p class="footnote">

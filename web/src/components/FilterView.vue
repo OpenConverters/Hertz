@@ -26,7 +26,7 @@ const dmPointsText = ref('')        // "MHz, Ohm" per line — fitted in the ind
 const dmPointsNote = ref('')
 const lCandidatesMh = ref('0.47, 0.68, 1, 1.5, 2.2, 3.3, 4.7, 6.8, 10')
 const cxCandidatesUf = ref('0.1, 0.15, 0.22, 0.33, 0.47, 0.68, 1, 1.5, 2.2, 3.3')
-const cxSource = ref('manual')      // 'manual' | 'catalog' (X2 safety caps)
+const cxSource = ref('catalog')     // real parts by default; 'manual' opts out
 const cxMfr = ref('')
 const gridVrms = ref(230)
 const gridHz = ref(50)
@@ -39,6 +39,7 @@ const ilCm = ref(null)
 const ilDm = ref(null)
 const worstCaseAt = ref(null)   // {cm: {standard, worst}, dm: {...}} at f_design
 const escalated = ref(false)    // selector had to go beyond the asymptote sizing
+const asBuiltNote = ref('')     // set when the design was re-run with BOUND part values
 const bindingSets = ref(null)   // receiver handoff: {cm: [[f,A]...], dm: [[f,A]...]}
 const bindingNote = ref('')
 const fCritCmHz = ref(null)     // per-mode critical design frequency from the binding sets
@@ -137,7 +138,7 @@ const vInMin = ref(207)
 const vInMinDirty = ref(false)
 const pIn = ref(25)
 const interaction = ref(null)
-const lCmSource = ref('manual')      // 'manual' | 'catalog'
+const lCmSource = ref('catalog')     // real parts by default; 'manual' opts out
 const catalog = ref(null)            // {count, parts:[{mpn,manufacturer,family,inductanceH,ratedCurrentA,dcrOhm}]}
 const catalogState = ref('loading')  // 'loading' | 'ready' | 'unavailable'
 const mfrFilter = ref('')
@@ -171,19 +172,32 @@ function resolvedCyNf() {
   return autoCyNf.value
 }
 
-onMounted(async () => {
-  try {
-    const response = await fetch('/kelvin/hertz-cmc.v1.json')
-    if (!response.ok) throw new Error(String(response.status))
-    catalog.value = await response.json()
-    catalogState.value = 'ready'
-  } catch {
-    catalogState.value = 'unavailable'
-  }
-  try {
-    const response = await fetch('/kelvin/hertz-safety-caps.v1.json')
-    if (response.ok) capsCatalog.value = await response.json()
-  } catch { /* caps panes show their own unavailable state */ }
+// catalog fetches are awaited by compute(): with catalog as the default
+// source, computing before the fetch resolves must WAIT, never silently
+// fall back to the manual list
+let catalogFetch = null
+let capsFetch = null
+onMounted(() => {
+  catalogFetch = (async () => {
+    try {
+      const response = await fetch('/kelvin/hertz-cmc.v1.json')
+      if (!response.ok) throw new Error(String(response.status))
+      catalog.value = await response.json()
+      catalogState.value = 'ready'
+    } catch {
+      catalogState.value = 'unavailable'
+    }
+  })()
+  capsFetch = (async () => {
+    try {
+      const response = await fetch('/kelvin/hertz-safety-caps.v1.json')
+      if (response.ok) capsCatalog.value = await response.json()
+    } catch { /* caps panes show their own unavailable state */ }
+  })()
+  onMountedHandoff()
+})
+
+function onMountedHandoff() {
   if (store.handoff) {
     if (store.handoff.binding) {
       bindingSets.value = store.handoff.binding
@@ -197,7 +211,7 @@ onMounted(async () => {
     // deliberately NOT computing: the hand-off fills the cards, the user walks
     // Requirement -> Components -> Grid & safety and presses DESIGN FILTER
   }
-})
+}
 
 const manufacturers = () =>
   catalog.value ? [...new Set(catalog.value.parts.map((p) => p.manufacturer))].sort() : []
@@ -309,7 +323,40 @@ function fitDmPoints() {
   return sorted[Math.floor(sorted.length / 2)]
 }
 
+function buildParams(overrides = {}) {
+  const params = {
+    fSwHz: fSwKhz.value * 1e3,
+    aReqCmDb: Number(aReqCm.value),
+    aReqDmDb: Number(aReqDm.value),
+    cYPerLineF: resolvedCyNf() * 1e-9,
+    stages: Number(stages.value),
+    lCmCandidatesH: lCmSource.value === 'catalog'
+      ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
+    cXCandidatesF: cxSource.value === 'catalog'
+      ? cxCatalogCandidates() : parseList(cxCandidatesUf.value, 1e-6),
+    grid: { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 },
+  }
+  if (bindingSets.value && fCritCmHz.value && fCritDmHz.value) {
+    params.fDesignCmHz = fCritCmHz.value
+    params.fDesignDmHz = fCritDmHz.value
+  }
+  if (dmMode.value === 'impedance') {
+    params.dmImpedanceOhm = Number(dmImpedanceOhm.value)
+    params.dmImpedanceFrequencyHz = dmImpedanceMhz.value * 1e6
+  } else if (dmMode.value === 'points') {
+    params.lDmH = fitDmPoints()
+  } else {
+    params.lDmH = lDmUh.value * 1e-6
+  }
+  return Object.assign(params, overrides)
+}
+
 async function compute() {
+  asBuiltNote.value = ''
+  await runDesign(() => buildParams(), { keepBindings: false })
+}
+
+async function runDesign(makeParams, { keepBindings }) {
   error.value = ''
   design.value = null
   netlist.value = ''
@@ -321,37 +368,26 @@ async function compute() {
   dmPointsNote.value = ''
   try {
     const engine = await api()
-    if (lCmSource.value === 'catalog' && catalogState.value === 'ready' && !catalogCandidates().length) {
-      throw new Error('the manufacturer / rated-current filters removed every catalog part — loosen them')
+    // catalog sources WAIT for their fetch; unreachable catalogs fail loudly
+    if (lCmSource.value === 'catalog') {
+      await catalogFetch
+      if (catalogState.value !== 'ready') {
+        throw new Error('the parts catalog is unreachable from this deployment — switch CM chokes to the manual value list')
+      }
     }
-    const params = {
-      fSwHz: fSwKhz.value * 1e3,
-      aReqCmDb: Number(aReqCm.value),
-      aReqDmDb: Number(aReqDm.value),
-      cYPerLineF: resolvedCyNf() * 1e-9,
-      stages: Number(stages.value),
-      lCmCandidatesH: lCmSource.value === 'catalog' && catalogState.value === 'ready'
-        ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
-      cXCandidatesF: cxSource.value === 'catalog' && capsCatalog.value
-        ? cxCatalogCandidates() : parseList(cxCandidatesUf.value, 1e-6),
-      grid: { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 },
+    if (cxSource.value === 'catalog') {
+      await capsFetch
+      if (!capsCatalog.value) {
+        throw new Error('the safety-caps catalog is unreachable from this deployment — switch X capacitors to the manual value list')
+      }
     }
-    if (bindingSets.value && fCritCmHz.value && fCritDmHz.value) {
-      params.fDesignCmHz = fCritCmHz.value
-      params.fDesignDmHz = fCritDmHz.value
+    const params = makeParams()
+    if (!keepBindings) {
+      bindings.value = {}
+      selectedRef.value = ''
+      measured.value = null
+      measuredIlAt.value = {}
     }
-    if (dmMode.value === 'impedance') {
-      params.dmImpedanceOhm = Number(dmImpedanceOhm.value)
-      params.dmImpedanceFrequencyHz = dmImpedanceMhz.value * 1e6
-    } else if (dmMode.value === 'points') {
-      params.lDmH = fitDmPoints()
-    } else {
-      params.lDmH = lDmUh.value * 1e-6
-    }
-    bindings.value = {}
-    selectedRef.value = ''
-    measured.value = null
-    measuredIlAt.value = {}
     // The verdict criterion is the nominal in-circuit insertion loss (25 Ω CM /
     // 100 Ω DM — the terminations a CISPR 16 AMN actually presents). The ANP015
     // asymptote only SIZES; if the sized part misses the in-circuit criterion,
@@ -532,9 +568,11 @@ async function bindPart(part) {
   const kind = kindOf(selectedRef.value)
   for (const c of filterComponents(design.value.stages)) {
     if (c.kind === kind) bindings.value[c.ref] = { mpn: part.mpn, manufacturer: part.manufacturer,
+      valueF: part.valueF ?? null,
       maxRatedV: Math.max(part.ratedVoltageAcV ?? 0, part.ratedVoltageDcV ?? 0) || null }
   }
   bindings.value = { ...bindings.value }
+  await recomputeAsBuilt()
   if (kind !== 'cmc') return
   measured.value = null
   if (!part.hasMeasuredCmCurve && !part.hasMeasuredDmCurve) return
@@ -584,6 +622,40 @@ const bomRows = () => filterComponents(design.value.stages).map((c) => ({
   warning: bindingVoltageWarning(bindings.value[c.ref]),
 }))
 const allBound = () => filterComponents(design.value.stages).every((c) => bindings.value[c.ref]?.mpn)
+
+// Binding a part re-runs the WHOLE evaluation with the bound values — chips,
+// curves, netlist, Middlebrook and safety all describe the filter AS BUILT,
+// not the catalog-free sizing. Candidate lists are pinned to the bound
+// values; a bound part too small for the requirement fails loudly.
+async function recomputeAsBuilt() {
+  if (!design.value) return
+  const lCm = bindings.value.CMC1?.valueF ?? design.value.lCmSelectedH
+  const cX = bindings.value.C_X1?.valueF ?? design.value.cXSelectedF
+  const cY = bindings.value.C_YL1?.valueF ?? design.value.cYPerLineF
+  // loud but non-destructive: if the bound combination cannot meet the sizing
+  // (e.g. a much smaller Y capacitor), keep the previous design on screen and
+  // surface WHY the as-built rerun failed
+  const snapshot = { design: design.value, ilCm: ilCm.value, ilDm: ilDm.value,
+                     worstCaseAt: worstCaseAt.value, interaction: interaction.value,
+                     netlist: netlist.value, escalated: escalated.value }
+  await runDesign(() => buildParams({
+    lCmCandidatesH: [lCm], cXCandidatesF: [cX], cYPerLineF: cY,
+  }), { keepBindings: true })
+  if (design.value) {
+    asBuiltNote.value = 'AS BUILT — chips, curves, netlist and safety recomputed with the bound '
+      + `parts: L_CM ${fmtSi(lCm, 'H')} · C_X ${fmtSi(cX, 'F')} · C_Y ${fmtSi(cY, 'F')}`
+  } else {
+    error.value = 'as-built rerun with the bound parts failed — showing the DESIGNED filter instead: ' + error.value
+    design.value = snapshot.design
+    ilCm.value = snapshot.ilCm
+    ilDm.value = snapshot.ilDm
+    worstCaseAt.value = snapshot.worstCaseAt
+    interaction.value = snapshot.interaction
+    netlist.value = snapshot.netlist
+    escalated.value = snapshot.escalated
+    asBuiltNote.value = ''
+  }
+}
 
 // A coupled pair cannot leak more than its full loop: K = 1 - L_dm/(2 L_cm)
 // must stay in (0,1). The netlist already refuses; the design panel must not
@@ -756,6 +828,8 @@ function downloadNetlist() {
         <p v-if="escalated" class="note" data-test="escalated-note" style="margin: 0.25rem 0 0">
           Asymptote-sized parts missed the in-circuit criterion — the selector escalated to larger
           candidates; the chips score what was actually selected.</p>
+        <p v-if="asBuiltNote" class="note" data-test="as-built-note" style="margin: 0.25rem 0 0; color: var(--amber)">
+          {{ asBuiltNote }}</p>
       </div>
 
       <div class="fpane-grid">
