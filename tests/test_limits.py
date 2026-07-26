@@ -47,11 +47,30 @@ def test_cispr25_class5_lw_band():
     assert cispr25_conducted_voltage(5, "average").level(200e3) == pytest.approx(50.0)
 
 
-def test_cispr25_class_step_is_10_db():
-    for cls in (1, 2, 3, 4):
-        delta = cispr25_conducted_voltage(cls, "quasi_peak").level(1e6) - \
-            cispr25_conducted_voltage(cls + 1, "quasi_peak").level(1e6)
-        assert delta == pytest.approx(10.0)
+def test_cispr25_class_steps_are_band_dependent():
+    # Table 4 (F8-2, round 8): 10 dB LW, 8 dB MW, 6 dB from SW up. The old
+    # flat +10/+20 derivation was up to 8 dB too permissive.
+    qp = lambda cls, f: cispr25_conducted_voltage(cls, "quasi_peak").level(f)
+    assert qp(4, 200e3) == pytest.approx(67.0)   # LW: 57 + 10
+    assert qp(3, 200e3) == pytest.approx(77.0)
+    assert qp(4, 1e6) == pytest.approx(49.0)     # MW: 41 + 8
+    assert qp(3, 1e6) == pytest.approx(57.0)
+    assert qp(4, 6e6) == pytest.approx(46.0)     # SW: 40 + 6
+    assert qp(3, 6e6) == pytest.approx(52.0)
+    assert qp(3, 27e6) == pytest.approx(43.0)    # CB: 31 + 12
+    assert qp(3, 90e6) == pytest.approx(37.0)    # FM: 25 + 12
+
+
+def test_cispr25_vhf_bands_exist():
+    # F8-4 (round 8): 30-54 and 68-87 MHz voltage-method bands are in Table 4
+    qp = cispr25_conducted_voltage(5, "quasi_peak")
+    assert qp.level(40e6) == pytest.approx(31.0)
+    assert qp.level(70e6) == pytest.approx(25.0)
+    assert qp.level(80e6) == pytest.approx(25.0)  # 68-87 mobile == 76-108 FM values
+    with pytest.raises(OutsideCoverage):
+        qp.level(60e6)   # 54-68 MHz is a real gap
+    with pytest.raises(OutsideCoverage):
+        qp.level(29e6)   # 28-30 MHz is a real gap
 
 
 def test_cispr25_gap_between_bands_raises():

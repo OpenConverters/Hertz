@@ -350,3 +350,47 @@ test('filter: an unrealizable leakage/choke pair is flagged in the verdict panel
   await expect(page.getByTestId('download-cias')).toBeDisabled()
   await expect(page.getByTestId('netlist')).toContainText('netlist unavailable')
 })
+
+test('spectrum: CISPR 25 Class 3 uses the band-dependent Table 4 steps (Berger round-8 F8-2/F8-4)', async ({ page }) => {
+  // Old flat "+20 dB over Class 5" passed this scan; Table 4's real Class 3
+  // limits (57 @ MW, 52 @ SW, 43 @ CB, 37 @ FM) fail it at three points, and
+  // 40 MHz now has a limit at all (VHF 30-54 band).
+  const csv = ['Frequency (MHz),Quasi-peak (dBuV)',
+    '0.20,60.0', '1.00,50.0', '6.00,55.0', '27.00,46.0', '40.00,35.0', '90.00,40.0'].join('\n')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('standard').selectOption('cispr25_class_3')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'c25_class3.csv', mimeType: 'text/csv', buffer: Buffer.from(csv),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  const offenders = await page.getByTestId('offenders').textContent()
+  expect(offenders).toContain('6 MHz')    // 55 vs 52
+  expect(offenders).toContain('27 MHz')   // 46 vs 43
+  expect(offenders).toContain('90 MHz')   // 40 vs 37
+  expect(offenders).not.toContain('40 MHz')  // 35 vs 43 (VHF 30-54, class 3): in hand
+})
+
+test('receiver: switching the band re-measures — a too-short record fails loudly (Berger round-8 F8-1)', async ({ page }) => {
+  // The band selector sets RBW and detector time constants; it must re-run
+  // the receiver chain, not re-label stale curves. This record fits band B
+  // but is far below band A's analysis window — the old code kept showing
+  // the band-B curves under the band-A label.
+  const fs = 6.4e6
+  const lines = ['t,v_line,v_neutral']
+  for (let i = 0; i < 16000; i += 1) {
+    const t = i / fs
+    const cm = 3e-3 * Math.sin(2 * Math.PI * 300e3 * t)
+    lines.push(t.toFixed(9) + ',' + cm.toPrecision(6) + ',' + cm.toPrecision(6))
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'short_record.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 60_000 })
+  await page.getByTestId('band').selectOption('A')
+  await expect(page.getByTestId('error')).toContainText('too short', { timeout: 60_000 })
+  await expect(page.getByTestId('receiver-chart')).not.toBeVisible()
+})

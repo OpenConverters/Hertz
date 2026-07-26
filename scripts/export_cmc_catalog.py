@@ -33,6 +33,14 @@ def plausible_dcr(dcr_ohm, rated_a):
     return dcr_ohm
 
 
+# Highest genuine CMC in the corpus is a 110 A busbar part; anything beyond
+# this is a data error (found live: iNRCORE R82xx rows carrying the PL82xx
+# twins' ratings x100 — a 14 A choke listed as 1400 A would be recommended
+# for a >=100 A design and saturate at the operating point). Quarantined and
+# reported, never shipped; upstream fix tracked in ABT.
+IMPLAUSIBLE_RATED_A = 200.0
+
+
 MANUFACTURER_CANONICAL = {
     "ABRACON": "Abracon",
     "Murata Electronics": "Murata",
@@ -88,6 +96,7 @@ def main(source_path, output_path, curves_path=None):
     parts = []
     curves = {}
     skipped_no_inductance = 0
+    quarantined_rated = []
     with open(source_path) as source:
         for line in source:
             try:
@@ -110,6 +119,9 @@ def main(source_path, output_path, curves_path=None):
                 except ValueError:
                     inductance_h = None
             rated = electrical.get("ratedCurrents") or []
+            if rated and max(rated) > IMPLAUSIBLE_RATED_A:
+                quarantined_rated.append(f"{info.get('reference')} ({max(rated):g} A)")
+                continue
             # CMC rows carry per-winding dcResistances[]; fall back to the
             # legacy singular for older rows.
             dcr_list = electrical.get("dcResistances")
@@ -144,6 +156,9 @@ def main(source_path, output_path, curves_path=None):
         json.dump({"version": 1, "count": len(parts), "parts": parts}, output)
     print(f"wrote {len(parts)} common-mode chokes to {output_path} "
           f"({skipped_no_inductance} skipped without resolvable inductance)")
+    if quarantined_rated:
+        print(f"QUARANTINED {len(quarantined_rated)} parts with implausible rated current "
+              f"(> {IMPLAUSIBLE_RATED_A:g} A): {', '.join(quarantined_rated)}")
     if curves_path is not None:
         with open(curves_path, "w") as handle:
             json.dump({"version": 1, "count": len(curves), "curves": curves}, handle)

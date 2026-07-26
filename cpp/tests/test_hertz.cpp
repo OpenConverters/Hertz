@@ -47,11 +47,27 @@ TEST_CASE("CISPR 25 class 5 LW band and detector offsets", "[limits]") {
     CHECK(Hertz::cispr25_conducted_voltage(5, Hertz::Detector::PEAK).level(200e3) == Approx(70.0));
     CHECK(Hertz::cispr25_conducted_voltage(5, Hertz::Detector::AVERAGE).level(200e3) == Approx(50.0));
     CHECK_THROWS_AS(qp.level(400e3), Hertz::OutsideCoverage);  // gap between LW and MW
-    for (int cls = 1; cls <= 4; ++cls) {
-        double step = Hertz::cispr25_conducted_voltage(cls, Hertz::Detector::QUASI_PEAK).level(1e6) -
-                      Hertz::cispr25_conducted_voltage(cls + 1, Hertz::Detector::QUASI_PEAK).level(1e6);
-        CHECK(step == Approx(10.0));
-    }
+
+    // Table 4 class steps are band-dependent (F8-2, round 8): 10 dB LW, 8 dB
+    // MW, 6 dB from SW up. The old flat +10/+20 was up to 8 dB too permissive.
+    auto qpLevel = [](int cls, double f) {
+        return Hertz::cispr25_conducted_voltage(cls, Hertz::Detector::QUASI_PEAK).level(f);
+    };
+    CHECK(qpLevel(4, 200e3) == Approx(67.0));   // LW: 57 + 10
+    CHECK(qpLevel(3, 200e3) == Approx(77.0));
+    CHECK(qpLevel(4, 1e6) == Approx(49.0));     // MW: 41 + 8
+    CHECK(qpLevel(3, 1e6) == Approx(57.0));
+    CHECK(qpLevel(4, 6e6) == Approx(46.0));     // SW: 40 + 6
+    CHECK(qpLevel(3, 6e6) == Approx(52.0));
+    CHECK(qpLevel(3, 27e6) == Approx(43.0));    // CB: 31 + 12
+    CHECK(qpLevel(3, 90e6) == Approx(37.0));    // FM: 25 + 12
+
+    // F8-4: the 30-54 and 68-87 MHz voltage-method bands exist in Table 4
+    CHECK(qpLevel(5, 40e6) == Approx(31.0));
+    CHECK(qpLevel(5, 70e6) == Approx(25.0));
+    CHECK(qpLevel(5, 80e6) == Approx(25.0));    // 68-87 mobile == 76-108 FM values
+    CHECK_THROWS_AS(qpLevel(5, 60e6), Hertz::OutsideCoverage);  // 54-68 MHz is a real gap
+    CHECK_THROWS_AS(qpLevel(5, 29e6), Hertz::OutsideCoverage);  // 28-30 MHz is a real gap
 }
 
 TEST_CASE("Margin sign convention", "[limits]") {

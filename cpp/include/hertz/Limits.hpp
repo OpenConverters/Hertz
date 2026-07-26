@@ -113,14 +113,21 @@ struct Cispr25Band {
     double fStartHz;
     double fStopHz;
     double class5QuasiPeakDbuv;
+    double classStepDb;  // per-class step of THIS band (Table 4 is band-dependent)
 };
 
-inline constexpr std::array<Cispr25Band, 5> CISPR25_BANDS_CLASS5{{
-    {"LW", 150e3, 300e3, 57.0},
-    {"MW", 530e3, 1.8e6, 41.0},
-    {"SW", 5.9e6, 6.2e6, 40.0},
-    {"CB", 26e6, 28e6, 31.0},
-    {"FM", 76e6, 108e6, 25.0},
+// CISPR 25 Table 4, conducted voltage method. The class-to-class step is NOT a
+// flat 10 dB: 10 dB in LW, 8 dB in MW, 6 dB from SW up — deriving class 3/4
+// as class 5 + 10/20 dB was up to 8 dB too permissive. The 68-87 MHz mobile-
+// services band and the 76-108 MHz FM band carry identical limits at every
+// class and detector, so their union is one segment.
+inline constexpr std::array<Cispr25Band, 6> CISPR25_BANDS_CLASS5{{
+    {"LW", 150e3, 300e3, 57.0, 10.0},
+    {"MW", 530e3, 1.8e6, 41.0, 8.0},
+    {"SW", 5.9e6, 6.2e6, 40.0, 6.0},
+    {"CB", 26e6, 28e6, 31.0, 6.0},
+    {"VHF 30-54", 30e6, 54e6, 31.0, 6.0},
+    {"VHF/FM 68-108", 68e6, 108e6, 25.0, 6.0},
 }};
 
 inline LimitLine cispr25_conducted_voltage(int emissionClass, Detector detector) {
@@ -134,9 +141,9 @@ inline LimitLine cispr25_conducted_voltage(int emissionClass, Detector detector)
         case Detector::AVERAGE: detectorOffset = -7.0; break;
         default: throw std::invalid_argument("unknown detector");
     }
-    double offset = detectorOffset + 10.0 * (5 - emissionClass);
     std::vector<LimitSegment> segments;
     for (const auto& band : CISPR25_BANDS_CLASS5) {
+        double offset = detectorOffset + band.classStepDb * (5 - emissionClass);
         segments.emplace_back(band.fStartHz, band.fStopHz, band.class5QuasiPeakDbuv + offset,
                               band.class5QuasiPeakDbuv + offset);
     }

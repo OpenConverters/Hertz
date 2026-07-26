@@ -11,6 +11,7 @@ import { fmtHz, fmtDb } from '../format.js'
 const BAND_RANGE = { A: [9e3, 150e3], B: [150e3, 30e6], C: [30e6, 300e6] }
 
 const band = ref('B')
+const lastInput = ref(null)     // retained so a band change re-MEASURES, never re-labels
 const reading = ref(null)
 const modal = ref(null)         // dual-channel result: {cm: reading, dm: reading}
 const targetStandard = ref('cispr32_class_b')
@@ -23,6 +24,7 @@ const dragOver = ref(false)
 const fileInput = ref(null)
 
 async function run(samples, fsHz, name, secondChannel = null) {
+  lastInput.value = { samples, fsHz, name, secondChannel }
   busy.value = true
   error.value = ''
   reading.value = null
@@ -119,6 +121,17 @@ function designFromModes() {
   store.mode = 'filter'
 }
 
+// The band sets the RBW and the detector time constants — switching it must
+// re-run the whole receiver chain on the retained samples. Re-clipping the old
+// result to the new axis would display 200 Hz-RBW numbers under a 9 kHz label
+// (29 dB apart on pulsed noise), and a record too short for the new band must
+// fail loudly instead of keeping the stale curves.
+function remeasure() {
+  if (!lastInput.value) return
+  const { samples, fsHz, name, secondChannel } = lastInput.value
+  run(samples, fsHz, name, secondChannel)
+}
+
 function runDemo() {
   const { samples, fsHz } = demoWaveform()
   run(samples, fsHz, 'demo: 300 kHz tone, 100 Hz PRF, 10 % duty')
@@ -187,7 +200,7 @@ const modalSeries = () => [
         <input ref="fileInput" type="file" accept=".csv,.txt" hidden
                @change="ingest([...$event.target.files]); $event.target.value = ''" />
         <label class="field" style="margin-top: 0.7rem"><span>CISPR band (RBW + detector time constants)</span>
-          <select v-model="band">
+          <select v-model="band" data-test="band" @change="remeasure">
             <option value="A">A — 9–150 kHz (200 Hz RBW)</option>
             <option value="B">B — 150 kHz–30 MHz (9 kHz RBW)</option>
             <option value="C">C — 30–300 MHz (120 kHz RBW)</option>
