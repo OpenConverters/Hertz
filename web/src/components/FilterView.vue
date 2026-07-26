@@ -698,17 +698,23 @@ async function bindPart(part) {
 // CMCs only, by design: the caps catalog's ratedVoltageV mixes AC-class and DC
 // ratings, and comparing an X2's 305 VAC class number to the grid PEAK would
 // false-alarm on nearly every legitimate safety cap. Do not "fix" this.
-const bindingVoltageWarning = (binding) => {
+const bindingVoltageWarning = (binding, kind) => {
   if (!binding || !binding.maxRatedV) return null
-  const peak = Number(gridVrms.value) * Math.SQRT2
+  // what the position actually sees: a delta X capacitor sits line-to-line;
+  // star/pair X and every Y capacitor see phase-to-earth (v_LL/sqrt(3) on
+  // 3-phase grids). A DC bus has no sqrt(2) crest.
+  const vll = Number(gridVrms.value)
+  const vPhase = nLines.value >= 3 ? vll / Math.sqrt(3) : vll
+  const vSeen = kind === 'cx' && nLines.value === 3 ? vll : vPhase
+  const peak = topology.value === 'dc' ? vSeen : vSeen * Math.SQRT2
   return binding.maxRatedV < peak
-    ? `rated ${binding.maxRatedV} V < ${Math.round(peak)} V grid peak — NOT a mains part` : null
+    ? `rated ${binding.maxRatedV} V < ${Math.round(peak)} V peak at this position — NOT rated for it` : null
 }
 const bomRows = () => filterComponents(design.value.stages, nLines.value).map((c) => ({
   ref: c.ref,
   value: schematicLabels()[c.ref],
   binding: bindings.value[c.ref] ?? null,
-  warning: bindingVoltageWarning(bindings.value[c.ref]),
+  warning: bindingVoltageWarning(bindings.value[c.ref], c.kind),
 }))
 const allBound = () => filterComponents(design.value.stages, nLines.value).every((c) => bindings.value[c.ref]?.mpn)
 
