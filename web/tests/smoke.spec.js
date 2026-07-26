@@ -483,3 +483,24 @@ test('spectrum: an interior sampling hole is named NOT SWEPT, not painted over (
   await expect(page.getByTestId('unswept-note')).toContainText('NOT SWEPT')
   await expect(page.getByTestId('unswept-note')).toContainText('1 MHz–20 MHz')
 })
+
+test('spectrum: an entirely skipped CISPR 25 band is named NOT SWEPT (Berger round-13 F13-1)', async ({ page }) => {
+  // Every service band covered except CB 26-28 MHz, skipped inside a modest
+  // 25->30 MHz jump (ratio 1.2 — far under any ratio rule): a regulated band
+  // with zero samples must be flagged regardless of the jump's ratio.
+  const lines = ['Frequency (MHz),Quasi-peak (dBuV)']
+  const band = (f0, f1, n) => {
+    for (let i = 0; i <= n; i += 1) lines.push((f0 * (f1 / f0) ** (i / n)).toFixed(6) + ',20.0')
+  }
+  band(0.15, 0.3, 30); band(0.53, 1.8, 30); band(5.9, 6.2, 30)
+  lines.push('25.000000,20.0')
+  band(30, 54, 30); band(68, 108, 30)
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('standard').selectOption('cispr25_class_5')
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'cb_skipped.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
+  await expect(page.getByTestId('unswept-note')).toContainText('26 MHz–28 MHz')
+})

@@ -158,6 +158,39 @@ TEST_CASE("Unswept slivers below the RBW are suppressed (F12-2, round 12)", "[li
     CHECK(c25[0].first == Approx(26e6));
 }
 
+TEST_CASE("Interior holes gated by coverage, not ratio alone (F13-1, round 13)", "[limits]") {
+    // a 16.5 MHz hole at ratio 2.23 (just under the absolute rule) is still
+    // grossly out of line with the scan's own spacing
+    std::vector<double> freqs;
+    for (int i = 0; i <= 299; ++i) freqs.push_back(150e3 * std::pow(13.45e6 / 150e3, i / 299.0));
+    freqs.push_back(30e6);
+    auto regions = Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), freqs);
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0].first == Approx(13.45e6));
+    CHECK(regions[0].second == Approx(30e6));
+    // an ENTIRE skipped CISPR 25 band inside a modest 25->30 MHz jump (1.2x)
+    auto c25 = Hertz::cispr25_conducted_voltage(5, Hertz::Detector::QUASI_PEAK);
+    std::vector<double> covered;
+    for (auto [f0, f1] : {std::pair{150e3, 300e3}, {530e3, 1.8e6}, {5.9e6, 6.2e6}}) {
+        for (int i = 0; i <= 39; ++i) covered.push_back(f0 * std::pow(f1 / f0, i / 39.0));
+    }
+    covered.push_back(25e6);
+    for (auto [f0, f1] : {std::pair{30e6, 54e6}, {68e6, 108e6}}) {
+        for (int i = 0; i <= 39; ++i) covered.push_back(f0 * std::pow(f1 / f0, i / 39.0));
+    }
+    auto skipped = Hertz::unswept_regions(c25, covered);
+    REQUIRE(skipped.size() == 1);
+    CHECK(skipped[0].first == Approx(26e6));
+    CHECK(skipped[0].second == Approx(28e6));
+    // blessed: uniformly sparse log sweep and coarse linear sweep stay silent
+    std::vector<double> sparse;
+    for (int i = 0; i <= 7; ++i) sparse.push_back(150e3 * std::pow(30e6 / 150e3, i / 7.0));
+    CHECK(Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), sparse).empty());
+    std::vector<double> linear;
+    for (double f = 150e3; f <= 30e6 + 1.0; f += 50e3) linear.push_back(f);
+    CHECK(Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), linear).empty());
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);

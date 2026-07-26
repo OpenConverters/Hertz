@@ -133,6 +133,31 @@ def test_unswept_slivers_below_rbw_are_suppressed():
     assert unswept_regions(c25, 150e3, 6.194e6) == [(26e6, 28e6), (30e6, 54e6), (68e6, 108e6)]
 
 
+def test_interior_holes_are_gated_by_coverage_not_ratio_alone():
+    # F13-1 (round 13): a 16.5 MHz hole at a frequency ratio of 2.23 (just
+    # under the 2.24 absolute rule) must still be flagged — it is grossly out
+    # of line with the scan's own spacing.
+    freqs = list(np.geomspace(150e3, 13.45e6, 300)) + [30e6]
+    regions = unswept_regions_sampled(CISPR32_CLASS_B_MAINS_QP, freqs)
+    assert len(regions) == 1
+    assert regions[0] == pytest.approx((13.45e6, 30e6))
+    # an ENTIRE skipped CISPR 25 band inside a modest 25->30 MHz jump (1.2x)
+    c25 = cispr25_conducted_voltage(5, "quasi_peak")
+    covered = (list(np.geomspace(150e3, 300e3, 40)) + list(np.geomspace(530e3, 1.8e6, 40)) +
+               list(np.geomspace(5.9e6, 6.2e6, 40)) + [25e6] +
+               list(np.geomspace(30e6, 54e6, 40)) + list(np.geomspace(68e6, 108e6, 40)))
+    regions = unswept_regions_sampled(c25, covered)
+    assert regions == [pytest.approx((26e6, 28e6))]
+    # blessed cases stay silent: a uniformly sparse log sweep (8 points,
+    # 0.33 dec spacing) is density, not a hole...
+    assert unswept_regions_sampled(
+        CISPR32_CLASS_B_MAINS_QP, list(np.geomspace(150e3, 30e6, 8))) == []
+    # ...and so is a coarse LINEAR-frequency export (wide log-gaps at the
+    # bottom, tiny at the top)
+    assert unswept_regions_sampled(
+        CISPR32_CLASS_B_MAINS_QP, list(np.arange(150e3, 30e6 + 1, 50e3))) == []
+
+
 def test_lower_limit_applies_at_segment_boundary():
     # F9-1 (round 9), CISPR transition rule: at exactly 500 kHz Class A is 73
     # dBuV, not 79; the vectorized path must agree with the scalar one.

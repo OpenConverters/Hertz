@@ -103,11 +103,17 @@ class LimitLine {
 // judged against CISPR 25 has not measured the 68-108 MHz FM band at all, and
 // saying "PASS, >=10 dB in hand" without that qualification is a false clean
 // bill. Contiguous regions across touching segments are merged for reporting.
-// A consecutive-sample gap wider than this (in decades; 0.35 dec = a factor
-// 2.24 in frequency) is a HOLE in the sweep, not sampling density: any real
-// analyzer export sits far below it, and a "scan" that jumps a factor > 2
-// has simply not measured the spectrum in between.
+// Interior-hole criteria. A consecutive-sample gap is a HOLE (not sampling
+// density) when EITHER it exceeds an absolute factor no real sweep uses
+// (0.35 dec = 2.24x), OR it is grossly out of line with the scan's OWN
+// spacing in BOTH domains: > 6x the 90th-percentile gap in log-frequency
+// (with a 0.05 dec floor) AND in linear frequency. A log sweep is uniform in
+// log, a linear export is uniform in Hz — a gap that is an outlier against
+// both is a jump, not density. A ratio alone let a 16 MHz hole at 2.23x pass
+// silently (round 13).
 inline constexpr double UNSWEPT_GAP_DECADES = 0.35;
+inline constexpr double UNSWEPT_RELATIVE_FACTOR = 6.0;
+inline constexpr double UNSWEPT_RELATIVE_FLOOR_DECADES = 0.05;
 
 // CISPR 16-1-1 resolution bandwidth of the band containing f — an unswept
 // region narrower than the receiver's own RBW cannot even be resolved as
@@ -162,10 +168,36 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
     }
     std::sort(freqsHz.begin(), freqsHz.end());
     auto regions = unswept_regions(line, freqsHz.front(), freqsHz.back());
+
+    auto percentile90 = [](std::vector<double> values) {
+        if (values.empty()) {
+            return 0.0;
+        }
+        std::sort(values.begin(), values.end());
+        return values[std::min(values.size() - 1, (values.size() * 9) / 10)];
+    };
+    std::vector<double> logGaps;
+    std::vector<double> linGaps;
+    for (size_t i = 1; i < freqsHz.size(); ++i) {
+        if (freqsHz[i - 1] > 0.0) {
+            logGaps.push_back(std::log10(freqsHz[i] / freqsHz[i - 1]));
+            linGaps.push_back(freqsHz[i] - freqsHz[i - 1]);
+        }
+    }
+    double logP90 = percentile90(logGaps);
+    double linP90 = percentile90(linGaps);
     for (size_t i = 1; i < freqsHz.size(); ++i) {
         double fa = freqsHz[i - 1];
         double fb = freqsHz[i];
-        if (fa <= 0.0 || std::log10(fb / fa) <= UNSWEPT_GAP_DECADES) {
+        if (fa <= 0.0) {
+            continue;
+        }
+        double gap = std::log10(fb / fa);
+        bool hole = gap > UNSWEPT_GAP_DECADES ||
+                    (gap > UNSWEPT_RELATIVE_FLOOR_DECADES &&
+                     gap > UNSWEPT_RELATIVE_FACTOR * logP90 &&
+                     fb - fa > UNSWEPT_RELATIVE_FACTOR * linP90);
+        if (!hole) {
             continue;
         }
         for (const auto& segment : line.segments()) {
@@ -174,6 +206,22 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
             if (f0 < f1) {
                 regions.emplace_back(f0, f1);
             }
+        }
+    }
+
+    // A regulated segment the scan's extent overlaps but that contains NO
+    // sample at all is unswept regardless of any gap ratio — CISPR 25's
+    // narrow bands fit whole inside a modest-looking jump (25 -> 30 MHz
+    // skips 26-28 MHz entirely at a factor of only 1.2).
+    for (const auto& segment : line.segments()) {
+        double f0 = std::max(segment.fStartHz, freqsHz.front());
+        double f1 = std::min(segment.fStopHz, freqsHz.back());
+        if (f0 >= f1) {
+            continue;
+        }
+        auto it = std::lower_bound(freqsHz.begin(), freqsHz.end(), segment.fStartHz);
+        if (it == freqsHz.end() || *it > segment.fStopHz) {
+            regions.emplace_back(f0, f1);
         }
     }
     regions = merge_regions(std::move(regions));

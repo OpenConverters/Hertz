@@ -86,6 +86,13 @@ class LimitLine:
 # analyzer export sits far below it, and a "scan" that jumps a factor > 2 has
 # simply not measured the spectrum in between.
 UNSWEPT_GAP_DECADES = 0.35
+# ...OR grossly out of line with the scan's OWN spacing in BOTH domains:
+# > 6x the 90th-percentile gap in log-frequency (floored at 0.05 dec) AND in
+# linear frequency. A log sweep is uniform in log, a linear export is uniform
+# in Hz — a gap that is an outlier against both is a jump, not density. A
+# ratio alone let a 16 MHz hole at 2.23x pass silently (round 13).
+UNSWEPT_RELATIVE_FACTOR = 6.0
+UNSWEPT_RELATIVE_FLOOR_DECADES = 0.05
 
 
 def _cispr_rbw_hz(f_hz):
@@ -135,13 +142,34 @@ def unswept_regions_sampled(line, freqs_hz):
     if not freqs:
         raise ValueError("unswept_regions_sampled needs at least one sample frequency")
     regions = list(unswept_regions(line, freqs[0], freqs[-1]))
+    def _p90(values):
+        values = sorted(values)
+        return values[min(len(values) - 1, (len(values) * 9) // 10)] if values else 0.0
+
+    log_p90 = _p90([math.log10(fb / fa) for fa, fb in zip(freqs, freqs[1:]) if fa > 0.0])
+    lin_p90 = _p90([fb - fa for fa, fb in zip(freqs, freqs[1:]) if fa > 0.0])
     for fa, fb in zip(freqs, freqs[1:]):
-        if fa <= 0.0 or math.log10(fb / fa) <= UNSWEPT_GAP_DECADES:
+        if fa <= 0.0:
+            continue
+        gap = math.log10(fb / fa)
+        hole = gap > UNSWEPT_GAP_DECADES or (
+            gap > UNSWEPT_RELATIVE_FLOOR_DECADES
+            and gap > UNSWEPT_RELATIVE_FACTOR * log_p90
+            and fb - fa > UNSWEPT_RELATIVE_FACTOR * lin_p90)
+        if not hole:
             continue
         for s in line.segments:
             f0, f1 = max(fa, s.f_start_hz), min(fb, s.f_stop_hz)
             if f0 < f1:
                 regions.append((f0, f1))
+    # A regulated segment the scan's extent overlaps but that contains NO
+    # sample at all is unswept regardless of any gap ratio — CISPR 25's
+    # narrow bands fit whole inside a modest-looking jump (25 -> 30 MHz
+    # skips 26-28 MHz entirely at a factor of only 1.2).
+    for s in line.segments:
+        f0, f1 = max(s.f_start_hz, freqs[0]), min(s.f_stop_hz, freqs[-1])
+        if f0 < f1 and not any(s.f_start_hz <= f <= s.f_stop_hz for f in freqs):
+            regions.append((f0, f1))
     return [r for r in _merge_regions(regions) if r[1] - r[0] >= _cispr_rbw_hz(r[0])]
 
 

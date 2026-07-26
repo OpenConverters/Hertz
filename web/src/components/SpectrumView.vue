@@ -250,7 +250,14 @@ const unsweptSummary = computed(() => {
       merged.push([f0, f1])
     }
   }
-  return merged.map(([f0, f1]) => `${fmtHz(f0)}–${fmtHz(f1)}`)
+  return merged.map(([f0, f1]) => {
+    // a narrow (but >= RBW) span can round to identical labels — raise the
+    // precision rather than print "30 MHz-30 MHz"
+    if (fmtHz(f0) === fmtHz(f1)) {
+      return `${(f0 / 1e6).toFixed(3)} MHz–${(f1 / 1e6).toFixed(3)} MHz`
+    }
+    return `${fmtHz(f0)}–${fmtHz(f1)}`
+  })
 })
 const uncoveredPointSummary = computed(() => {
   const rows = []
