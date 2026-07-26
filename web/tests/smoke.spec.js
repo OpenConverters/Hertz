@@ -84,6 +84,36 @@ test('filter: binding a curve-carrying CMC overlays measured-impedance IL', asyn
   await expect(page.getByTestId('bom')).toBeVisible()
   await page.getByTestId('sch-CMC1').click()
   await expect(page.getByTestId('part-panel')).toContainText('DLW32MH201XK2')
+  // SILENT column: measured IL at f_design for curve parts, incl. the
+  // impedance-only DLW21HN181SQ2 ("by measured curve")
+  await expect(page.getByTestId('part-panel')).toContainText('by measured curve')
+  await expect(page.getByTestId('measured-il').first()).toContainText('dB', { timeout: 10_000 })
   await page.getByTestId('bind-part').first().click()
   await expect(page.getByTestId('measured-note')).toContainText('DLW32MH201XK2')
+})
+
+test('receiver: REAL CISPR 16-1-1 calibration waveform through the GUI', async ({ page }) => {
+  // One period of the 100 Hz Band-A alternative calibration waveform
+  // (Azpurua & Hudlicka, DOI 10.5281/zenodo.17779465, CC-BY-4.0), tiled per its
+  // readme (periodic at the PRF; time axis = i / 3 MHz; volts / 2 for 50 ohm).
+  test.setTimeout(180_000)
+  const fs = await import('node:fs')
+  const period = fs.readFileSync('../tests/fixtures/pulse_bandA_100Hz.txt', 'utf8')
+    .split('\n').filter(Boolean).map(Number)
+  const reps = Math.floor(0.5 * 3e6 / period.length)
+  const lines = ['time [s],voltage [V]']
+  for (let r = 0; r < reps; r += 1) {
+    for (let i = 0; i < period.length; i += 1) {
+      lines.push(((r * period.length + i) / 3e6).toFixed(9) + ',' + (period[i] / 2).toPrecision(8))
+    }
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.locator('select').first().selectOption('A')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'cispr16_bandA_100Hz.csv', mimeType: 'text/csv',
+    buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 150_000 })
 })

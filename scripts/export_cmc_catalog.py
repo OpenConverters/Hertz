@@ -80,19 +80,23 @@ def main(source_path, output_path, curves_path=None):
             subtype = str(electrical.get("subtype", "")).lower().replace("_", "").replace("-", "")
             if subtype != "commonmodechoke":
                 continue
+            # SILENT-method support: a part with no resolvable inductance is still a
+            # candidate when it carries a measured CM impedance curve — it is then
+            # selectable BY the curve (inductanceH stays null, never invented).
             inductance = electrical.get("inductance")
-            if inductance is None:
-                skipped_no_inductance += 1
-                continue
-            try:
-                inductance_h = resolve_dimensional(inductance)
-            except ValueError:
-                skipped_no_inductance += 1
-                continue
+            inductance_h = None
+            if inductance is not None:
+                try:
+                    inductance_h = resolve_dimensional(inductance)
+                except ValueError:
+                    inductance_h = None
             rated = electrical.get("ratedCurrents") or []
             dcr = electrical.get("dcResistance")
             curve_cm = extract_curve(electrical.get("impedancePoints"), "common") if curves_path else None
             curve_dm = extract_curve(electrical.get("impedancePoints"), "differential") if curves_path else None
+            if inductance_h is None and curve_cm is None:
+                skipped_no_inductance += 1
+                continue
             part = {
                 "mpn": info.get("reference"),
                 "manufacturer": info.get("name"),
@@ -109,7 +113,7 @@ def main(source_path, output_path, curves_path=None):
                                            (("cm", curve_cm), ("dm", curve_dm)) if v}
                 parts.append(part)
 
-    parts.sort(key=lambda p: (p["manufacturer"], p["inductanceH"]))
+    parts.sort(key=lambda p: (p["manufacturer"], p["inductanceH"] is None, p["inductanceH"] or 0.0))
     with open(output_path, "w") as output:
         json.dump({"version": 1, "count": len(parts), "parts": parts}, output)
     print(f"wrote {len(parts)} common-mode chokes to {output_path} "

@@ -1,7 +1,7 @@
 <script setup>
 // ANP015 line-filter designer: attenuation target in, component values out,
 // with the safety checks (Y-cap leakage, X-cap discharge) and SPICE export.
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
 import { api } from '../engine.js'
@@ -40,6 +40,7 @@ const selectedRef = ref('')
 const bindings = ref({})
 const curvesFile = ref(null)     // /kelvin/hertz-cmc-curves.v1.json, fetched on first need
 const measured = ref(null)       // {mpn, cm?: {f, db}, dm?: {f, db}} — bound part's measured-Z IL
+const measuredIlAt = ref({})     // mpn -> measured CM IL (dB) at f_design, for the parts panel
 
 onMounted(async () => {
   try {
@@ -66,12 +67,50 @@ onMounted(async () => {
 const manufacturers = () =>
   catalog.value ? [...new Set(catalog.value.parts.map((p) => p.manufacturer))].sort() : []
 
-function catalogParts() {
+function catalogPartsAnyL() {
   if (!catalog.value) return []
   return catalog.value.parts.filter((p) =>
     (!mfrFilter.value || p.manufacturer === mfrFilter.value) &&
-    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)) &&
-    p.inductanceH > 0)
+    (p.ratedCurrentA === null || p.ratedCurrentA >= Number(minRatedA.value)))
+}
+
+function catalogParts() {
+  return catalogPartsAnyL().filter((p) => p.inductanceH > 0)
+}
+
+async function ensureCurves() {
+  if (curvesFile.value) return curvesFile.value
+  const response = await fetch('/kelvin/hertz-cmc-curves.v1.json')
+  if (!response.ok) throw new Error(String(response.status))
+  curvesFile.value = await response.json()
+  return curvesFile.value
+}
+
+// Measured CM insertion loss at the design frequency for every curve-carrying
+// candidate — the SILENT selection column. Value at the NEAREST measured point;
+// parts whose curve does not span f_design show none (no extrapolation).
+async function loadMeasuredIlColumn() {
+  if (!design.value) return
+  try {
+    const curves = (await ensureCurves()).curves
+    const engine = await api()
+    const fDesign = design.value.fDesignHz
+    const column = {}
+    for (const part of catalogPartsAnyL()) {
+      if (!part.hasMeasuredCmCurve) continue
+      const cm = curves[part.mpn]?.cm
+      if (!cm || fDesign < cm.f[0] || fDesign > cm.f[cm.f.length - 1]) continue
+      const il = engine.measuredIlCurves(cm.f, cm.re, cm.im, design.value.cYgF,
+                                         design.value.stages, 25)
+      let nearest = 0
+      for (let k = 1; k < il.frequenciesHz.length; k += 1) {
+        if (Math.abs(il.frequenciesHz[k] - fDesign) <
+            Math.abs(il.frequenciesHz[nearest] - fDesign)) nearest = k
+      }
+      column[part.mpn] = il.standardDb[nearest]
+    }
+    measuredIlAt.value = column
+  } catch { /* column stays empty; parts remain selectable by value */ }
 }
 
 function catalogCandidates() {
@@ -119,6 +158,7 @@ async function compute() {
     bindings.value = {}
     selectedRef.value = ''
     measured.value = null
+    measuredIlAt.value = {}
     design.value = engine.designFilter(params)
     netlist.value = engine.filterSpiceNetlist(design.value, 'cispr16')
     const d = design.value
@@ -176,22 +216,37 @@ const recommendations = () => {
   const target = targetValueOf(kind)
   let pool
   if (kind === 'cmc') {
-    // honor the catalog-mode manufacturer/current filters the user set
-    const base = lCmSource.value === 'catalog' ? catalogParts() : (catalog.value?.parts ?? [])
-    pool = base.map((p) => ({ ...p, valueF: p.inductanceH }))
-  } else {
-    const cls = kind === 'cx' ? 'X2' : 'Y2'
-    pool = (capsCatalog.value?.parts ?? [])
-      .filter((p) => p.safetyClass === cls)
-      .map((p) => ({ ...p, valueF: p.capacitanceF }))
+    // honor the catalog-mode manufacturer/current filters the user set; parts
+    // without an inductance ride along when they carry a measured curve
+    const base = lCmSource.value === 'catalog' ? catalogPartsAnyL()
+      : (catalog.value?.parts ?? [])
+    const valued = base.filter((p) => p.inductanceH > 0)
+      .map((p) => ({ ...p, valueF: p.inductanceH, deviation: Math.abs(p.inductanceH - targetValueOf('cmc')) / targetValueOf('cmc') }))
+      .sort((a, b) => a.deviation - b.deviation || (b.ratedCurrentA ?? 0) - (a.ratedCurrentA ?? 0))
+      .slice(0, 6)
+    const impedanceOnly = base.filter((p) => !(p.inductanceH > 0) && measuredIlAt.value[p.mpn] !== undefined)
+      .map((p) => ({ ...p, valueF: null, deviation: null }))
+      .sort((a, b) => measuredIlAt.value[b.mpn] - measuredIlAt.value[a.mpn])
+      .slice(0, 4)
+    const parts = [...valued, ...impedanceOnly]
+    if (!parts.length) return { kind, target: targetValueOf('cmc'), parts: [], unavailable: !base.length }
+    return { kind, target: targetValueOf('cmc'), parts, unavailable: false }
   }
+  const cls = kind === 'cx' ? 'X2' : 'Y2'
+  pool = (capsCatalog.value?.parts ?? [])
+    .filter((p) => p.safetyClass === cls)
+    .map((p) => ({ ...p, valueF: p.capacitanceF }))
   if (!pool.length) return { kind, target, parts: [], unavailable: true }
   const parts = pool
     .map((p) => ({ ...p, deviation: Math.abs(p.valueF - target) / target }))
-    .sort((a, b) => a.deviation - b.deviation || (b.ratedCurrentA ?? b.ratedVoltageV ?? 0) - (a.ratedCurrentA ?? a.ratedVoltageV ?? 0))
+    .sort((a, b) => a.deviation - b.deviation || (b.ratedVoltageV ?? 0) - (a.ratedVoltageV ?? 0))
     .slice(0, 8)
   return { kind, target, parts, unavailable: false }
 }
+
+watch(selectedRef, (ref_) => {
+  if (ref_ && kindOf(ref_) === 'cmc') loadMeasuredIlColumn()
+})
 
 async function bindPart(part) {
   const kind = kindOf(selectedRef.value)
@@ -203,12 +258,7 @@ async function bindPart(part) {
   measured.value = null
   if (!part.hasMeasuredCmCurve && !part.hasMeasuredDmCurve) return
   try {
-    if (!curvesFile.value) {
-      const response = await fetch('/kelvin/hertz-cmc-curves.v1.json')
-      if (!response.ok) throw new Error(String(response.status))
-      curvesFile.value = await response.json()
-    }
-    const curve = curvesFile.value.curves[part.mpn]
+    const curve = (await ensureCurves()).curves[part.mpn]
     if (!curve) return
     const engine = await api()
     // trim measured points to the chart span — subsetting, never extending
@@ -344,12 +394,18 @@ function downloadNetlist() {
           — target {{ fmtSi(recommendations().target, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}</p>
         <p v-if="recommendations().unavailable" class="note">Parts catalog not reachable from this deployment — bind manually via the BOM later, or design on values only.</p>
         <table v-else class="data">
-          <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th><th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
+          <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th>
+            <th v-if="kindOf(selectedRef) === 'cmc'">Meas. IL @ f<sub>design</sub></th>
+            <th>{{ kindOf(selectedRef) === 'cmc' ? 'Rated A' : 'Class / V' }}</th><th></th></tr></thead>
           <tbody>
             <tr v-for="p in recommendations().parts" :key="p.mpn">
               <td><strong>{{ p.mpn }}</strong></td><td>{{ p.manufacturer }}</td>
-              <td>{{ fmtSi(p.valueF, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}
-                <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></td>
+              <td><template v-if="p.valueF !== null">{{ fmtSi(p.valueF, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}
+                <span v-if="p.deviation > 0.001" class="note">({{ (p.deviation * 100).toFixed(0) }}% off)</span></template>
+                <span v-else class="note">by measured curve</span></td>
+              <td v-if="kindOf(selectedRef) === 'cmc'" data-test="measured-il"
+                  :class="measuredIlAt[p.mpn] !== undefined ? (measuredIlAt[p.mpn] >= Number(aReqCm) ? 'pos' : 'neg') : ''">
+                {{ measuredIlAt[p.mpn] !== undefined ? measuredIlAt[p.mpn].toFixed(1) + ' dB' : '—' }}</td>
               <td>{{ kindOf(selectedRef) === 'cmc'
                 ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : '—')
                 : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V' : '') }}</td>
@@ -357,6 +413,10 @@ function downloadNetlist() {
             </tr>
           </tbody>
         </table>
+        <p v-if="kindOf(selectedRef) === 'cmc'" class="note">
+          "Meas. IL" is computed from the part's measured complex impedance against your Y network at the
+          design frequency (SILENT-style selection). Parts offered "by measured curve" have no catalogued
+          inductance — binding one keeps the designed values in the netlist; the measured overlay shows its true prediction.</p>
       </div>
 
       <div class="panel">
