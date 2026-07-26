@@ -150,6 +150,11 @@ std::string limit_analysis_js(const std::string& standardId, const std::string& 
     if (!anyCovered) {
         throw std::invalid_argument("no trace point falls inside the selected limit's bands");
     }
+    auto [fLoIt, fHiIt] = std::minmax_element(freqs.begin(), freqs.end());
+    json unswept = json::array();
+    for (const auto& [f0, f1] : Hertz::unswept_regions(line, *fLoIt, *fHiIt)) {
+        unswept.push_back({f0, f1});
+    }
     double requiredAttenuation =
         Hertz::required_attenuation_db(levels[worstIndex], line.level(freqs[worstIndex]),
                                        marginBufferDb);
@@ -164,7 +169,8 @@ std::string limit_analysis_js(const std::string& standardId, const std::string& 
                   {"levelDbuv", levels[worstIndex]},
                   {"limitDbuv", line.level(freqs[worstIndex])},
                   {"marginDb", worstMargin}}},
-                {"requiredAttenuationDb", requiredAttenuation}}
+                {"requiredAttenuationDb", requiredAttenuation},
+                {"unsweptHz", unswept}}
         .dump();
 });
 }
@@ -315,6 +321,9 @@ std::string filter_spice_netlist_js(const std::string& designJson, const std::st
 std::string lisn_data_js(const std::string& kind, double fMinHz, double fMaxHz,
                          int pointsPerDecade)  {
     return guarded([&]() -> std::string {
+    if (kind != "cispr16" && kind != "cispr25") {
+        throw std::invalid_argument("unknown LISN kind " + kind);
+    }
     Hertz::Lisn lisn = kind == "cispr25" ? Hertz::cispr25_lisn() : Hertz::cispr16_lisn();
     if (!(0.0 < fMinHz && fMinHz < fMaxHz) || pointsPerDecade < 2) {
         throw std::invalid_argument("bad frequency range");

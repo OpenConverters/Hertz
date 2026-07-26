@@ -10,6 +10,7 @@ from hertz.limits import (
     LimitSegment,
     OutsideCoverage,
     cispr25_conducted_voltage,
+    unswept_regions,
 )
 
 
@@ -72,6 +73,19 @@ def test_cispr25_vhf_bands_exist():
         qp.level(60e6)   # 54-68 MHz is a real gap
     with pytest.raises(OutsideCoverage):
         qp.level(29e6)   # 28-30 MHz is a real gap
+
+
+def test_unswept_regions_name_what_the_scan_never_reached():
+    # R10-1 (round 10): a verdict naming a standard implies the standard's
+    # whole range — a 1-10 MHz sweep against Class B leaves 150 kHz-1 MHz and
+    # 10-30 MHz unmeasured (merged across the 500 kHz segment boundary).
+    regions = unswept_regions(CISPR32_CLASS_B_MAINS_QP, 1e6, 10e6)
+    assert regions == [(150e3, 1e6), (10e6, 30e6)]
+    # a 150 kHz-30 MHz mains scan against CISPR 25 never reaches VHF/FM
+    regions = unswept_regions(cispr25_conducted_voltage(3, "quasi_peak"), 150e3, 30e6)
+    assert regions == [(30e6, 54e6), (68e6, 108e6)]
+    # a full-span sweep leaves nothing
+    assert unswept_regions(CISPR32_CLASS_B_MAINS_QP, 150e3, 30e6) == []
 
 
 def test_lower_limit_applies_at_segment_boundary():

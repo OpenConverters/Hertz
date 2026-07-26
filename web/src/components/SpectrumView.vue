@@ -200,15 +200,30 @@ const chartSeries = computed(() => {
   const series = []
   traces.value.forEach((t, i) => {
     if (t.analysis) {
-      const covered = [], uncovered = []
+      // runs of CONSECUTIVE same-coverage points: a polyline may only connect
+      // neighboring samples — a chord across the other set's span draws data
+      // where nothing was measured
+      const runs = []
       t.analysis.covered.forEach((isCovered, k) => {
-        (isCovered ? covered : uncovered).push({ f: t.frequenciesHz[k], v: t.levelsDbuv[k] })
+        const point = { f: t.frequenciesHz[k], v: t.levelsDbuv[k] }
+        if (!runs.length || runs[runs.length - 1].covered !== isCovered) {
+          runs.push({ covered: isCovered, points: [] })
+        }
+        runs[runs.length - 1].points.push(point)
       })
-      series.push({ id: t.name + i, label: t.name, color: seriesColors[i], points: covered })
-      if (uncovered.length) {
-        series.push({ id: t.name + i + 'u', label: `${t.name} — outside limit coverage (not judged)`,
-                      color: 'var(--ink-dim)', dash: '2 3', points: uncovered })
-      }
+      let labeled = { covered: false, uncovered: false }
+      runs.forEach((run, r) => {
+        if (run.covered) {
+          series.push({ id: `${t.name}${i}c${r}`, label: labeled.covered ? '' : t.name,
+                        color: seriesColors[i], points: run.points })
+          labeled.covered = true
+        } else {
+          series.push({ id: `${t.name}${i}u${r}`,
+                        label: labeled.uncovered ? '' : `${t.name} — outside limit coverage (not judged)`,
+                        color: 'var(--ink-dim)', dash: '2 3', points: run.points })
+          labeled.uncovered = true
+        }
+      })
     } else {
       series.push({ id: t.name + i, label: t.name + (t.uncovered ? ' (not covered)' : ''),
                     color: t.uncovered ? 'var(--ink-dim)' : seriesColors[i],
@@ -216,6 +231,16 @@ const chartSeries = computed(() => {
     }
   })
   return series
+})
+// R10-1: a verdict naming a standard implies the standard's WHOLE range —
+// bands the scan never reached must be named next to the verdict, or a
+// 150 kHz-30 MHz sweep "passes" CISPR 25 with the FM band unmeasured.
+const unsweptSummary = computed(() => {
+  const ranges = new Set()
+  for (const t of traces.value) {
+    for (const [f0, f1] of t.analysis?.unsweptHz ?? []) ranges.add(`${fmtHz(f0)}–${fmtHz(f1)}`)
+  }
+  return [...ranges]
 })
 const uncoveredPointSummary = computed(() => {
   const rows = []
@@ -317,7 +342,7 @@ function onDrop(event) {
       <p v-if="detectorMismatches.length" class="err" data-test="detector-mismatch">
         Detector mismatch: {{ detectorMismatches.join(' · ') }} names a detector, but the verdict
         uses the <strong>{{ detector.replace('_', '-') }}</strong> limit — switch the detector
-        selector or the judged column. A QP limit judged on an Average trace reads 6–20 dB soft.</p>
+        selector or the judged column. Limits differ per detector by 6–20 dB.</p>
       <p v-if="traces.some((t) => t.columnLabel)" class="note" data-test="column-note">
         Judged column: {{ traces.filter((t) => t.columnLabel).map((t) => `${t.name} → ${t.columnLabel}`).join(' · ') }}</p>
       <div v-if="parseProblems.length" class="err" data-test="file-problems">
@@ -361,6 +386,10 @@ function onDrop(event) {
         <p v-if="verdictState === 'marginal'" class="note" style="color: var(--amber)">
           Worst margin is inside the ±{{ U_CISPR_DB }} dB CISPR 16-4-2 measurement uncertainty — an
           accredited chamber can read this either way. Treat as unresolved, not as passing.</p>
+        <p v-if="unsweptSummary.length" class="note" data-test="unswept-note" style="color: var(--amber)">
+          NOT SWEPT: {{ unsweptSummary.join(', ') }} — the selected limit regulates these spans but
+          the scan never reached them. The verdict above covers only the measured spans; an
+          accredited report would reject this shortfall.</p>
         <p v-if="uncoveredNames.length" class="note" data-test="uncovered-note">
           Not covered by this limit (ignored in the verdict): {{ uncoveredNames.join(', ') }}</p>
         <p v-if="uncoveredPointSummary.length" class="note" data-test="uncovered-points" style="color: var(--amber)">

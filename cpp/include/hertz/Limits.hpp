@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <stdexcept>
@@ -95,6 +96,35 @@ class LimitLine {
     Detector _detector;
     std::vector<LimitSegment> _segments;
 };
+
+// Parts of a limit line's regulated spans the scan NEVER REACHED — everything
+// of each segment outside [fLoHz, fHiHz] (the scan's own extent). A verdict
+// naming a standard implies the standard's whole range: a 150 kHz-30 MHz sweep
+// judged against CISPR 25 has not measured the 68-108 MHz FM band at all, and
+// saying "PASS, >=10 dB in hand" without that qualification is a false clean
+// bill. Contiguous regions across touching segments are merged for reporting.
+inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& line,
+                                                              double fLoHz, double fHiHz) {
+    std::vector<std::pair<double, double>> regions;
+    for (const auto& segment : line.segments()) {
+        if (segment.fStartHz < fLoHz) {
+            regions.emplace_back(segment.fStartHz, std::min(segment.fStopHz, fLoHz));
+        }
+        if (segment.fStopHz > fHiHz) {
+            regions.emplace_back(std::max(segment.fStartHz, fHiHz), segment.fStopHz);
+        }
+    }
+    std::sort(regions.begin(), regions.end());
+    std::vector<std::pair<double, double>> merged;
+    for (const auto& region : regions) {
+        if (!merged.empty() && region.first <= merged.back().second * (1.0 + 1e-9)) {
+            merged.back().second = std::max(merged.back().second, region.second);
+        } else {
+            merged.push_back(region);
+        }
+    }
+    return merged;
+}
 
 // Drawable polyline of a limit line: one run PER SEGMENT with the exact band
 // edges always emitted — decade sampling alone leaves a band narrower than the

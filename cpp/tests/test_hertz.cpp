@@ -102,6 +102,23 @@ TEST_CASE("Limit polyline emits exact band edges per segment (F9-2, round 9)", "
     CHECK(classA[1].front().second == Approx(73.0));
 }
 
+TEST_CASE("Unswept regions name what the scan never reached (R10-1, round 10)", "[limits]") {
+    auto regions = Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), 1e6, 10e6);
+    REQUIRE(regions.size() == 2);
+    CHECK(regions[0].first == Approx(150e3));   // merged across the 500 kHz boundary
+    CHECK(regions[0].second == Approx(1e6));
+    CHECK(regions[1].first == Approx(10e6));
+    CHECK(regions[1].second == Approx(30e6));
+    auto c25 = Hertz::unswept_regions(
+        Hertz::cispr25_conducted_voltage(3, Hertz::Detector::QUASI_PEAK), 150e3, 30e6);
+    REQUIRE(c25.size() == 2);
+    CHECK(c25[0].first == Approx(30e6));
+    CHECK(c25[0].second == Approx(54e6));
+    CHECK(c25[1].first == Approx(68e6));
+    CHECK(c25[1].second == Approx(108e6));
+    CHECK(Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), 150e3, 30e6).empty());
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);

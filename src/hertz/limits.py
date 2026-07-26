@@ -79,6 +79,27 @@ class LimitLine:
         return self.level(f_hz) - measured_dbuv
 
 
+def unswept_regions(line, f_lo_hz, f_hi_hz):
+    """Parts of a limit line's regulated spans the scan NEVER REACHED —
+    everything of each segment outside [f_lo_hz, f_hi_hz] (the scan's own
+    extent). A verdict naming a standard implies the standard's whole range;
+    contiguous regions across touching segments are merged for reporting."""
+    regions = []
+    for s in line.segments:
+        if s.f_start_hz < f_lo_hz:
+            regions.append((s.f_start_hz, min(s.f_stop_hz, f_lo_hz)))
+        if s.f_stop_hz > f_hi_hz:
+            regions.append((max(s.f_start_hz, f_hi_hz), s.f_stop_hz))
+    regions.sort()
+    merged = []
+    for f0, f1 in regions:
+        if merged and f0 <= merged[-1][1] * (1.0 + 1e-9):
+            merged[-1][1] = max(merged[-1][1], f1)
+        else:
+            merged.append([f0, f1])
+    return [tuple(r) for r in merged]
+
+
 # CISPR 32 / EN 55032, AC mains conducted, 150 kHz - 30 MHz.
 CISPR32_CLASS_B_MAINS_QP = LimitLine("CISPR 32 Class B mains (QP)", "quasi_peak", [
     LimitSegment(150e3, 500e3, 66.0, 56.0),

@@ -440,3 +440,27 @@ test('spectrum: judging an Average column against a QP limit raises a detector-m
   await page.locator('select').nth(3).selectOption('average')
   await expect(page.getByTestId('detector-mismatch')).not.toBeVisible()
 })
+
+test('spectrum: a PASS names the limit bands the scan never reached (Berger round-10 R10-1)', async ({ page }) => {
+  // A 1-10 MHz sweep against CISPR 32 Class B leaves 150 kHz-1 MHz and
+  // 10-30 MHz unmeasured — the verdict must say so, loudly, or a partial
+  // sweep reads as a clean bill for the whole standard.
+  const lines = ['Frequency (MHz),Quasi-peak (dBuV)']
+  for (let f = 1; f <= 10; f *= 1.05) lines.push(f.toFixed(4) + ',50.0')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'narrow_1to10.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
+  await expect(page.getByTestId('unswept-note')).toContainText('NOT SWEPT')
+  await expect(page.getByTestId('unswept-note')).toContainText('150 kHz')
+  await expect(page.getByTestId('unswept-note')).toContainText('30 MHz')
+  // a full-span scan shows no such note
+  await page.getByRole('button', { name: 'Clear' }).click()
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'full_span.csv', mimeType: 'text/csv',
+    buffer: Buffer.from('Frequency (MHz),Quasi-peak (dBuV)\n0.15,40\n1.0,40\n30.0,40\n'),
+  })
+  await expect(page.getByTestId('unswept-note')).not.toBeVisible()
+})

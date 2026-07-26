@@ -62,7 +62,15 @@ const yTicks = computed(() => {
   return ticks
 })
 
-const path = (points) => points.map((p, i) => (i === 0 ? 'M' : 'L') + x(p.f).toFixed(1) + ' ' + y(p.v).toFixed(1)).join(' ')
+const path = (points) => {
+  // a single-point run has no line geometry — draw a short tick so an
+  // isolated sample stays visible instead of silently vanishing
+  if (points.length === 1) {
+    const px = x(points[0].f), py = y(points[0].v)
+    return 'M' + (px - 3).toFixed(1) + ' ' + py.toFixed(1) + ' L' + (px + 3).toFixed(1) + ' ' + py.toFixed(1)
+  }
+  return points.map((p, i) => (i === 0 ? 'M' : 'L') + x(p.f).toFixed(1) + ' ' + y(p.v).toFixed(1)).join(' ')
+}
 
 function onMove(event) {
   if (!domain.value || props.series.length === 0) return
@@ -94,7 +102,8 @@ function onMove(event) {
 }
 
 const legend = computed(() => [
-  ...props.series.map((s) => ({ label: s.label, color: s.color, dash: s.dash || null })),
+  // unlabeled entries are continuation runs of an already-listed series
+  ...props.series.filter((s) => s.label).map((s) => ({ label: s.label, color: s.color, dash: s.dash || null })),
   ...props.refRuns.map((r) => ({ label: r.label, color: r.color, dash: r.dash || '6 4' })),
   ...(props.violations.length ? [{ label: props.violationLabel, color: 'var(--fault)', marker: true }] : []),
 ])
