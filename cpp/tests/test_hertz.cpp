@@ -145,6 +145,19 @@ TEST_CASE("Unswept regions catch interior sampling holes (R11-1, round 11)", "[l
     CHECK(Hertz::unswept_regions(c25, bands).empty());
 }
 
+TEST_CASE("Unswept slivers below the RBW are suppressed (F12-2, round 12)", "[limits]") {
+    CHECK(Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), 150e3, 30e6 - 1.0).empty());
+    auto kept = Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), 150e3, 30e6 - 50e3);
+    REQUIRE(kept.size() == 1);
+    CHECK(kept[0].first == Approx(30e6 - 50e3));
+    CHECK(kept[0].second == Approx(30e6));
+    // the 6 kHz sliver at the CISPR 25 SW band edge is below the 9 kHz RBW
+    auto c25 = Hertz::unswept_regions(
+        Hertz::cispr25_conducted_voltage(3, Hertz::Detector::QUASI_PEAK), 150e3, 6.194e6);
+    REQUIRE(c25.size() == 3);
+    CHECK(c25[0].first == Approx(26e6));
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);

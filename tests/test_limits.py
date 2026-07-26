@@ -116,6 +116,23 @@ def test_unswept_regions_catch_interior_sampling_holes():
         CISPR32_CLASS_B_MAINS_QP, list(np.geomspace(150e3, 30e6, 100))) == []
 
 
+def test_unswept_slivers_below_rbw_are_suppressed():
+    # F12-2 (round 12): a sweep ending 1 Hz short of 30 MHz (or float dust
+    # from building the frequency list) must not print "NOT SWEPT:
+    # 30 MHz-30 MHz" — a region narrower than the receiver's RBW cannot even
+    # be resolved as unmeasured. A real 50 kHz shortfall stays reported.
+    freqs = list(np.geomspace(150e3, 30e6 - 1.0, 401))
+    assert unswept_regions_sampled(CISPR32_CLASS_B_MAINS_QP, freqs) == []
+    assert unswept_regions(CISPR32_CLASS_B_MAINS_QP, 150e3, 30e6 - 1.0) == []
+    kept = unswept_regions(CISPR32_CLASS_B_MAINS_QP, 150e3, 30e6 - 50e3)
+    assert len(kept) == 1
+    assert kept[0] == pytest.approx((30e6 - 50e3, 30e6))
+    # the 6 kHz band-edge sliver of a 7 kHz-stepped CISPR 25 SW sweep is
+    # below the 9 kHz RBW: suppressed
+    c25 = cispr25_conducted_voltage(3, "quasi_peak")
+    assert unswept_regions(c25, 150e3, 6.194e6) == [(26e6, 28e6), (30e6, 54e6), (68e6, 108e6)]
+
+
 def test_lower_limit_applies_at_segment_boundary():
     # F9-1 (round 9), CISPR transition rule: at exactly 500 kHz Class A is 73
     # dBuV, not 79; the vectorized path must agree with the scalar one.

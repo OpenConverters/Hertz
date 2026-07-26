@@ -109,6 +109,16 @@ class LimitLine {
 // has simply not measured the spectrum in between.
 inline constexpr double UNSWEPT_GAP_DECADES = 0.35;
 
+// CISPR 16-1-1 resolution bandwidth of the band containing f — an unswept
+// region narrower than the receiver's own RBW cannot even be resolved as
+// unmeasured (it also swallows the float dust and half-RBW-below-stop
+// slivers ordinary exports produce at band edges).
+inline double cispr_rbw_hz(double fHz) {
+    if (fHz < 150e3) return 200.0;
+    if (fHz < 30e6) return 9e3;
+    return 120e3;
+}
+
 inline std::vector<std::pair<double, double>> merge_regions(
     std::vector<std::pair<double, double>> regions) {
     std::sort(regions.begin(), regions.end());
@@ -134,7 +144,11 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
             regions.emplace_back(std::max(segment.fStartHz, fHiHz), segment.fStopHz);
         }
     }
-    return merge_regions(std::move(regions));
+    regions = merge_regions(std::move(regions));
+    std::erase_if(regions, [](const std::pair<double, double>& r) {
+        return r.second - r.first < cispr_rbw_hz(r.first);
+    });
+    return regions;
 }
 
 // Sampling-aware variant: extent regions PLUS interior holes — regulated
@@ -162,7 +176,11 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
             }
         }
     }
-    return merge_regions(std::move(regions));
+    regions = merge_regions(std::move(regions));
+    std::erase_if(regions, [](const std::pair<double, double>& r) {
+        return r.second - r.first < cispr_rbw_hz(r.first);
+    });
+    return regions;
 }
 
 // Drawable polyline of a limit line: one run PER SEGMENT with the exact band

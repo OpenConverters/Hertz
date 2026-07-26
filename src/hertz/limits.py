@@ -88,6 +88,18 @@ class LimitLine:
 UNSWEPT_GAP_DECADES = 0.35
 
 
+def _cispr_rbw_hz(f_hz):
+    """CISPR 16-1-1 resolution bandwidth of the band containing f — an
+    unswept region narrower than the receiver's own RBW cannot even be
+    resolved as unmeasured (it also swallows the float dust and
+    half-RBW-below-stop slivers ordinary exports produce at band edges)."""
+    if f_hz < 150e3:
+        return 200.0
+    if f_hz < 30e6:
+        return 9e3
+    return 120e3
+
+
 def _merge_regions(regions):
     regions = sorted(regions)
     merged = []
@@ -110,7 +122,7 @@ def unswept_regions(line, f_lo_hz, f_hi_hz):
             regions.append((s.f_start_hz, min(s.f_stop_hz, f_lo_hz)))
         if s.f_stop_hz > f_hi_hz:
             regions.append((max(s.f_start_hz, f_hi_hz), s.f_stop_hz))
-    return _merge_regions(regions)
+    return [r for r in _merge_regions(regions) if r[1] - r[0] >= _cispr_rbw_hz(r[0])]
 
 
 def unswept_regions_sampled(line, freqs_hz):
@@ -130,7 +142,7 @@ def unswept_regions_sampled(line, freqs_hz):
             f0, f1 = max(fa, s.f_start_hz), min(fb, s.f_stop_hz)
             if f0 < f1:
                 regions.append((f0, f1))
-    return _merge_regions(regions)
+    return [r for r in _merge_regions(regions) if r[1] - r[0] >= _cispr_rbw_hz(r[0])]
 
 
 # CISPR 32 / EN 55032, AC mains conducted, 150 kHz - 30 MHz.

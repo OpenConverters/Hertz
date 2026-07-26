@@ -182,6 +182,10 @@ button.ghost:hover { border-color: var(--phos); }
   padding: 0.12rem 0.7rem; border-radius: 4px; font-size: 1.05rem;
 }
 .chip.pass { color: var(--bg-deep); background: var(--ok); }
+/* .readout .cell span (0,2,1) outranks .chip.pass (0,2,0) — restate the
+   dark-on-bright chip text at winning specificity or the verdict renders
+   1.3:1 ink-on-color */
+.readout .cell span.chip { color: var(--bg-deep); }
 .chip.fail { color: var(--bg-deep); background: var(--fault); }
 .chip.warn { color: var(--bg-deep); background: var(--amber); }
 
