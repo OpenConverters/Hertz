@@ -36,7 +36,7 @@ def _sniff_delimiter(lines):
     return best
 
 
-def _find_unit(text, candidates):
+def _find_unit(text, candidates, override_available=False):
     lowered = text.lower()
     hits = [u for u in candidates if re.search(rf"(?<![a-z0-9]){re.escape(u)}(?![a-z0-9])", lowered)]
     if len(hits) > 1 and len(set(hits) - {"dbµv", "dbμv", "dbuv"}) < len(hits):
@@ -44,6 +44,10 @@ def _find_unit(text, candidates):
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
+        # a single stated unit beats the override; an AMBIGUOUS header decides
+        # nothing — an explicit override may resolve it, else fail loudly
+        if override_available:
+            return None
         raise TraceFormatError(f"conflicting units in header: {hits}")
     return None
 
@@ -78,8 +82,8 @@ def read_spectrum_csv(path, freq_unit=None, level_unit=None, z0_ohm=50.0):
     if len(rows) < 2:
         raise TraceFormatError(f"{path}: fewer than two data rows found")
 
-    file_freq_unit = _find_unit(header_text, tuple(_FREQ_UNITS))
-    file_level_unit = _find_unit(header_text, _LEVEL_UNITS)
+    file_freq_unit = _find_unit(header_text, tuple(_FREQ_UNITS), bool(freq_unit))
+    file_level_unit = _find_unit(header_text, _LEVEL_UNITS, bool(level_unit))
     freq_unit = (freq_unit or file_freq_unit or "").lower()
     level_unit = (level_unit or file_level_unit or "").lower()
     if level_unit in ("dbµv", "dbμv"):

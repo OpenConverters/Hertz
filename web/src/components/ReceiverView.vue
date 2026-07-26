@@ -70,9 +70,17 @@ async function computeTargets() {
     const lineN = engine.measureWaveform(channels.value.v2, channels.value.fsHz, band.value)
     const judge = (r, marginBufferDb) => {
       const { freqs, levels } = inBand(r)
-      if (!freqs.length) return { required: 0, worst: null }  // silent channel/mode
+      if (!freqs.length) return { required: 0, worst: null, lowestBinding: null }
       const analysis = engine.limitAnalysis(targetStandard.value, 'quasi_peak', freqs, levels, marginBufferDb)
-      return { required: Math.max(0, Math.ceil(analysis.requiredAttenuationDb)), worst: analysis.worst }
+      // lowest frequency where the requirement binds: sizing a low-pass there
+      // with the MAX requirement guarantees every higher frequency too
+      let lowestBinding = null
+      for (let i = 0; i < freqs.length; i += 1) {
+        const margin = analysis.marginsDb[i]
+        if (margin !== null && margin < marginBufferDb) { lowestBinding = freqs[i]; break }
+      }
+      return { required: Math.max(0, Math.ceil(analysis.requiredAttenuationDb)),
+               worst: analysis.worst, lowestBinding }
     }
     const jL = judge(lineL, 10), jN = judge(lineN, 10)
     // Per-mode targets carry a 6 dB in-phase summation allowance on top of the
@@ -84,6 +92,9 @@ async function computeTargets() {
       aReqDm: jDm.required,
       lineL: jL.worst, lineN: jN.worst,
       lineRequired: Math.max(jL.required, jN.required),
+      designFreq: [jL.lowestBinding, jN.lowestBinding].filter((f) => f !== null)
+        .reduce((a, b) => Math.min(a, b), Infinity) === Infinity ? null
+        : Math.min(...[jL.lowestBinding, jN.lowestBinding].filter((f) => f !== null)),
     }
     // never hand over per-mode targets that jointly under-shoot the line requirement
     if (targets.value.aReqCm + targets.value.aReqDm < targets.value.lineRequired) {
@@ -96,10 +107,12 @@ async function computeTargets() {
 }
 
 function designFromModes() {
-  // carry the worst-offender frequency so the designer works where the noise is
-  const worstFreq = targets.value.lineL?.frequencyHz ?? targets.value.lineN?.frequencyHz ?? null
+  // Size the low-pass at the LOWEST frequency where the requirement binds, with
+  // the max requirement — that guarantees every higher frequency as well. Using
+  // the worst offender's frequency instead would leave lower-frequency
+  // violations untreated (a 20 MHz offender does not size a 300 kHz problem).
   store.handoff = { aReqCmDb: targets.value.aReqCm, aReqDmDb: targets.value.aReqDm,
-                    fSwHz: worstFreq }
+                    fSwHz: targets.value.designFreq }
   store.mode = 'filter'
 }
 

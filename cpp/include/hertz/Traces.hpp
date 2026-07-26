@@ -99,7 +99,8 @@ inline std::optional<double> parse_number(const std::string& token) {
 
 inline std::optional<std::string> find_one_unit(const std::vector<std::string>& tokens,
                                                 const std::vector<std::string>& units,
-                                                const std::string& what) {
+                                                const std::string& what,
+                                                bool overrideAvailable = false) {
     std::vector<std::string> hits;
     for (const auto& unit : units) {
         if (std::find(tokens.begin(), tokens.end(), unit) != tokens.end()) {
@@ -107,6 +108,13 @@ inline std::optional<std::string> find_one_unit(const std::vector<std::string>& 
         }
     }
     if (hits.size() > 1) {
+        // An analyzer preamble can legitimately mention several units
+        // ("Start 150 kHz / Stop 30 MHz"). A single stated unit always beats
+        // the override (R-1), but an AMBIGUOUS header decides nothing — the
+        // user's explicit override may resolve it; without one, fail loudly.
+        if (overrideAvailable) {
+            return std::nullopt;
+        }
         throw TraceFormatError("conflicting " + what + " units in header");
     }
     if (hits.size() == 1) {
@@ -183,8 +191,10 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
     }
 
     auto headerTokens = detail::alnum_tokens(detail::normalize(headerText));
-    auto fileFreqUnit = detail::find_one_unit(headerTokens, {"ghz", "mhz", "khz", "hz"}, "frequency");
-    auto fileLevelUnit = detail::find_one_unit(headerTokens, {"dbuv", "dbm"}, "level");
+    auto fileFreqUnit = detail::find_one_unit(headerTokens, {"ghz", "mhz", "khz", "hz"}, "frequency",
+                                              freqUnit.has_value());
+    auto fileLevelUnit = detail::find_one_unit(headerTokens, {"dbuv", "dbm"}, "level",
+                                               levelUnit.has_value());
 
     std::string freq = detail::normalize(freqUnit.value_or(fileFreqUnit.value_or("")));
     std::string level = detail::normalize(levelUnit.value_or(fileLevelUnit.value_or("")));

@@ -176,9 +176,11 @@ async function compute() {
     // 100 Ω DM — the terminations a CISPR 16 AMN actually presents). The ANP015
     // asymptote only SIZES; if the sized part misses the in-circuit criterion,
     // escalate through the candidate list until it passes or runs out.
-    const span = { fMinHz: 150e3, fMaxHz: 30e6, pointsPerDecade: 30 }
     const evaluate = (p) => {
       const d = engine.designFilter(p)
+      // the chip must be evaluated AT f_design — never snapped to a span edge
+      const span = { fMinHz: Math.min(150e3, d.fDesignHz / 2),
+                     fMaxHz: Math.max(30e6, d.fDesignHz * 2), pointsPerDecade: 30 }
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
         stages: d.stages, referenceImpedanceOhm: 25, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
@@ -642,7 +644,8 @@ function downloadNetlist() {
       <div class="panel">
         <p class="section-label">SPICE export — filter + CISPR 16 LISN, ready for Kirchhoff / ngspice / LTspice</p>
         <label class="field"><span>Excitation deck</span>
-          <select v-model="netlistMode" data-test="netlist-mode" @change="api().then((e) => { netlist = e.filterSpiceNetlist(design, 'cispr16', netlistMode) })">
+          <select v-model="netlistMode" data-test="netlist-mode"
+                  @change="api().then((e) => { try { netlist = e.filterSpiceNetlist(design, 'cispr16', netlistMode) } catch (deckError) { netlist = '* netlist unavailable: ' + deckError.message } })">
             <option value="dm">differential-mode drive (C_X path)</option>
             <option value="cm">common-mode drive (choke + Y caps)</option>
           </select></label>

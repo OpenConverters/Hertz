@@ -51,17 +51,19 @@ async function parseAll() {
       // be clobbered into dBuV by the level dropdown.
       const attempts = [['', ''], [freqUnit.value, ''], ['', levelUnit.value],
                         [freqUnit.value, levelUnit.value]]
-      let trace = null, lastError = null
-      for (const [fu, lu] of attempts) {
+      let trace = null, lastError = null, attemptUsed = -1
+      for (let a = 0; a < attempts.length; a += 1) {
         try {
-          trace = engine.parseSpectrumCsv(text, fu, lu)
+          trace = engine.parseSpectrumCsv(text, attempts[a][0], attempts[a][1])
+          attemptUsed = a
           break
         } catch (attemptError) {
           lastError = attemptError
         }
       }
       if (trace) {
-        parsed.push({ name, ...trace, analysis: null, uncovered: false })
+        const overrideIgnored = (freqUnit.value || levelUnit.value) && attemptUsed < 3
+        parsed.push({ name, ...trace, analysis: null, uncovered: false, overrideIgnored })
       } else {
         problems.push(`${name}: ${lastError.message}`)
       }
@@ -253,6 +255,10 @@ function onDrop(event) {
 
       <div v-if="parseProblems.length" class="err" data-test="file-problems">
         Files not read: {{ parseProblems.join(' · ') }}</div>
+      <p v-if="traces.some((t) => t.overrideIgnored)" class="note" data-test="override-note">
+        Header units win: the selectors only fill units a file's header omits —
+        {{ traces.filter((t) => t.overrideIgnored).map((t) => t.name).join(', ') }} kept
+        {{ traces.length > 1 ? 'their' : 'its' }} stated units.</p>
       <div v-if="error" class="err" data-test="error">{{ error }}</div>
     </div>
 

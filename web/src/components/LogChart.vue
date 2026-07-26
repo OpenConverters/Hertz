@@ -143,9 +143,11 @@ const legend = computed(() => [
               stroke-width="2" :stroke-dasharray="s.dash || 'none'" filter="url(#phosphor)" />
       </g>
 
-      <!-- violations: status red, ringed for overlap -->
-      <circle v-for="(p, i) in violations" :key="'v' + i" :cx="x(p.f)" :cy="y(p.v)" r="3.2"
-              :fill="p.color || 'var(--fault)'" stroke="var(--bg-deep)" stroke-width="1.5" />
+      <!-- violations: status red, ringed for overlap; clipped with the series -->
+      <g clip-path="url(#plotarea)">
+        <circle v-for="(p, i) in violations" :key="'v' + i" :cx="x(p.f)" :cy="y(p.v)" r="3.2"
+                :fill="p.color || 'var(--fault)'" stroke="var(--bg-deep)" stroke-width="1.5" />
+      </g>
 
       <!-- hover crosshair + tooltip -->
       <g v-if="hover">
