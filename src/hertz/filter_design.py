@@ -37,11 +37,15 @@ def required_attenuation_db(measured_dbuv, limit_dbuv, margin_db=10.0):
 
 
 def cutoff_frequency(f_design_hz, a_req_db, stages):
-    """f_CO = f_design / 10^(A/(40·n)) — eqs. (4) single stage, (11) two stage."""
+    """f_CO = f_design / 10^(A/(40·n)) — eqs. (4) single stage, (11) two stage.
+
+    A of exactly 0 is legal (resonance AT the design frequency suffices — the
+    mode needs no headroom); a NEGATIVE requirement means no filter at all.
+    """
     if stages not in (1, 2):
         raise ValueError("ANP015 covers 1- or 2-stage filters")
-    if a_req_db <= 0.0:
-        raise ValueError("required attenuation must be positive — the limit is already met")
+    if a_req_db < 0.0:
+        raise ValueError("required attenuation is negative — the limit is already met")
     return f_design_hz / 10.0 ** (a_req_db / (40.0 * stages))
 
 
@@ -86,8 +90,10 @@ def achieved_attenuation_db(f_design_hz, inductance_h, capacitance_f, stages):
 @dataclass(frozen=True)
 class LineFilterDesign:
     stages: int
-    f_design_hz: float
-    f_cutoff_target_hz: float
+    f_design_cm_hz: float
+    f_design_dm_hz: float
+    f_cutoff_cm_hz: float
+    f_cutoff_dm_hz: float
     c_y_per_line_f: float
     c_yg_f: float
     l_cm_required_h: float
@@ -108,6 +114,8 @@ def design_line_filter(
     stages,
     l_cm_candidates,
     c_x_candidates,
+    f_design_cm_hz=None,
+    f_design_dm_hz=None,
 ):
     """Full ANP015 sizing pass.
 
@@ -115,24 +123,37 @@ def design_line_filter(
     see y_capacitor_leakage_current). l_dm_h: DM (leakage) inductance of the CM
     choke. Candidate lists hold the actually available component values; both
     stages of a 2-stage filter use identical components (ANP015 §3).
+
+    CM and DM are PHYSICALLY INDEPENDENT networks (choke vs. Y caps; leakage
+    vs. X cap), so each gets its own cutoff from ITS OWN requirement at ITS
+    OWN design frequency — collapsing to max(A_cm, A_dm) sized the quiet mode
+    from the loud mode's problem. The optional per-mode design frequencies
+    serve measurement-driven callers whose CM and DM critical points sit at
+    different frequencies; both default to design_frequency(f_sw_hz).
     """
-    f_design = design_frequency(f_sw_hz)
-    a_worst = max(a_req_cm_db, a_req_dm_db)
-    f_cutoff = cutoff_frequency(f_design, a_worst, stages)
+    f_design_default = design_frequency(f_sw_hz)
+    f_design_cm = f_design_default if f_design_cm_hz is None else f_design_cm_hz
+    f_design_dm = f_design_default if f_design_dm_hz is None else f_design_dm_hz
+    if f_design_cm <= 0.0 or f_design_dm <= 0.0:
+        raise ValueError("per-mode design frequencies must be positive")
+    f_cutoff_cm = cutoff_frequency(f_design_cm, a_req_cm_db, stages)
+    f_cutoff_dm = cutoff_frequency(f_design_dm, a_req_dm_db, stages)
 
     c_yg = 2.0 * c_y_per_line_f
-    l_cm_required = cm_inductance(f_cutoff, c_yg)
+    l_cm_required = cm_inductance(f_cutoff_cm, c_yg)
     l_cm_selected = round_up_to(l_cm_required, l_cm_candidates)
-    attenuation_cm = achieved_attenuation_db(f_design, l_cm_selected, c_yg, stages)
+    attenuation_cm = achieved_attenuation_db(f_design_cm, l_cm_selected, c_yg, stages)
 
-    c_x_required = dm_capacitance(f_cutoff, l_dm_h)
+    c_x_required = dm_capacitance(f_cutoff_dm, l_dm_h)
     c_x_selected = round_up_to(c_x_required, c_x_candidates)
-    attenuation_dm = achieved_attenuation_db(f_design, l_dm_h, c_x_selected, stages)
+    attenuation_dm = achieved_attenuation_db(f_design_dm, l_dm_h, c_x_selected, stages)
 
     return LineFilterDesign(
         stages=stages,
-        f_design_hz=f_design,
-        f_cutoff_target_hz=f_cutoff,
+        f_design_cm_hz=f_design_cm,
+        f_design_dm_hz=f_design_dm,
+        f_cutoff_cm_hz=f_cutoff_cm,
+        f_cutoff_dm_hz=f_cutoff_dm,
         c_y_per_line_f=c_y_per_line_f,
         c_yg_f=c_yg,
         l_cm_required_h=l_cm_required,

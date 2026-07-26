@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from hertz.separation import separate
-from hertz.traces import TraceFormatError, read_spectrum_csv
+from hertz.traces import TraceFormatError, read_spectrum_csv, spectrum_csv_columns
 from hertz.utils import (
     E6,
     E24,
@@ -93,3 +93,81 @@ def test_stated_header_unit_beats_override(tmp_path):
     freqs, levels = read_spectrum_csv(path, freq_unit="MHz", level_unit="dBuV")
     assert levels[0] == pytest.approx(96.99, abs=0.01)  # dBm honored, not dBuV
     assert freqs[0] == pytest.approx(200e3)             # override filled the silent axis
+
+def test_multitrace_export_requires_column_choice(tmp_path):
+    # F-1 (round 6): a Peak/QP/Average export judged on the silently-taken
+    # second column turned a failing QP scan into a passing Average read.
+    path = tmp_path / "multitrace.csv"
+    path.write_text(
+        "Frequency (MHz),Average (dBuV),Quasi-peak (dBuV)\n0.15,50,72\n0.30,47,69\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TraceFormatError, match="multiple level columns"):
+        read_spectrum_csv(path)
+    count, names = spectrum_csv_columns(path)
+    assert count == 3
+    assert names == ["Frequency (MHz)", "Average (dBuV)", "Quasi-peak (dBuV)"]
+    freqs, levels = read_spectrum_csv(path, level_column=3)
+    assert levels.tolist() == [72.0, 69.0]
+    _, avg = read_spectrum_csv(path, level_column=2)
+    assert avg.tolist() == [50.0, 47.0]
+    with pytest.raises(TraceFormatError, match="out of range"):
+        read_spectrum_csv(path, level_column=4)
+
+
+def test_decimal_comma_semicolon_export(tmp_path):
+    # F-3 (round 6): a German-locale ';' export with ',' decimals was shredded
+    # into a 0 Hz row by column-count delimiter election.
+    path = tmp_path / "de_locale.csv"
+    path.write_text(
+        "Frequenz [MHz];Pegel [dBuV]\n0,15;72,5\n0,50;62,0\n1,00;60,0\n",
+        encoding="utf-8",
+    )
+    freqs, levels = read_spectrum_csv(path)
+    np.testing.assert_allclose(freqs, [150e3, 500e3, 1e6])
+    np.testing.assert_allclose(levels, [72.5, 62.0, 60.0])
+
+
+def test_non_positive_frequency_raises(tmp_path):
+    # F-3 (round 6): an f=0 row previously crashed the GUI chart; the parser
+    # now refuses it loudly instead of letting garbage through.
+    path = tmp_path / "zero_hz.csv"
+    path.write_text("Frequency (Hz),Level (dBuV)\n0,10\n150000,72\n500000,62\n", encoding="utf-8")
+    with pytest.raises(TraceFormatError, match="non-positive frequency"):
+        read_spectrum_csv(path)
+
+
+def test_nan_level_raises(tmp_path):
+    path = tmp_path / "nan.csv"
+    path.write_text("Frequency (Hz),Level (dBuV)\n150000,NaN\n500000,62\n", encoding="utf-8")
+    with pytest.raises(TraceFormatError, match="non-finite"):
+        read_spectrum_csv(path)
+
+
+def test_preamble_metadata_does_not_conflict_with_stated_column(tmp_path):
+    # F-5 (round 6): "RBW 9 kHz" preamble vs a column stating Hz — the column
+    # header is the closer context and decides; no false ambiguity, and an
+    # override cannot beat the column's stated unit (R-1).
+    path = tmp_path / "preamble.csv"
+    path.write_text(
+        "RBW 9 kHz\nFrequency (Hz),Level (dBuV)\n150000,72\n500000,62\n",
+        encoding="utf-8",
+    )
+    freqs, _ = read_spectrum_csv(path)
+    np.testing.assert_allclose(freqs, [150e3, 500e3])
+    freqs, _ = read_spectrum_csv(path, freq_unit="MHz")  # override must lose
+    np.testing.assert_allclose(freqs, [150e3, 500e3])
+
+
+def test_preamble_units_still_resolve_unlabelled_columns(tmp_path):
+    # when the column header states nothing, the preamble is consulted; two
+    # different units there stay ambiguous and need the override
+    path = tmp_path / "sweep.csv"
+    path.write_text(
+        "Start 150 kHz Stop 30 MHz\ncol1,col2\n0.15,62.1\n0.5,55.0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TraceFormatError):
+        read_spectrum_csv(path, level_unit="dBuV")
+    freqs, _ = read_spectrum_csv(path, freq_unit="MHz", level_unit="dBuV")
+    assert freqs[0] == pytest.approx(150e3)

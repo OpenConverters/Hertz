@@ -229,7 +229,11 @@ const modalSeries = () => [
           <p v-if="targets" class="note">Targets are judged on the reconstructed LINE voltages
             (what the standard limits), with a 6 dB in-phase mode-summation allowance folded into
             each per-mode requirement, plus the 10 dB engineering margin.</p>
-          <button v-if="targets" class="act" data-test="design-from-modes" style="margin-top: 0.6rem" @click="designFromModes">Design filter for these modes →</button>
+          <button v-if="targets && (targets.binding.cm.length || targets.binding.dm.length)"
+                  class="act" data-test="design-from-modes" style="margin-top: 0.6rem" @click="designFromModes">Design filter for these modes →</button>
+          <p v-else-if="targets" class="note" data-test="no-binding-note">
+            Nothing binds: every point in both modes clears the limit with the full buffer in
+            hand — this measurement needs no filter, so there is nothing to hand to the designer.</p>
         </div>
       </template>
       <LogChart v-else-if="reading" :series="seriesFor(reading)" y-label="dBµV" :clamp-range-db="110" data-test="receiver-chart" />

@@ -16,7 +16,11 @@ namespace Hertz {
 // design: the host (browser File API, Python open()) reads the file and passes
 // its content. Units are taken from the header row; if the header does not
 // state them they MUST be passed explicitly — guessing units on EMI data is how
-// 60 dB mistakes happen, so ambiguity throws.
+// 60 dB mistakes happen, so ambiguity throws. The same zero-guessing rule
+// applies to multi-trace exports (Peak/QP/Average side by side, the normal
+// receiver format): with more than two numeric columns the caller MUST say
+// which column to judge — silently taking the second one turned a failing QP
+// scan into a passing Average read.
 
 class TraceFormatError : public std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -81,6 +85,14 @@ inline std::vector<std::string> split(const std::string& line, char delimiter) {
     return tokens;
 }
 
+inline std::string trim(const std::string& text) {
+    size_t begin = 0;
+    size_t end = text.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) ++begin;
+    while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) --end;
+    return text.substr(begin, end - begin);
+}
+
 inline std::optional<double> parse_number(const std::string& token) {
     const char* begin = token.c_str();
     char* end = nullptr;
@@ -97,42 +109,34 @@ inline std::optional<double> parse_number(const std::string& token) {
     return value;
 }
 
-inline std::optional<std::string> find_one_unit(const std::vector<std::string>& tokens,
-                                                const std::vector<std::string>& units,
-                                                const std::string& what,
-                                                bool overrideAvailable = false) {
-    std::vector<std::string> hits;
-    for (const auto& unit : units) {
-        if (std::find(tokens.begin(), tokens.end(), unit) != tokens.end()) {
-            hits.push_back(unit);
-        }
+// Numeric field parse with European-locale support: when the column delimiter
+// is NOT the comma, a token like "72,5" is a decimal-comma number (German
+// analyzer exports are ';'-delimited with ',' decimals) — retry with '.'.
+inline std::optional<double> parse_field(const std::string& token, char delimiter) {
+    if (auto value = parse_number(token)) {
+        return value;
     }
-    if (hits.size() > 1) {
-        // An analyzer preamble can legitimately mention several units
-        // ("Start 150 kHz / Stop 30 MHz"). A single stated unit always beats
-        // the override (R-1), but an AMBIGUOUS header decides nothing — the
-        // user's explicit override may resolve it; without one, fail loudly.
-        if (overrideAvailable) {
-            return std::nullopt;
-        }
-        throw TraceFormatError("conflicting " + what + " units in header");
-    }
-    if (hits.size() == 1) {
-        return hits[0];
+    if (delimiter != ',' && token.find('.') == std::string::npos &&
+        std::count(token.begin(), token.end(), ',') == 1) {
+        std::string dotted = token;
+        dotted[dotted.find(',')] = '.';
+        return parse_number(dotted);
     }
     return std::nullopt;
 }
 
-}  // namespace detail
+struct CsvScan {
+    char delimiter = '\0';
+    std::vector<std::string> headerLines;    // pre-data lines, in order
+    std::vector<std::vector<double>> rows;   // EVERY numeric field per data row
+    std::vector<size_t> firstRowTokenIndex;  // token position of each numeric column
+    size_t numericColumns = 0;               // max numeric fields over all rows
+};
 
-inline SpectrumTrace parse_spectrum_csv(const std::string& content,
-                                        std::optional<std::string> freqUnit = std::nullopt,
-                                        std::optional<std::string> levelUnit = std::nullopt,
-                                        double z0Ohm = 50.0) {
+inline CsvScan scan_csv(const std::string& content) {
     if (content.empty()) {
         throw TraceFormatError("empty trace content");
     }
-
     std::string body = content;
     if (body.size() >= 3 && static_cast<unsigned char>(body[0]) == 0xEF) {
         body.erase(0, 3);  // UTF-8 BOM
@@ -152,55 +156,157 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
         lines.push_back(current);
     }
 
-    char delimiter = '\0';
-    size_t bestColumns = 1;
-    for (char candidate : {',', ';', '\t'}) {
+    CsvScan scan;
+    // Preference order, not raw column count: a European ';' export carries
+    // decimal commas, and counting columns would elect ',' and shred "0,15"
+    // into a 0 Hz row. ';' and tab can only be delimiters on purpose.
+    for (char candidate : {';', '\t', ','}) {
         size_t columns = 1;
         for (size_t i = 0; i < lines.size() && i < 20; ++i) {
-            columns = std::max(columns, detail::split(lines[i], candidate).size());
+            columns = std::max(columns, split(lines[i], candidate).size());
         }
-        if (columns > bestColumns) {
-            bestColumns = columns;
-            delimiter = candidate;
+        if (columns >= 2) {
+            scan.delimiter = candidate;
+            break;
         }
     }
-    if (delimiter == '\0') {
+    if (scan.delimiter == '\0') {
         throw TraceFormatError("no recognizable column delimiter (',', ';' or tab)");
     }
 
-    std::string headerText;
-    std::vector<std::pair<double, double>> rows;
     for (const auto& line : lines) {
         if (line.empty()) {
             continue;
         }
+        auto tokens = split(line, scan.delimiter);
         std::vector<double> numeric;
-        for (const auto& token : detail::split(line, delimiter)) {
-            if (auto value = detail::parse_number(token)) {
+        std::vector<size_t> positions;
+        for (size_t t = 0; t < tokens.size(); ++t) {
+            if (auto value = parse_field(tokens[t], scan.delimiter)) {
                 numeric.push_back(*value);
+                positions.push_back(t);
             }
         }
         if (numeric.size() >= 2) {
-            rows.emplace_back(numeric[0], numeric[1]);
-        } else if (rows.empty()) {
-            headerText += " " + line;
+            if (scan.rows.empty()) {
+                scan.firstRowTokenIndex = positions;
+            }
+            scan.numericColumns = std::max(scan.numericColumns, numeric.size());
+            scan.rows.push_back(std::move(numeric));
+        } else if (scan.rows.empty()) {
+            scan.headerLines.push_back(line);
         }
     }
-    if (rows.size() < 2) {
+    if (scan.rows.size() < 2) {
         throw TraceFormatError("fewer than two data rows found");
     }
+    return scan;
+}
 
-    auto headerTokens = detail::alnum_tokens(detail::normalize(headerText));
-    auto fileFreqUnit = detail::find_one_unit(headerTokens, {"ghz", "mhz", "khz", "hz"}, "frequency",
-                                              freqUnit.has_value());
-    auto fileLevelUnit = detail::find_one_unit(headerTokens, {"dbuv", "dbm"}, "level",
-                                               levelUnit.has_value());
+// Header cell text for 1-based numeric column k, or "" when the header does
+// not reach that column. Cells align with the numeric columns through the
+// token positions of the first data row.
+inline std::string column_header_cell(const CsvScan& scan, size_t column) {
+    if (scan.headerLines.empty() || column == 0 || column > scan.firstRowTokenIndex.size()) {
+        return "";
+    }
+    auto cells = split(scan.headerLines.back(), scan.delimiter);
+    size_t tokenIndex = scan.firstRowTokenIndex[column - 1];
+    return tokenIndex < cells.size() ? trim(cells[tokenIndex]) : "";
+}
+
+// Unit search from the most specific context outward: the column's own header
+// cell, then the column-header line, then the analyzer preamble above it. The
+// first tier that mentions any candidate decides — so "RBW 9 kHz" in the
+// preamble can never contradict a column that states "Frequency (Hz)". A
+// single hit is a STATED unit (beats any override, R-1); several distinct
+// hits in one tier decide nothing — the override may resolve it, else throw.
+inline std::optional<std::string> find_unit_tiered(const std::vector<std::string>& tiers,
+                                                   const std::vector<std::string>& units,
+                                                   const std::string& what,
+                                                   bool overrideAvailable) {
+    for (const auto& tier : tiers) {
+        auto tokens = alnum_tokens(normalize(tier));
+        std::vector<std::string> hits;
+        for (const auto& unit : units) {
+            if (std::find(tokens.begin(), tokens.end(), unit) != tokens.end()) {
+                hits.push_back(unit);
+            }
+        }
+        if (hits.size() == 1) {
+            return hits[0];
+        }
+        if (hits.size() > 1) {
+            if (overrideAvailable) {
+                return std::nullopt;
+            }
+            throw TraceFormatError("conflicting " + what + " units in header");
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace detail
+
+// Numeric-column inventory of a trace file, for callers that must offer a
+// level-column choice on multi-trace exports. names[k] labels 1-based numeric
+// column k+1 from the header row ("" when the header has no cell for it).
+struct SpectrumCsvColumns {
+    size_t count = 0;
+    std::vector<std::string> names;
+};
+
+inline SpectrumCsvColumns spectrum_csv_columns(const std::string& content) {
+    auto scan = detail::scan_csv(content);
+    SpectrumCsvColumns columns;
+    columns.count = scan.numericColumns;
+    for (size_t k = 1; k <= scan.numericColumns; ++k) {
+        columns.names.push_back(detail::column_header_cell(scan, k));
+    }
+    return columns;
+}
+
+inline SpectrumTrace parse_spectrum_csv(const std::string& content,
+                                        std::optional<std::string> freqUnit = std::nullopt,
+                                        std::optional<std::string> levelUnit = std::nullopt,
+                                        double z0Ohm = 50.0,
+                                        std::optional<int> levelColumn = std::nullopt) {
+    auto scan = detail::scan_csv(content);
+
+    if (!levelColumn.has_value() && scan.numericColumns > 2) {
+        std::string message =
+            "multiple level columns: the file carries " + std::to_string(scan.numericColumns) +
+            " numeric columns (a multi-trace export) — say which one to judge:";
+        for (size_t k = 2; k <= scan.numericColumns; ++k) {
+            std::string cell = detail::column_header_cell(scan, k);
+            message += " " + std::to_string(k) + ": \"" +
+                       (cell.empty() ? "column " + std::to_string(k) : cell) + "\"";
+        }
+        throw TraceFormatError(message);
+    }
+    size_t level = static_cast<size_t>(levelColumn.value_or(2));
+    if (level < 2 || level > scan.numericColumns) {
+        throw TraceFormatError("level column " + std::to_string(level) + " out of range — the file has " +
+                               std::to_string(scan.numericColumns) + " numeric columns");
+    }
+
+    std::string columnLine = scan.headerLines.empty() ? "" : scan.headerLines.back();
+    std::string preamble;
+    for (size_t i = 0; i + 1 < scan.headerLines.size(); ++i) {
+        preamble += " " + scan.headerLines[i];
+    }
+    auto fileFreqUnit = detail::find_unit_tiered(
+        {detail::column_header_cell(scan, 1), columnLine, preamble},
+        {"ghz", "mhz", "khz", "hz"}, "frequency", freqUnit.has_value());
+    auto fileLevelUnit = detail::find_unit_tiered(
+        {detail::column_header_cell(scan, level), columnLine, preamble},
+        {"dbuv", "dbm"}, "level", levelUnit.has_value());
 
     // R-1 contract, enforced HERE and not only in callers: a unit the header
     // STATES always wins; a passed override only fills an axis the header left
-    // silent (or an ambiguous header that find_one_unit declined to decide).
+    // silent (or an ambiguous header that find_unit_tiered declined to decide).
     std::string freq = detail::normalize(fileFreqUnit.value_or(freqUnit.value_or("")));
-    std::string level = detail::normalize(fileLevelUnit.value_or(levelUnit.value_or("")));
+    std::string levelUnitName = detail::normalize(fileLevelUnit.value_or(levelUnit.value_or("")));
 
     double freqScale;
     if (freq == "hz") {
@@ -214,22 +320,42 @@ inline SpectrumTrace parse_spectrum_csv(const std::string& content,
     } else {
         throw TraceFormatError("frequency unit not stated in the file header — select it in the unit control");
     }
-    if (level != "dbuv" && level != "dbm") {
+    if (levelUnitName != "dbuv" && levelUnitName != "dbm") {
         throw TraceFormatError("level unit not stated in the file header — select it in the unit control");
     }
 
-    std::vector<size_t> order(rows.size());
+    for (size_t r = 0; r < scan.rows.size(); ++r) {
+        const auto& row = scan.rows[r];
+        if (row.size() < level) {
+            throw TraceFormatError("data row " + std::to_string(r + 1) + " has only " +
+                                   std::to_string(row.size()) + " numeric columns — needed " +
+                                   std::to_string(level));
+        }
+        double f = row[0] * freqScale;
+        if (!std::isfinite(f) || !std::isfinite(row[level - 1])) {
+            throw TraceFormatError("non-finite value in data row " + std::to_string(r + 1) +
+                                   " — clean the export before judging it");
+        }
+        if (f <= 0.0) {
+            throw TraceFormatError("non-positive frequency (" + std::to_string(f) +
+                                   " Hz) in data row " + std::to_string(r + 1) +
+                                   " — remove DC/index rows, and check the delimiter/decimal convention");
+        }
+    }
+
+    std::vector<size_t> order(scan.rows.size());
     std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(),
-              [&rows](size_t a, size_t b) { return rows[a].first < rows[b].first; });
+    std::sort(order.begin(), order.end(), [&scan](size_t a, size_t b) {
+        return scan.rows[a][0] < scan.rows[b][0];
+    });
 
     SpectrumTrace trace;
-    trace.frequenciesHz.reserve(rows.size());
-    trace.levelsDbuv.reserve(rows.size());
+    trace.frequenciesHz.reserve(scan.rows.size());
+    trace.levelsDbuv.reserve(scan.rows.size());
     for (size_t index : order) {
-        trace.frequenciesHz.push_back(rows[index].first * freqScale);
-        double value = rows[index].second;
-        trace.levelsDbuv.push_back(level == "dbm" ? dbuv_from_dbm(value, z0Ohm) : value);
+        trace.frequenciesHz.push_back(scan.rows[index][0] * freqScale);
+        double value = scan.rows[index][level - 1];
+        trace.levelsDbuv.push_back(levelUnitName == "dbm" ? dbuv_from_dbm(value, z0Ohm) : value);
     }
     return trace;
 }

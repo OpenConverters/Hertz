@@ -210,3 +210,95 @@ test('spectrum: a broken file is reported, not silently dropped (Berger R-2)', a
   await expect(page.getByTestId('verdict')).toBeVisible()
   await expect(page.getByTestId('file-problems')).toContainText('broken.csv')
 })
+
+test('spectrum: a multi-trace export demands a column choice — QP fails where Average passed (Berger round-6 F-1)', async ({ page }) => {
+  // Berger's false-PASS repro: judging the silently-taken second (Average)
+  // column showed +10 dB in hand while the Quasi-peak trace fails by 8.8 dB.
+  const csv = ['Frequency (MHz),Average (dBuV),Quasi-peak (dBuV)',
+    '0.15,50,72', '0.30,47,69', '0.50,44,62', '1.00,42,60', '2.00,43,59',
+    '5.00,45,58', '10.00,48,64', '20.00,49,65', '30.00,50,66'].join('\n')
+  const pageErrors = []
+  page.on('pageerror', (e) => pageErrors.push(String(e)))
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'multitrace.csv', mimeType: 'text/csv', buffer: Buffer.from(csv),
+  })
+  // nothing is judged until the user says which trace the file carries
+  await expect(page.getByTestId('column-picker')).toBeVisible()
+  await expect(page.getByTestId('verdict')).not.toBeVisible()
+  await page.getByTestId('column-select').selectOption({ label: 'Quasi-peak (dBuV)' })
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await expect(page.getByTestId('column-note')).toContainText('Quasi-peak')
+  await page.getByTestId('column-select').selectOption({ label: 'Average (dBuV)' })
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
+  await expect(page.getByTestId('column-note')).toContainText('Average')
+  expect(pageErrors).toEqual([])
+})
+
+test('filter: receiver handoff sizes each mode at its own critical point (Berger round-6 F-2)', async ({ page }) => {
+  // CM tone at 300 kHz, DM tone at 600 kHz: the designer must keep the modes
+  // apart — the choke sized at the CM point, the X cap at the DM point.
+  const fs = 3e6
+  const lines = ['t,v_line,v_neutral']
+  for (let i = 0; i < 0.05 * fs; i += 1) {
+    const t = i / fs
+    const cm = 3e-3 * Math.sin(2 * Math.PI * 300e3 * t)
+    const dm = 1e-3 * Math.sin(2 * Math.PI * 600e3 * t)
+    lines.push(t.toFixed(9) + ',' + (cm + dm).toPrecision(6) + ',' + (cm - dm).toPrecision(6))
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'two_tone_modes.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 60_000 })
+  await page.getByTestId('compute-targets').click()
+  await expect(page.getByTestId('target-cm')).toContainText(/\d/)
+  await page.getByTestId('design-from-modes').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await expect(page.getByTestId('bom')).toBeVisible()
+  const note = await page.getByTestId('binding-note').textContent()
+  const cmAt = Number(note.match(/CM \d+ dB @ (\d+) kHz/)[1])
+  const dmAt = Number(note.match(/DM \d+ dB @ (\d+) kHz/)[1])
+  expect(Math.abs(cmAt - 300)).toBeLessThan(15)   // choke sized at the CM offence…
+  expect(Math.abs(dmAt - 600)).toBeLessThan(25)   // …X cap at the DM offence, not max() of both
+  await expect(page.getByTestId('f-design')).toContainText('CM')
+})
+
+test('receiver: a compliant capture hands over nothing — no defaults dressed as a design (Berger round-6 F-4)', async ({ page }) => {
+  // ~10 dBuV tones, 50 dB below the limit: nothing binds, so there is no
+  // design button and no silently-populated designer form.
+  const fs = 3e6
+  const lines = ['t,v_line,v_neutral']
+  for (let i = 0; i < 0.05 * fs; i += 1) {
+    const t = i / fs
+    const cm = 3e-6 * Math.sin(2 * Math.PI * 300e3 * t)
+    lines.push(t.toFixed(9) + ',' + (cm * 1.2).toPrecision(6) + ',' + (cm * 0.8).toPrecision(6))
+  }
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-receiver').click()
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'quiet.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 60_000 })
+  await page.getByTestId('compute-targets').click()
+  await expect(page.getByTestId('no-binding-note')).toContainText('needs no filter')
+  await expect(page.getByTestId('design-from-modes')).not.toBeVisible()
+})
+
+test('spectrum: a 0 Hz row is refused loudly instead of crashing the chart (Berger round-6 F-3)', async ({ page }) => {
+  const pageErrors = []
+  page.on('pageerror', (e) => pageErrors.push(String(e)))
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'zero_hz.csv', mimeType: 'text/csv',
+    buffer: Buffer.from('Frequency (Hz),Level (dBuV)\n0,10\n150000,72\n500000,62\n1000000,60\n'),
+  })
+  await expect(page.getByTestId('file-problems')).toContainText('non-positive frequency')
+  await expect(page.getByTestId('verdict')).not.toBeVisible()
+  expect(pageErrors).toEqual([])   // was: 2x uncaught RangeError from the tick loop
+})

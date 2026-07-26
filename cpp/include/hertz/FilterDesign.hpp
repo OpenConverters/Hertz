@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -34,12 +35,14 @@ inline double required_attenuation_db(double measuredDbuv, double limitDbuv, dou
 }
 
 // f_CO = f_design / 10^(A/(40·n)) — eqs. (4) single stage, (11) two stage.
+// A of exactly 0 is legal (resonance AT the design frequency suffices — the
+// mode needs no headroom); a NEGATIVE requirement means no filter at all.
 inline double cutoff_frequency(double fDesignHz, double aReqDb, int stages) {
     if (stages != 1 && stages != 2) {
         throw std::invalid_argument("ANP015 covers 1- or 2-stage filters");
     }
-    if (aReqDb <= 0.0) {
-        throw std::invalid_argument("required attenuation must be positive — the limit is already met");
+    if (aReqDb < 0.0) {
+        throw std::invalid_argument("required attenuation is negative — the limit is already met");
     }
     return fDesignHz / std::pow(10.0, aReqDb / (40.0 * stages));
 }
@@ -89,8 +92,10 @@ inline double achieved_attenuation_db(double fDesignHz, double inductanceH, doub
 
 struct LineFilterDesign {
     int stages;
-    double fDesignHz;
-    double fCutoffTargetHz;
+    double fDesignCmHz;
+    double fDesignDmHz;
+    double fCutoffCmHz;
+    double fCutoffDmHz;
     double cYPerLineF;
     double cYgF;
     double lCmRequiredH;
@@ -106,16 +111,31 @@ struct LineFilterDesign {
 // by leakage current, see y_capacitor_leakage_current). lDmH: DM (leakage)
 // inductance of the CM choke. Both stages of a 2-stage filter use identical
 // components (ANP015 §3).
+//
+// CM and DM are PHYSICALLY INDEPENDENT networks (choke vs. Y caps; leakage vs.
+// X cap), so each gets its own cutoff from ITS OWN requirement at ITS OWN
+// design frequency — collapsing to max(A_cm, A_dm) sized the quiet mode from
+// the loud mode's problem (224x over-designed chokes in review). The optional
+// per-mode design frequencies serve measurement-driven callers whose CM and DM
+// critical points sit at different frequencies; both default to
+// design_frequency(fSwHz).
 inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double aReqDmDb,
                                            double cYPerLineF, double lDmH, int stages,
                                            const std::vector<double>& lCmCandidates,
-                                           const std::vector<double>& cXCandidates) {
-    double fDesign = design_frequency(fSwHz);
-    double aWorst = std::max(aReqCmDb, aReqDmDb);
-    double fCutoff = cutoff_frequency(fDesign, aWorst, stages);
+                                           const std::vector<double>& cXCandidates,
+                                           std::optional<double> fDesignCmHz = std::nullopt,
+                                           std::optional<double> fDesignDmHz = std::nullopt) {
+    double fDesignDefault = design_frequency(fSwHz);
+    double fDesignCm = fDesignCmHz.value_or(fDesignDefault);
+    double fDesignDm = fDesignDmHz.value_or(fDesignDefault);
+    if (fDesignCm <= 0.0 || fDesignDm <= 0.0) {
+        throw std::invalid_argument("per-mode design frequencies must be positive");
+    }
+    double fCutoffCm = cutoff_frequency(fDesignCm, aReqCmDb, stages);
+    double fCutoffDm = cutoff_frequency(fDesignDm, aReqDmDb, stages);
 
     double cYg = 2.0 * cYPerLineF;
-    double lCmRequired = cm_inductance(fCutoff, cYg);
+    double lCmRequired = cm_inductance(fCutoffCm, cYg);
     double lCmSelected;
     try {
         lCmSelected = round_up_to(lCmRequired, lCmCandidates);
@@ -127,9 +147,9 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
                       lCmRequired * 1e3);
         throw std::invalid_argument(msg);
     }
-    double attenuationCm = achieved_attenuation_db(fDesign, lCmSelected, cYg, stages);
+    double attenuationCm = achieved_attenuation_db(fDesignCm, lCmSelected, cYg, stages);
 
-    double cXRequired = dm_capacitance(fCutoff, lDmH);
+    double cXRequired = dm_capacitance(fCutoffDm, lDmH);
     double cXSelected;
     try {
         cXSelected = round_up_to(cXRequired, cXCandidates);
@@ -140,11 +160,11 @@ inline LineFilterDesign design_line_filter(double fSwHz, double aReqCmDb, double
                       "relax the DM requirement", cXRequired * 1e6);
         throw std::invalid_argument(msg);
     }
-    double attenuationDm = achieved_attenuation_db(fDesign, lDmH, cXSelected, stages);
+    double attenuationDm = achieved_attenuation_db(fDesignDm, lDmH, cXSelected, stages);
 
-    return LineFilterDesign{stages,       fDesign,     fCutoff,       cYPerLineF,
-                            cYg,          lCmRequired, lCmSelected,   attenuationCm,
-                            lDmH,         cXRequired,  cXSelected,    attenuationDm};
+    return LineFilterDesign{stages,     fDesignCm,   fDesignDm,   fCutoffCm,     fCutoffDm,
+                            cYPerLineF, cYg,         lCmRequired, lCmSelected,   attenuationCm,
+                            lDmH,       cXRequired,  cXSelected,  attenuationDm};
 }
 
 // Protective-earth leakage current — ANP015 eqs. (29)-(30). Apply worst-case

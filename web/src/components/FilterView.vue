@@ -34,25 +34,64 @@ const escalated = ref(false)    // selector had to go beyond the asymptote sizin
 const bindingSets = ref(null)   // receiver handoff: {cm: [[f,A]...], dm: [[f,A]...]}
 const bindingNote = ref('')
 
-// Reduce the binding sets to the (f*, A*) whose f/10^(A/(40 n)) is the global
-// minimum — the designer's own cutoff formula then meets EVERY binding point.
-function deriveFromBindings() {
-  const n = Number(stages.value)
-  const all = [...(bindingSets.value.cm ?? []), ...(bindingSets.value.dm ?? [])]
-  if (!all.length) return
-  let best = all[0]
-  for (const point of all) {
+const fCritCmHz = ref(null)     // per-mode critical design frequency from the binding sets
+const fCritDmHz = ref(null)
+
+// Reduce EACH MODE's binding set to the (f*, A*) whose f/10^(A/(40 n)) is that
+// set's minimum — the mode's own cutoff formula then meets every one of ITS
+// binding points. CM and DM stay separate all the way: sizing the choke from a
+// DM offence (or the X cap from a CM one) over-designs the quiet mode.
+function reduceBindingSet(set, n) {
+  if (!set?.length) return null
+  let best = set[0]
+  for (const point of set) {
     if (point[0] / 10 ** (point[1] / (40 * n)) < best[0] / 10 ** (best[1] / (40 * n))) best = point
   }
-  fSwKhz.value = best[0] / 1e3
-  aReqCm.value = Math.ceil(best[1])
-  aReqDm.value = Math.ceil(best[1])
-  bindingNote.value = `sized by the min-f_co rule over ${all.length} binding points ` +
-    `(critical: ${Math.ceil(best[1])} dB @ ${(best[0] / 1e3).toFixed(0)} kHz, ${n}-stage)`
+  return best
+}
+
+function deriveFromBindings() {
+  const n = Number(stages.value)
+  const cm = reduceBindingSet(bindingSets.value.cm, n)
+  const dm = reduceBindingSet(bindingSets.value.dm, n)
+  if (!cm && !dm) {
+    // a hand-off with nothing binding must NOT silently present the form
+    // defaults as if they were a derived design
+    bindingNote.value = 'the receiver hand-off contains no binding points — every measured '
+      + 'frequency clears the limit with the full buffer in hand; no filter is required, '
+      + 'and nothing was derived (the form below is a blank designer)'
+    fCritCmHz.value = null
+    fCritDmHz.value = null
+    return false
+  }
+  // a silent mode needs 0 dB — evaluated at the other mode's critical
+  // frequency, which is the same statement at any frequency
+  aReqCm.value = cm ? Math.ceil(cm[1]) : 0
+  aReqDm.value = dm ? Math.ceil(dm[1]) : 0
+  fCritCmHz.value = cm ? cm[0] : dm[0]
+  fCritDmHz.value = dm ? dm[0] : cm[0]
+  fSwKhz.value = Math.min(fCritCmHz.value, fCritDmHz.value) / 1e3
+  const label = (mode, best, points) => best
+    ? `${mode} ${Math.ceil(best[1])} dB @ ${(best[0] / 1e3).toFixed(0)} kHz (${points} pts)`
+    : `${mode} silent`
+  bindingNote.value = 'sized per mode by the min-f_co rule — '
+    + label('CM', cm, bindingSets.value.cm?.length ?? 0) + ' · '
+    + label('DM', dm, bindingSets.value.dm?.length ?? 0) + ` · ${n}-stage`
+  return true
+}
+
+// Any manual edit of the requirement fields leaves hand-off mode: the derived
+// per-mode design frequencies must never silently ride along under new numbers.
+function clearBinding() {
+  if (!bindingSets.value) return
+  bindingSets.value = null
+  bindingNote.value = ''
+  fCritCmHz.value = null
+  fCritDmHz.value = null
 }
 
 watch(stages, () => {
-  if (bindingSets.value) { deriveFromBindings(); compute() }
+  if (bindingSets.value && deriveFromBindings()) compute()
 })
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
@@ -86,7 +125,7 @@ onMounted(async () => {
   if (store.handoff) {
     if (store.handoff.binding) {
       bindingSets.value = store.handoff.binding
-      deriveFromBindings()
+      if (!deriveFromBindings()) { store.handoff = null; return }
     } else {
       aReqCm.value = store.handoff.aReqCmDb ?? store.handoff.aReqDb
       aReqDm.value = store.handoff.aReqDmDb ?? store.handoff.aReqDb
@@ -127,7 +166,7 @@ async function loadMeasuredIlColumn() {
   try {
     const curves = (await ensureCurves()).curves
     const engine = await api()
-    const fDesign = design.value.fDesignHz
+    const fDesign = design.value.fDesignCmHz
     const column = {}
     for (const part of catalogPartsAnyL()) {
       if (!part.hasMeasuredCmCurve) continue
@@ -190,6 +229,10 @@ async function compute() {
       cXCandidatesF: parseList(cxCandidatesUf.value, 1e-6),
       grid: { vRms: Number(gridVrms.value), fHz: Number(gridHz.value), vSafe: 60, tDischargeS: 1 },
     }
+    if (bindingSets.value && fCritCmHz.value && fCritDmHz.value) {
+      params.fDesignCmHz = fCritCmHz.value
+      params.fDesignDmHz = fCritDmHz.value
+    }
     if (dmMode.value === 'impedance') {
       params.dmImpedanceOhm = Number(dmImpedanceOhm.value)
       params.dmImpedanceFrequencyHz = dmImpedanceMhz.value * 1e6
@@ -207,23 +250,25 @@ async function compute() {
     const evaluate = (p) => {
       const d = engine.designFilter(p)
       // the chip must be evaluated AT f_design — never snapped to a span edge
-      const span = { fMinHz: Math.min(150e3, d.fDesignHz / 2),
-                     fMaxHz: Math.max(30e6, d.fDesignHz * 2), pointsPerDecade: 30 }
+      const fLow = Math.min(d.fDesignCmHz, d.fDesignDmHz)
+      const fHigh = Math.max(d.fDesignCmHz, d.fDesignDmHz)
+      const span = { fMinHz: Math.min(150e3, fLow / 2),
+                     fMaxHz: Math.max(30e6, fHigh * 2), pointsPerDecade: 30 }
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
         stages: d.stages, referenceImpedanceOhm: 25, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: d.cXSelectedF,
         stages: d.stages, referenceImpedanceOhm: 100, ...span })
       // the chip is a hard pass/fail input: evaluate it AT f_design via a
       // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off)
-      const exactAt = (inductanceH, capacitanceF, refZ) => {
+      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz) => {
         const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: d.stages,
-          referenceImpedanceOhm: refZ, fMinHz: d.fDesignHz * 0.9995, fMaxHz: d.fDesignHz * 1.0005,
+          referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
           pointsPerDecade: 20000 })
         const mid = Math.floor(il.frequenciesHz.length / 2)
         return { standard: il.standardDb[mid], worst: il.worstCaseDb[mid] }
       }
-      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25),
-                                dm: exactAt(d.lDmH, d.cXSelectedF, 100) } }
+      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, 25, d.fDesignCmHz),
+                                dm: exactAt(d.lDmH, d.cXSelectedF, 100, d.fDesignDmHz) } }
     }
     let attempt = evaluate(params)
     for (let guard = 0; guard < 8; guard += 1) {
@@ -281,8 +326,8 @@ const ilSeries = () => [
     points: ilDm.value.frequenciesHz.map((f, i) => ({ f, v: ilDm.value.worstCaseDb[i] })) },
 ]
 const requirementMarkers = () => [
-  { f: design.value.fDesignHz, v: Number(aReqCm.value), color: 'var(--s-1)' },
-  { f: design.value.fDesignHz, v: Number(aReqDm.value), color: 'var(--s-2)' },
+  { f: design.value.fDesignCmHz, v: Number(aReqCm.value), color: 'var(--s-1)' },
+  { f: design.value.fDesignDmHz, v: Number(aReqDm.value), color: 'var(--s-2)' },
 ]
 
 const schematicLabels = () => {
@@ -430,15 +475,15 @@ function downloadNetlist() {
         <p class="section-label">Requirement</p>
         <div class="row">
           <label class="field"><span>Switching frequency (kHz)</span>
-            <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" /></label>
+            <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @input="clearBinding" /></label>
           <label class="field"><span>Stages</span>
             <select v-model.number="stages"><option :value="1">1 (40 dB/dec)</option><option :value="2">2 (80 dB/dec)</option></select></label>
         </div>
         <div class="row">
           <label class="field"><span>Required CM attenuation (dB)</span>
-            <input v-model.number="aReqCm" type="number" data-test="areq-cm" /></label>
+            <input v-model.number="aReqCm" type="number" data-test="areq-cm" @input="clearBinding" /></label>
           <label class="field"><span>Required DM attenuation (dB)</span>
-            <input v-model.number="aReqDm" type="number" data-test="areq-dm" /></label>
+            <input v-model.number="aReqDm" type="number" data-test="areq-dm" @input="clearBinding" /></label>
         </div>
         <p class="note">Below 150 kHz the design moves to the first harmonic inside the measured band, as ANP015 prescribes.</p>
         <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
@@ -490,8 +535,12 @@ function downloadNetlist() {
     <div v-if="design">
       <div class="panel panel-hi">
         <div class="readout">
-          <div class="cell"><b>Design frequency</b><span>{{ fmtHz(design.fDesignHz) }}</span></div>
-          <div class="cell"><b>Target cutoff</b><span>{{ fmtHz(design.fCutoffTargetHz) }}</span></div>
+          <div class="cell"><b>Design frequency</b>
+            <span v-if="design.fDesignCmHz === design.fDesignDmHz" data-test="f-design">{{ fmtHz(design.fDesignCmHz) }}</span>
+            <span v-else data-test="f-design">CM {{ fmtHz(design.fDesignCmHz) }} · DM {{ fmtHz(design.fDesignDmHz) }}</span></div>
+          <div class="cell"><b>Target cutoff</b>
+            <span v-if="design.fCutoffCmHz === design.fCutoffDmHz">{{ fmtHz(design.fCutoffCmHz) }}</span>
+            <span v-else>CM {{ fmtHz(design.fCutoffCmHz) }} · DM {{ fmtHz(design.fCutoffDmHz) }}</span></div>
           <div class="cell"><b>Stages</b><span>{{ design.stages }}</span></div>
           <div v-if="worstCaseAt" class="cell"><b>CM in-circuit @ f<sub>design</sub> (25 Ω LISN)</b>
             <span class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">

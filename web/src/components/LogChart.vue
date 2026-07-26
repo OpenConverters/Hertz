@@ -27,7 +27,9 @@ const domain = computed(() => {
   }
   props.series.forEach((s) => s.points.forEach(scanPoint))
   props.refRuns.forEach((r) => r.runs.forEach((run) => run.forEach(scanPoint)))
-  if (!isFinite(fMin)) return null
+  // a log axis cannot draw f <= 0, and a non-finite domain would loop the
+  // tick generator forever (-Infinity + 1 === -Infinity) — refuse to render
+  if (!Number.isFinite(fMin) || fMin <= 0 || !Number.isFinite(vMin) || !Number.isFinite(vMax)) return null
   if (props.clampRangeDb > 0) vMin = Math.max(vMin, vMax - props.clampRangeDb)
   const pad = Math.max(4, (vMax - vMin) * 0.08)
   return { fMin, fMax, vMin: Math.floor((vMin - pad) / 10) * 10, vMax: Math.ceil((vMax + pad) / 10) * 10 }

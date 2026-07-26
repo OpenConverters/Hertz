@@ -10,6 +10,8 @@ import { fmtHz, fmtDb } from '../format.js'
 const traces = ref([])          // {name, frequenciesHz, levelsDbuv, analysis, uncovered}
 const rawFiles = ref([])        // {name, text} — kept so unit changes re-read files
 const parseProblems = ref([])   // per-file failures — never erased by a later analyze()
+const columnPickers = ref([])   // multi-trace exports awaiting a level-column choice
+const columnChoice = ref({})    // file name -> 1-based numeric column to judge
 const comb = ref(null)
 const U_CISPR_DB = 3.6          // CISPR 16-4-2 measurement uncertainty, conducted mains
 const standardId = ref('cispr32_class_b')
@@ -44,6 +46,14 @@ async function parseAll() {
     const engine = await api()
     const parsed = []
     const problems = []
+    const pickers = rawFiles.value
+      .filter(({ name }) => columnChoice.value[name])
+      .map(({ name, text }) => {
+        const info = engine.spectrumCsvColumns(text)
+        return { name, chosen: columnChoice.value[name], options: Array.from(
+          { length: info.count - 1 },
+          (_, k) => ({ index: k + 2, label: info.names[k + 1] || `column ${k + 2}` })) }
+      })
     for (const { name, text } of rawFiles.value) {
       // MINIMAL override: each stated header unit always wins; an override may
       // only fill an axis the header left silent. Trying (none), (freq only),
@@ -56,10 +66,11 @@ async function parseAll() {
         const key = pair.join('|')
         if (!seen.has(key)) { seen.add(key); attempts.push(pair) }
       }
+      const levelColumn = columnChoice.value[name] ?? 0
       let trace = null, lastError = null, usedFu = '', usedLu = ''
       for (const [fu, lu] of attempts) {
         try {
-          trace = engine.parseSpectrumCsv(text, fu, lu)
+          trace = engine.parseSpectrumCsv(text, fu, lu, levelColumn)
           usedFu = fu
           usedLu = lu
           break
@@ -70,13 +81,26 @@ async function parseAll() {
       if (trace) {
         // per axis: a set selector that the successful parse did not need
         const overrideIgnored = Boolean((freqUnit.value && !usedFu) || (levelUnit.value && !usedLu))
-        parsed.push({ name, ...trace, analysis: null, uncovered: false, overrideIgnored })
+        const picker = pickers.find((p) => p.name === name)
+        const columnLabel = picker?.options.find((o) => o.index === levelColumn)?.label ?? ''
+        parsed.push({ name, ...trace, analysis: null, uncovered: false, overrideIgnored, columnLabel })
+      } else if (lastError.message.startsWith('multiple level columns')) {
+        // a multi-trace export: never guess which trace to judge — ask
+        try {
+          const info = engine.spectrumCsvColumns(text)
+          pickers.push({ name, chosen: '', options: Array.from(
+            { length: info.count - 1 },
+            (_, k) => ({ index: k + 2, label: info.names[k + 1] || `column ${k + 2}` })) })
+        } catch (columnsError) {
+          problems.push(`${name}: ${columnsError.message}`)
+        }
       } else {
         problems.push(`${name}: ${lastError.message}`)
       }
     }
     traces.value = parsed
     parseProblems.value = problems
+    columnPickers.value = pickers
     if (parsed.length) await analyze()
     else if (problems.length) error.value = problems.join(' · ')
   } catch (e) {
@@ -232,7 +256,8 @@ function onDrop(event) {
                @change="ingest([...$event.target.files]); $event.target.value = ''" />
         <div class="row" style="margin-top: 0.7rem">
           <button class="ghost" data-test="load-demo" @click="ingest([demoScanCsv()])">Load demo scan</button>
-          <button v-if="traces.length" class="ghost" @click="traces = []; rawFiles = []; limitRuns = null; comb = null">Clear</button>
+          <button v-if="traces.length || columnPickers.length" class="ghost"
+                  @click="traces = []; rawFiles = []; limitRuns = null; comb = null; columnPickers = []; columnChoice = {}; parseProblems = []">Clear</button>
         </div>
         <div class="row" style="margin-top: 0.7rem">
           <label class="field"><span>Frequency unit</span>
@@ -260,6 +285,19 @@ function onDrop(event) {
           protected broadcast bands — points between the bands are shown grey and never judged.</p>
       </div>
 
+      <div v-for="p in columnPickers" :key="p.name" class="panel" data-test="column-picker">
+        <p class="section-label">{{ p.name }} — multi-trace export</p>
+        <label class="field"><span>The file carries several traces — which column is the one to judge?</span>
+          <select :value="p.chosen" data-test="column-select"
+                  @change="columnChoice[p.name] = Number($event.target.value); parseAll()">
+            <option value="" disabled>choose the trace…</option>
+            <option v-for="c in p.options" :key="c.index" :value="c.index">{{ c.label }}</option>
+          </select></label>
+        <p class="note">Detector column names come from the file header. Judging a QP limit against
+          an Average trace (or vice versa) reads 6–20 dB wrong — that is why nothing is guessed.</p>
+      </div>
+      <p v-if="traces.some((t) => t.columnLabel)" class="note" data-test="column-note">
+        Judged column: {{ traces.filter((t) => t.columnLabel).map((t) => `${t.name} → ${t.columnLabel}`).join(' · ') }}</p>
       <div v-if="parseProblems.length" class="err" data-test="file-problems">
         Files not read: {{ parseProblems.join(' · ') }}</div>
       <p v-if="traces.some((t) => t.overrideIgnored)" class="note" data-test="override-note">

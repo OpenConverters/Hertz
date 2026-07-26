@@ -21,8 +21,9 @@ export async function api() {
   const mod = await loadEngine()
   return {
     version: () => mod.version(),
-    parseSpectrumCsv: (text, freqUnit = '', levelUnit = '') =>
-      unwrap(mod.parseSpectrumCsv(text, freqUnit, levelUnit)),
+    parseSpectrumCsv: (text, freqUnit = '', levelUnit = '', levelColumn = 0) =>
+      unwrap(mod.parseSpectrumCsv(text, freqUnit, levelUnit, levelColumn)),
+    spectrumCsvColumns: (text) => unwrap(mod.spectrumCsvColumns(text)),
     limitAnalysis: (standardId, detector, freqs, levels, marginBufferDb = 10) =>
       unwrap(mod.limitAnalysis(standardId, detector, JSON.stringify(freqs), JSON.stringify(levels), marginBufferDb)),
     limitPolyline: (standardId, detector, fMin, fMax, pointsPerDecade = 40) =>

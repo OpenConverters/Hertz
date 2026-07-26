@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cmath>
 #include <complex>
@@ -93,7 +94,8 @@ TEST_CASE("ANP015 single-stage worked example", "[filter]") {
     auto design = Hertz::design_line_filter(
         300e3, 40.0, 40.0, 4.7e-9, Hertz::leakage_inductance_from_impedance(92.0, 1e6), 1,
         {1e-3, 1.5e-3, 2.2e-3, 3.3e-3, 4.7e-3}, {1e-6, 1.5e-6, 2.2e-6, 3.3e-6});
-    CHECK(design.fCutoffTargetHz == Approx(30e3));
+    CHECK(design.fCutoffCmHz == Approx(30e3));
+    CHECK(design.fCutoffDmHz == Approx(30e3));
     CHECK(design.cYgF == Approx(9.4e-9));
     CHECK(design.lCmRequiredH == Approx(2.994e-3).epsilon(1e-3));
     CHECK(design.lCmSelectedH == Approx(3.3e-3));
@@ -108,13 +110,46 @@ TEST_CASE("ANP015 two-stage worked example", "[filter]") {
     auto design = Hertz::design_line_filter(
         300e3, 40.0, 40.0, 2.2e-9, Hertz::leakage_inductance_from_impedance(41.0, 1e6), 2,
         {1e-3, 2.2e-3, 3.3e-3}, {560e-9, 1e-6});
-    CHECK(design.fCutoffTargetHz == Approx(94868.3).epsilon(1e-4));
+    CHECK(design.fCutoffCmHz == Approx(94868.3).epsilon(1e-4));
     CHECK(design.lCmRequiredH == Approx(0.6396e-3).epsilon(1e-3));
     CHECK(design.lCmSelectedH == Approx(1e-3));
     CHECK(design.attenuationCmDb == Approx(47.8).margin(0.1));  // note: "48 dB"
     CHECK(design.cXRequiredF == Approx(431e-9).epsilon(1e-2));
     CHECK(design.cXSelectedF == Approx(560e-9));
     CHECK(design.attenuationDmDb == Approx(44.5).margin(0.1));  // note: "45 dB"
+}
+
+TEST_CASE("Per-mode requirements are independent (F-2, round 6)", "[filter]") {
+    // CM and DM are separate networks — the quiet mode must NOT be sized from
+    // the loud mode's requirement (was max(A_cm, A_dm): 224x over-design).
+    auto mixed = Hertz::design_line_filter(
+        300e3, 40.0, 10.0, 4.7e-9, 14.64e-6, 1,
+        {0.47e-3, 1e-3, 2.2e-3, 3.3e-3}, {47e-9, 100e-9, 220e-9, 1e-6, 2.2e-6});
+    CHECK(mixed.fCutoffCmHz == Approx(30e3));
+    CHECK(mixed.fCutoffDmHz == Approx(300e3 / std::pow(10.0, 10.0 / 40.0)));
+    CHECK(mixed.lCmSelectedH == Approx(3.3e-3));
+    CHECK(mixed.cXSelectedF == Approx(100e-9));  // NOT the 2.2 uF a 40 dB DM would force
+    auto mirrored = Hertz::design_line_filter(
+        300e3, 10.0, 40.0, 4.7e-9, 14.64e-6, 1,
+        {0.47e-3, 1e-3, 2.2e-3, 3.3e-3}, {47e-9, 100e-9, 220e-9, 1e-6, 2.2e-6});
+    CHECK(mirrored.lCmSelectedH == Approx(0.47e-3));
+    CHECK(mirrored.cXSelectedF == Approx(2.2e-6));
+}
+
+TEST_CASE("Per-mode design frequencies (measurement-driven callers)", "[filter]") {
+    // Berger's round-6 case A: 26 dB @ 2 MHz CM -> f_co 447.7 kHz, L 13.44 uH
+    auto design = Hertz::design_line_filter(
+        300e3, 26.0, 33.0, 4.7e-9, 14.64e-6, 1,
+        {10e-6, 47e-6, 470e-6, 3.3e-3}, {47e-9, 1e-6, 2.2e-6}, 2e6, 200e3);
+    CHECK(design.fCutoffCmHz == Approx(447744.2).epsilon(1e-4));
+    CHECK(design.lCmRequiredH == Approx(13.44e-6).epsilon(1e-2));
+    CHECK(design.lCmSelectedH == Approx(47e-6));
+    CHECK(design.fCutoffDmHz == Approx(200e3 / std::pow(10.0, 33.0 / 40.0)));
+    // a 0 dB mode is legal: resonance AT the design frequency suffices
+    auto silent = Hertz::design_line_filter(
+        300e3, 26.0, 0.0, 4.7e-9, 14.64e-6, 1, {47e-6}, {47e-9, 1e-6}, 2e6, 2e6);
+    CHECK(silent.fCutoffDmHz == Approx(2e6));
+    CHECK(silent.cXSelectedF == Approx(47e-9));
 }
 
 TEST_CASE("ANP015 already-passing input throws", "[filter]") {
@@ -214,6 +249,60 @@ constexpr double FS_HZ = 1e6;
 constexpr double AMPLITUDE = 1e-3;
 const double CW_DBUV = 20.0 * std::log10(AMPLITUDE / std::numbers::sqrt2 / 1e-6);  // 56.99
 }  // namespace
+
+TEST_CASE("Multi-trace export requires a level-column choice (F-1, round 6)", "[traces]") {
+    // Peak/QP/Average side by side: judging the silently-taken second column
+    // turned a failing QP scan into a passing Average read.
+    const std::string multi =
+        "Frequency (MHz),Average (dBuV),Quasi-peak (dBuV)\n0.15,50,72\n0.30,47,69\n";
+    CHECK_THROWS_WITH(Hertz::parse_spectrum_csv(multi),
+                      Catch::Matchers::ContainsSubstring("multiple level columns"));
+    auto columns = Hertz::spectrum_csv_columns(multi);
+    CHECK(columns.count == 3);
+    REQUIRE(columns.names.size() == 3);
+    CHECK(columns.names[2] == "Quasi-peak (dBuV)");
+    auto qp = Hertz::parse_spectrum_csv(multi, std::nullopt, std::nullopt, 50.0, 3);
+    CHECK(qp.levelsDbuv[0] == Approx(72.0));
+    auto avg = Hertz::parse_spectrum_csv(multi, std::nullopt, std::nullopt, 50.0, 2);
+    CHECK(avg.levelsDbuv[0] == Approx(50.0));
+    CHECK_THROWS_AS(Hertz::parse_spectrum_csv(multi, std::nullopt, std::nullopt, 50.0, 4),
+                    Hertz::TraceFormatError);
+}
+
+TEST_CASE("Decimal-comma semicolon export (F-3, round 6)", "[traces]") {
+    // German-locale ';' export with ',' decimals was shredded into a 0 Hz row
+    // by column-count delimiter election.
+    const std::string german = "Frequenz [MHz];Pegel [dBuV]\n0,15;72,5\n0,50;62,0\n1,00;60,0\n";
+    auto trace = Hertz::parse_spectrum_csv(german);
+    REQUIRE(trace.frequenciesHz.size() == 3);
+    CHECK(trace.frequenciesHz[0] == Approx(150e3));
+    CHECK(trace.levelsDbuv[0] == Approx(72.5));
+}
+
+TEST_CASE("Non-positive or non-finite trace values throw (F-3, round 6)", "[traces]") {
+    CHECK_THROWS_WITH(
+        Hertz::parse_spectrum_csv("Frequency (Hz),Level (dBuV)\n0,10\n150000,72\n500000,62\n"),
+        Catch::Matchers::ContainsSubstring("non-positive frequency"));
+    CHECK_THROWS_WITH(
+        Hertz::parse_spectrum_csv("Frequency (Hz),Level (dBuV)\n150000,NaN\n500000,62\n"),
+        Catch::Matchers::ContainsSubstring("non-finite"));
+}
+
+TEST_CASE("Preamble metadata never contradicts a stated column unit (F-5, round 6)", "[traces]") {
+    // "RBW 9 kHz" above a column stating Hz: the column header is the closer
+    // context and decides — no false ambiguity, and no override can beat it.
+    const std::string preamble = "RBW 9 kHz\nFrequency (Hz),Level (dBuV)\n150000,72\n500000,62\n";
+    auto plain = Hertz::parse_spectrum_csv(preamble);
+    CHECK(plain.frequenciesHz[0] == Approx(150e3));
+    auto overridden = Hertz::parse_spectrum_csv(preamble, "MHz");  // must lose to the stated Hz
+    CHECK(overridden.frequenciesHz[0] == Approx(150e3));
+    // unlabelled columns still consult the preamble; two units there stay
+    // ambiguous and need the override
+    const std::string sweep = "Start 150 kHz Stop 30 MHz\ncol1,col2\n0.15,62.1\n0.5,55.0\n";
+    CHECK_THROWS_AS(Hertz::parse_spectrum_csv(sweep, std::nullopt, "dBuV"), Hertz::TraceFormatError);
+    auto resolved = Hertz::parse_spectrum_csv(sweep, "MHz", "dBuV");
+    CHECK(resolved.frequenciesHz[0] == Approx(150e3));
+}
 
 TEST_CASE("Band lookup", "[detector]") {
     CHECK(&Hertz::band_for_frequency(TONE_HZ) == &Hertz::BAND_B);

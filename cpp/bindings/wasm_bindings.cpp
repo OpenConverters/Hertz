@@ -82,14 +82,25 @@ std::string engine_version() {
     return "0.1.0";
 }
 
+// levelColumn: 1-based numeric column to judge (0 = unset — REQUIRED for
+// multi-trace exports carrying more than two numeric columns).
 std::string parse_spectrum_csv_js(const std::string& content, const std::string& freqUnit,
-                                  const std::string& levelUnit)  {
+                                  const std::string& levelUnit, int levelColumn)  {
     return guarded([&]() -> std::string {
     auto trace = Hertz::parse_spectrum_csv(
         content, freqUnit.empty() ? std::nullopt : std::make_optional(freqUnit),
-        levelUnit.empty() ? std::nullopt : std::make_optional(levelUnit));
+        levelUnit.empty() ? std::nullopt : std::make_optional(levelUnit), 50.0,
+        levelColumn == 0 ? std::nullopt : std::make_optional(levelColumn));
     return json{{"frequenciesHz", trace.frequenciesHz}, {"levelsDbuv", trace.levelsDbuv}}.dump();
 });
+}
+
+// Numeric-column inventory so a GUI can offer the level-column choice.
+std::string spectrum_csv_columns_js(const std::string& content) {
+    return guarded([&]() -> std::string {
+        auto columns = Hertz::spectrum_csv_columns(content);
+        return json{{"count", columns.count}, {"names", columns.names}}.dump();
+    });
 }
 
 // Trace vs. limit: per-point limit/margin arrays, worst offender, pass verdict,
@@ -112,6 +123,10 @@ std::string limit_analysis_js(const std::string& standardId, const std::string& 
     double worstMargin = std::numeric_limits<double>::infinity();
     size_t worstIndex = 0;
     for (size_t i = 0; i < freqs.size(); ++i) {
+        if (!std::isfinite(freqs[i]) || !std::isfinite(levels[i])) {
+            throw std::invalid_argument("non-finite trace value at point " + std::to_string(i + 1) +
+                                        " — clean the export before judging it");
+        }
         if (line.covers(freqs[i])) {
             double limit = line.level(freqs[i]);
             double margin = limit - levels[i];
@@ -193,15 +208,23 @@ std::string design_filter_js(const std::string& paramsJson)  {
         lDm = Hertz::leakage_inductance_from_impedance(params.at("dmImpedanceOhm").get<double>(),
                                                        params.at("dmImpedanceFrequencyHz").get<double>());
     }
+    auto optionalHz = [&params](const char* key) -> std::optional<double> {
+        return params.contains(key) && !params.at(key).is_null()
+                   ? std::make_optional(params.at(key).get<double>())
+                   : std::nullopt;
+    };
     auto design = Hertz::design_line_filter(
         params.at("fSwHz").get<double>(), params.at("aReqCmDb").get<double>(),
         params.at("aReqDmDb").get<double>(), params.at("cYPerLineF").get<double>(), lDm,
         params.at("stages").get<int>(), params.at("lCmCandidatesH").get<std::vector<double>>(),
-        params.at("cXCandidatesF").get<std::vector<double>>());
+        params.at("cXCandidatesF").get<std::vector<double>>(),
+        optionalHz("fDesignCmHz"), optionalHz("fDesignDmHz"));
 
     json result{{"stages", design.stages},
-                {"fDesignHz", design.fDesignHz},
-                {"fCutoffTargetHz", design.fCutoffTargetHz},
+                {"fDesignCmHz", design.fDesignCmHz},
+                {"fDesignDmHz", design.fDesignDmHz},
+                {"fCutoffCmHz", design.fCutoffCmHz},
+                {"fCutoffDmHz", design.fCutoffDmHz},
                 {"cYPerLineF", design.cYPerLineF},
                 {"cYgF", design.cYgF},
                 {"lCmRequiredH", design.lCmRequiredH},
@@ -418,6 +441,7 @@ std::string input_filter_interaction_js(double inductanceH, double capacitanceF,
 EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("version", &engine_version);
     emscripten::function("parseSpectrumCsv", &parse_spectrum_csv_js);
+    emscripten::function("spectrumCsvColumns", &spectrum_csv_columns_js);
     emscripten::function("limitAnalysis", &limit_analysis_js);
     emscripten::function("limitPolyline", &limit_polyline_js);
     emscripten::function("designFilter", &design_filter_js);
