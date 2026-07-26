@@ -751,12 +751,26 @@ test('filter: PRINT REPORT produces the pre-compliance sheet (ABT #293)', async 
   await expect(page.getByTestId('lcm')).toBeVisible()
   await page.evaluate(() => { window.__printed = 0; window.print = () => { window.__printed += 1 } })
   await page.getByTestId('print-report').click()
+  // professional report: metadata dialog first — project/EUT/author on the cover
+  await expect(page.getByTestId('report-dialog')).toBeVisible()
+  await page.getByTestId('report-project').fill('ACME 65 W adapter rev B')
+  await page.getByTestId('report-author').fill('A. Martinez')
+  await page.getByTestId('report-print-confirm').click()
   await expect.poll(() => page.evaluate(() => window.__printed)).toBe(1)
   const sheet = await page.getByTestId('report-sheet').textContent()
-  expect(sheet).toContain('Hertz pre-compliance report')
-  expect(sheet).toContain('Measurement')       // scan context section made it in
+  expect(sheet).toContain('EMC pre-compliance report')
+  expect(sheet).toContain('ACME 65 W adapter rev B')
+  expect(sheet).toContain('HZ-')                        // report ID
+  expect(sheet).toContain('Summary of verdicts')
+  expect(sheet).toContain('Measurement')                // scan context section made it in
   expect(sheet).toContain('Filter design')
+  expect(sheet).toContain('Bill of materials')
+  expect(sheet).toContain('Method & assumptions')
   expect(sheet).toContain('NOT a certification')
+  // the demo scan FAILS, so the measured offender table carries rows with negative margins
+  expect(sheet).toMatch(/Margin \(dB\)/)
+  // and both charts are embedded as SVGs in the sheet
+  expect(await page.getByTestId('report-sheet').locator('svg').count()).toBeGreaterThanOrEqual(3)
 })
 
 test('filter: a parallel capacitor bank binds as n x MPN through BOM and CIAS (ABT #294)', async ({ page }) => {

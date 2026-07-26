@@ -309,21 +309,59 @@ pre.code {
 
 /* ── printable report sheet (#293): hidden on screen, the ONLY thing on paper ── */
 .report-sheet { display: none; }
+
+/* report metadata dialog (screen only) */
+.report-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 40;
+  display: flex; align-items: center; justify-content: center; }
+.report-dialog { width: min(30rem, 92vw); padding: 1rem 1.1rem; border: 1px solid var(--line); }
+.report-dialog .field { margin-bottom: 0.55rem; }
+.report-dialog input { width: 100%; }
+
 @media print {
+  @page { size: A4; margin: 15mm 13mm 18mm;
+    @bottom-right { content: "Hertz pre-compliance report — page " counter(page); font-size: 8pt; color: #666; } }
+  html, body { background: #fff !important; }
   body * { visibility: hidden; }
+  .report-backdrop { display: none; }
   .report-sheet, .report-sheet * { visibility: visible; }
   .report-sheet {
-    display: block; position: absolute; inset: 0; padding: 1.2cm;
-    background: #fff; color: #111; font-size: 11pt;
+    /* no bottom anchor: the sheet must GROW with its content so the white
+       background reaches every printed page, not just the first viewport */
+    display: block; position: absolute; left: 0; top: 0; width: 100%; padding: 0;
+    background: #fff; color: #111; font-size: 10pt; line-height: 1.45;
+    counter-reset: repsec;
+    /* print-safe values for the CSS vars the embedded charts/schematic use */
+    --ink: #111; --ink-dim: #555; --grat-strong: #e4e4e4; --line: #bbb;
+    --panel-hi: #fff; --bg-deep: #fff; --mono: 'IBM Plex Mono', 'Consolas', monospace;
+    --s-1: #0a7a33; --s-2: #1747c8; --amber: #9a6a00; --fault: #b41c1c;
+    --phos: #0a7a33; --phos-hi: #0a7a33; --phos-deep: #0a7a33;
   }
-  .report-sheet h1 { font-size: 16pt; margin: 0 0 0.2cm; }
-  .report-sheet h2 { font-size: 12pt; margin: 0.5cm 0 0.15cm; border-bottom: 1px solid #999; }
-  .report-sheet table { border-collapse: collapse; width: 100%; }
-  .report-sheet td, .report-sheet th { border: 1px solid #bbb; padding: 2pt 6pt; text-align: left; }
-  .report-sheet pre { font-size: 7.5pt; white-space: pre-wrap; }
-  .report-sheet .rep-meta { color: #555; font-size: 9pt; }
-  .report-sheet .screen { background: #fff; border: 1px solid #ccc; }
-  .report-sheet svg text { fill: #333 !important; }
-  .report-sheet svg [stroke] { stroke: #333; }
+  /* the app's dark-theme panel/table/screen backgrounds must never reach paper */
+  .report-sheet * { background: transparent !important; box-shadow: none !important;
+    text-shadow: none !important; }
+  .report-sheet th { background: #f2f2f2 !important; }
+  .report-sheet h1 { font-size: 17pt; margin: 0 0 0.25cm; letter-spacing: 0.02em; }
+  .report-sheet h2 { font-size: 12pt; margin: 0.45cm 0 0.15cm; border-bottom: 1.5px solid #333;
+    counter-increment: repsec; }
+  .report-sheet h2::before { content: counter(repsec) ".  "; }
+  .report-sheet section { break-inside: avoid; }
+  .report-sheet section:has(pre) { break-inside: auto; }
+  .report-sheet table { border-collapse: collapse; width: 100%; font-size: 9pt; break-inside: avoid; }
+  .report-sheet td, .report-sheet th { border: 1px solid #bbb; padding: 2.5pt 6pt; text-align: left;
+    vertical-align: top; }
+  .report-sheet th { background: #f2f2f2; }
+  .report-sheet table.rep-id { margin-bottom: 0.2cm; }
+  .report-sheet table.rep-id th { width: 7em; }
+  .report-sheet .rep-disclaimer { font-size: 9pt; border: 1.5px solid #333; padding: 4pt 8pt;
+    margin: 0.15cm 0 0; }
+  .report-sheet .rep-pass { color: #0a7a33; font-weight: 700; }
+  .report-sheet .rep-fail { color: #b41c1c; font-weight: 700; }
+  .report-sheet pre { font-size: 7pt; white-space: pre-wrap; border: 1px solid #ddd; padding: 4pt; }
+  .report-sheet .rep-meta { color: #555; font-size: 8.5pt; margin: 0.1cm 0; }
+  .report-sheet .rep-method { font-size: 9pt; padding-left: 1.1em; margin: 0.1cm 0; }
+  .report-sheet .rep-method li { margin-bottom: 0.08cm; }
+  .report-sheet .screen { background: #fff; border: 1px solid #ccc; break-inside: avoid; }
+  /* phosphor glow reads as smear on paper — CSS filter overrides the SVG attribute */
+  .report-sheet svg path { filter: none; }
 }
 .report-btn { margin-left: auto; }

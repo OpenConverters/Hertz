@@ -832,7 +832,25 @@ async function computePredicted() {
     const fAll = traces.flatMap((t) => t.frequenciesHz)
     const limitRuns = engine.limitPolyline(scanCtx.value.standardId, scanCtx.value.detector,
                                            Math.min(...fAll), Math.max(...fAll))
-    predicted.value = { traces, analysis, limitRuns }
+    // the report also needs the MEASURED verdict: worst margin + offender rows
+    const measuredOffenders = []
+    let measuredWorst = null
+    for (const t of traces) {
+      try {
+        const a = engine.limitAnalysis(scanCtx.value.standardId, scanCtx.value.detector,
+                                       t.frequenciesHz, t.levelsDbuv)
+        if (!measuredWorst || a.worst.marginDb < measuredWorst.marginDb) measuredWorst = a.worst
+        a.marginsDb.forEach((margin, i) => {
+          if (margin !== null && margin < 0) {
+            measuredOffenders.push({ trace: t.name, mode: t.mode, f: t.frequenciesHz[i],
+              level: t.levelsDbuv[i], limit: a.limitsDbuv[i], margin })
+          }
+        })
+      } catch { /* trace entirely outside the limit — skip */ }
+    }
+    measuredOffenders.sort((a, b) => a.margin - b.margin)
+    predicted.value = { traces, analysis, limitRuns,
+      measured: { offenders: measuredOffenders.slice(0, 8), worst: measuredWorst } }
   } catch (e) {
     error.value = 'predicted result unavailable: ' + e.message
   }
@@ -871,11 +889,21 @@ function copyNetlist() {
 // design, BOM (real MPNs) and netlist; the browser's print dialog does the
 // PDF. Nothing leaves the page.
 const showReport = ref(false)
+const showReportDialog = ref(false)
+const reportProject = ref('')
+const reportEut = ref('')
+const reportAuthor = ref('')
 function printReport() {
+  showReportDialog.value = true
+}
+function confirmPrintReport() {
+  showReportDialog.value = false
   showReport.value = true
   setTimeout(() => { window.print(); showReport.value = false }, 60)
 }
-const reportDate = () => new Date().toISOString().slice(0, 10)
+const reportDate = () => new Date().toLocaleDateString('en-CA')   // local YYYY-MM-DD
+const reportId = () => 'HZ-' + reportDate().replaceAll('-', '') + '-' +
+  ((reportProject.value || 'design').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'design')
 
 function downloadNetlist() {
   const blob = new Blob([netlist.value], { type: 'text/plain' })
@@ -1327,63 +1355,195 @@ function downloadNetlist() {
       </div>
     </main>
 
-    <!-- ── print-only report sheet (#293) ─────────────────────────────────── -->
+    <!-- ── report metadata dialog ─────────────────────────────────────────── -->
+    <div v-if="showReportDialog" class="report-backdrop" data-test="report-dialog" @click.self="showReportDialog = false">
+      <div class="report-dialog panel-hi">
+        <p class="section-label">EMC PRE-COMPLIANCE REPORT</p>
+        <label class="field"><span>Project</span>
+          <input v-model="reportProject" data-test="report-project" placeholder="e.g. 65 W adapter, rev B" /></label>
+        <label class="field"><span>Equipment under test</span>
+          <input v-model="reportEut" data-test="report-eut" placeholder="e.g. QR flyback PSU, 300 kHz" /></label>
+        <label class="field"><span>Author / engineer</span>
+          <input v-model="reportAuthor" data-test="report-author" /></label>
+        <p class="note">Generated and printed locally (browser print → PDF). Nothing leaves this machine.</p>
+        <div style="display: flex; gap: 0.6rem; justify-content: flex-end; margin-top: 0.5rem">
+          <button class="ghost" data-test="report-cancel" @click="showReportDialog = false">CANCEL</button>
+          <button class="ghost" data-test="report-print-confirm" @click="confirmPrintReport">PRINT REPORT</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── print-only report sheet (#293, professional layout) ────────────── -->
     <div v-if="design" class="report-sheet" :class="{ 'report-visible': showReport }" data-test="report-sheet">
-      <h1>Hertz pre-compliance report</h1>
-      <p class="rep-meta">{{ reportDate() }} · hertz.openconverters.com · engine v0.1.0 —
-        pre-compliance estimates with engineering margins, NOT a certification; accredited
-        chamber testing remains mandatory.</p>
-
-      <template v-if="scanCtx">
-        <h2>Measurement</h2>
-        <p>Judged against <b>{{ scanCtx.standardId }}</b> ({{ scanCtx.detector.replace('_', '-') }} detector);
-          traces: {{ scanCtx.traces.map((t) => `${t.name} [${t.mode}]`).join(' · ') }}.</p>
-        <p v-if="bindingNote">{{ bindingNote }}</p>
-      </template>
-
-      <h2>Filter design</h2>
-      <p>
-        Topology: {{ topology === 'dc' ? 'DC supply (+/RTN/chassis, CISPR 25 bench)'
-          : topology === '3ph' ? '3-phase 3-wire (delta X), grid stated line-to-line'
-          : topology === '3phn' ? '3-phase + neutral (star X), grid stated line-to-line'
-          : 'single-phase L/N/PE' }}.
-      </p>
-      <p>
-        f<sub>design</sub> CM {{ fmtHz(design.fDesignCmHz) }} / DM {{ fmtHz(design.fDesignDmHz) }} ·
-        required CM {{ fmtDb(Number(aReqCm), 0) }} dB / DM {{ fmtDb(Number(aReqDm), 0) }} dB · {{ design.stages }} stage(s).
-        In-circuit at f<sub>design</sub>: CM {{ worstCaseAt ? fmtDb(worstCaseAt.cm.standard) : '—' }} dB,
-        DM {{ worstCaseAt ? fmtDb(worstCaseAt.dm.standard) : '—' }} dB.
-        <template v-if="interaction">Middlebrook margin {{ fmtDb(interaction.marginDb) }} dB.</template>
-        <template v-if="design.leakageCurrentA !== undefined">Touch current
-          {{ fmtSi(design.leakageCurrentA, 'A') }} vs {{ touchLimitMa }} mA tier.</template>
-        <template v-if="asBuiltNote"> {{ asBuiltNote }}.</template>
-      </p>
-      <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
-                       selected="" :topology="topology" :interactive="false" @select="() => {}" />
-      <template v-if="predicted && predicted.analysis">
-        <h2>Predicted post-filter result</h2>
-        <p>Worst predicted margin {{ fmtDb(predicted.analysis.worst.marginDb) }} dB at
-          {{ fmtHz(predicted.analysis.worst.frequencyHz) }} (transfer-function estimate; mode
-          conversion and layout parasitics not modeled).</p>
-      </template>
-
-      <h2>Bill of materials</h2>
-      <table>
-        <thead><tr><th>Ref</th><th>Value</th><th>Part</th><th>Manufacturer</th></tr></thead>
+      <h1>EMC pre-compliance report</h1>
+      <table class="rep-id">
         <tbody>
-          <tr v-for="row in bomRows()" :key="row.ref">
-            <td>{{ row.ref }}</td><td>{{ row.value }}</td>
-            <td>{{ row.binding ? row.binding.mpn : 'unbound' }}</td>
-            <td>{{ row.binding ? row.binding.manufacturer : '—' }}</td>
-          </tr>
+          <tr><th>Project</th><td>{{ reportProject || '—' }}</td><th>Date</th><td>{{ reportDate() }}</td></tr>
+          <tr><th>EUT</th><td>{{ reportEut || '—' }}</td><th>Report ID</th><td>{{ reportId() }}</td></tr>
+          <tr><th>Author</th><td>{{ reportAuthor || '—' }}</td><th>Tool</th><td>Hertz engine v0.1.0 · hertz.openconverters.com</td></tr>
         </tbody>
       </table>
+      <p class="rep-disclaimer">Pre-compliance estimates with engineering margins — <b>NOT a certification</b>.
+        Results derive from transfer-function models and catalogued part data; mode conversion and layout
+        parasitics are not modeled. Accredited chamber testing remains mandatory for a compliance claim.</p>
 
-      <h2>SPICE netlist (filter + LISN)</h2>
-      <pre>{{ netlist }}</pre>
-      <p class="rep-meta">Part data: TAS catalog (manufacturer datasheets/parametrics; measured
-        impedance curves where available — Murata measured complex Z, WE |Z| with Bode-reconstructed
-        phase). Generated locally in the browser; no data left this machine.</p>
+      <section>
+        <h2>Summary of verdicts</h2>
+        <table>
+          <thead><tr><th>Check</th><th>Result</th><th>Value</th><th>Criterion</th></tr></thead>
+          <tbody>
+            <tr v-if="worstCaseAt">
+              <td>CM in-circuit attenuation at f<sub>design</sub></td>
+              <td :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'rep-pass' : 'rep-fail'">
+                {{ worstCaseAt.cm.standard >= Number(aReqCm) ? 'PASS' : 'FAIL' }}</td>
+              <td>{{ fmtDb(worstCaseAt.cm.standard) }} dB ({{ fmtDb(worstCaseAt.cm.worst) }} dB CISPR 17 worst case)</td>
+              <td>≥ {{ fmtDb(Number(aReqCm), 0) }} dB</td></tr>
+            <tr v-if="worstCaseAt">
+              <td>DM in-circuit attenuation at f<sub>design</sub></td>
+              <td :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'rep-pass' : 'rep-fail'">
+                {{ worstCaseAt.dm.standard >= Number(aReqDm) ? 'PASS' : 'FAIL' }}</td>
+              <td>{{ fmtDb(worstCaseAt.dm.standard) }} dB ({{ fmtDb(worstCaseAt.dm.worst) }} dB CISPR 17 worst case)</td>
+              <td>≥ {{ fmtDb(Number(aReqDm), 0) }} dB</td></tr>
+            <tr v-if="interaction">
+              <td>Input-filter stability (Middlebrook)</td>
+              <td :class="interaction.marginDb >= 6 ? 'rep-pass' : 'rep-fail'">
+                {{ interaction.marginDb >= 12 ? 'PASS' : interaction.marginDb >= 6 ? 'MARGINAL' : 'FAIL' }}</td>
+              <td>{{ fmtDb(interaction.marginDb) }} dB margin</td>
+              <td>≥ 12 dB comfortable, ≥ 6 dB minimum</td></tr>
+            <tr v-if="design.leakageCurrentA !== undefined">
+              <td>Touch current (IEC 60990 model, worst-case tolerances)</td>
+              <td :class="design.leakageCurrentA < touchLimitMa * 1e-3 ? 'rep-pass' : 'rep-fail'">
+                {{ design.leakageCurrentA < touchLimitMa * 1e-3 ? 'PASS' : 'FAIL' }}</td>
+              <td>{{ fmtSi(design.leakageCurrentA, 'A') }}</td>
+              <td>&lt; {{ touchLimitMa }} mA tier</td></tr>
+            <tr v-if="predicted && predicted.analysis">
+              <td>Predicted post-filter emissions vs {{ scanCtx.standardId }}</td>
+              <td :class="predicted.analysis.worst.marginDb >= 0 ? 'rep-pass' : 'rep-fail'">
+                {{ predicted.analysis.worst.marginDb >= 0 ? 'PASS' : 'FAIL' }}</td>
+              <td>{{ fmtDb(predicted.analysis.worst.marginDb) }} dB at {{ fmtHz(predicted.analysis.worst.frequencyHz) }}</td>
+              <td>margin ≥ 0 dB at every measured point</td></tr>
+          </tbody>
+        </table>
+        <p v-if="escalated" class="rep-meta">The asymptote-sized parts missed the in-circuit criterion —
+          the selector escalated to larger catalog candidates; all verdicts score what was actually selected.</p>
+        <p v-if="asBuiltNote" class="rep-meta">{{ asBuiltNote }}.</p>
+      </section>
+
+      <section v-if="scanCtx">
+        <h2>Measurement</h2>
+        <p>Judged against <b>{{ scanCtx.standardId }}</b> with the {{ scanCtx.detector.replace('_', '-') }} detector.
+          Traces: {{ scanCtx.traces.map((t) => `${t.name} [${t.mode.toUpperCase()}]`).join(' · ') }}.
+          <template v-if="predicted && predicted.measured && predicted.measured.worst">Worst measured margin
+          {{ fmtDb(predicted.measured.worst.marginDb) }} dB at {{ fmtHz(predicted.measured.worst.frequencyHz) }}.</template></p>
+        <p v-if="bindingNote" class="rep-meta">{{ bindingNote }}</p>
+        <table v-if="predicted && predicted.measured && predicted.measured.offenders.length">
+          <thead><tr><th>Trace</th><th>Frequency</th><th>Level (dBµV)</th><th>Limit (dBµV)</th><th>Margin (dB)</th></tr></thead>
+          <tbody>
+            <tr v-for="(o, i) in predicted.measured.offenders" :key="i">
+              <td>{{ o.trace }} [{{ o.mode.toUpperCase() }}]</td><td>{{ fmtHz(o.f) }}</td>
+              <td>{{ fmtDb(o.level) }}</td><td>{{ fmtDb(o.limit) }}</td>
+              <td class="rep-fail">{{ fmtDb(o.margin) }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Filter design</h2>
+        <p>
+          Topology: {{ topology === 'dc' ? 'DC supply (+/RTN/chassis, CISPR 25 5 µH bench)'
+            : topology === '3ph' ? '3-phase 3-wire (delta X capacitors), grid stated line-to-line'
+            : topology === '3phn' ? '3-phase + neutral (star X capacitors), grid stated line-to-line'
+            : 'single-phase L/N/PE (CISPR 16 50 µH bench)' }} · {{ design.stages }} stage(s).
+        </p>
+        <table>
+          <thead><tr><th>Mode</th><th>f<sub>design</sub></th><th>Required</th><th>f<sub>co</sub></th><th>Components</th><th>Asymptotic</th></tr></thead>
+          <tbody>
+            <tr><td>Common mode</td><td>{{ fmtHz(design.fDesignCmHz) }}</td>
+              <td>{{ fmtDb(Number(aReqCm), 0) }} dB</td><td>{{ fmtHz(design.fCutoffCmHz) }}</td>
+              <td>L<sub>CM</sub> {{ fmtSi(design.lCmSelectedH, 'H') }} · {{ nLines }}×C<sub>Y</sub> {{ fmtSi(design.cYPerLineF, 'F') }}/stage</td>
+              <td>{{ fmtDb(design.attenuationCmDb) }} dB</td></tr>
+            <tr><td>Differential mode</td><td>{{ fmtHz(design.fDesignDmHz) }}</td>
+              <td>{{ fmtDb(Number(aReqDm), 0) }} dB</td><td>{{ fmtHz(design.fCutoffDmHz) }}</td>
+              <td>L<sub>DM</sub> {{ fmtSi(design.lDmH, 'H') }} (leakage) · C<sub>X</sub> {{ fmtSi(design.cXSelectedF, 'F') }}{{
+                (design.cXDmFactor ?? 1) !== 1 ? ` (delta: pair sees ${fmtSi(design.cXSelectedF * design.cXDmFactor, 'F')})` : '' }}</td>
+              <td>{{ fmtDb(design.attenuationDmDb) }} dB</td></tr>
+          </tbody>
+        </table>
+        <p v-if="design.dischargeResistorOhm" class="rep-meta">X-capacitor discharge:
+          R<sub>bleed</sub> {{ fmtSi(design.dischargeResistorOhm, 'Ω') }} ({{ fmtSi(design.dischargeResistorPowerW, 'W') }}
+          continuous), sized for {{ topology === '3ph' ? 'line-to-line' : 'phase' }} voltage, V+10 % / C+20 % worst case.</p>
+        <p v-if="nLines >= 3" class="rep-meta">Touch current is the conservative per-phase worst case
+          (one Y set at v<sub>LL</sub>/√3); balanced-network vector cancellation is not credited.</p>
+      </section>
+
+      <section>
+        <h2>Schematic</h2>
+        <FilterSchematic :stages="design.stages" :labels="schematicLabels()" :bindings="bindings"
+                         selected="" :topology="topology" :interactive="false" @select="() => {}" />
+      </section>
+
+      <section>
+        <h2>In-circuit insertion loss</h2>
+        <p class="rep-meta">Solid: nominal terminations (CM {{ (50 / nLines).toFixed(nLines === 3 ? 1 : 0) }} Ω,
+          DM 100 Ω). Dashed: CISPR 17 approximate worst case (0.1 Ω ↔ 100 Ω both directions, smaller IL kept).
+          Dots: requirement points.</p>
+        <LogChart :series="ilSeries()" :violations="requirementMarkers()"
+                  violation-label="requirements (CM green, DM blue)" y-label="dB" :height="230" />
+      </section>
+
+      <section v-if="predicted && predicted.analysis">
+        <h2>Predicted post-filter result</h2>
+        <p class="rep-meta">Measured trace minus this filter's per-mode in-circuit insertion loss
+          (bound parts' measured curves inside their span; line traces bounded by the weaker mode —
+          conservative). Worst predicted margin {{ fmtDb(predicted.analysis.worst.marginDb) }} dB at
+          {{ fmtHz(predicted.analysis.worst.frequencyHz) }}.</p>
+        <LogChart :series="predictedSeries()" :ref-runs="predictedRefRuns()" y-label="dBµV" :height="230" />
+      </section>
+
+      <section>
+        <h2>Bill of materials</h2>
+        <table>
+          <thead><tr><th>Ref</th><th>Value</th><th>Part</th><th>Manufacturer</th><th>Rating</th><th>Flag</th></tr></thead>
+          <tbody>
+            <tr v-for="row in bomRows()" :key="row.ref">
+              <td>{{ row.ref }}</td><td>{{ row.value }}</td>
+              <td>{{ row.binding ? ((row.binding.quantity ?? 1) > 1 ? row.binding.quantity + ' × ' : '') + row.binding.mpn : 'unbound' }}</td>
+              <td>{{ row.binding ? row.binding.manufacturer : '—' }}</td>
+              <td>{{ row.binding ? [row.binding.safetyClass,
+                     row.binding.ratedVAcV ? row.binding.ratedVAcV + ' VAC' : null,
+                     row.binding.ratedVDcV ? row.binding.ratedVDcV + ' VDC' : null]
+                     .filter(Boolean).join(' / ') || '—' : '—' }}</td>
+              <td :class="row.warning ? 'rep-fail' : ''">{{ row.warning || '—' }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Method &amp; assumptions</h2>
+        <ul class="rep-method">
+          <li>Filter sizing per Würth Elektronik application note ANP015 (min-f<sub>co</sub> per mode,
+            40·n dB/dec asymptotes), generalized over the line count; components rounded up onto the
+            available candidate list, then verified in-circuit and escalated if short.</li>
+          <li>In-circuit insertion loss from two-port ABCD chains between real terminations, including
+            the CISPR 17 approximate worst case (0.1 Ω/100 Ω both directions). Shunt-capacitor ESL/ESR
+            included where entered; the SPICE deck notes what it omits.</li>
+          <li>Bound parts use catalogued data: manufacturer datasheets/parametrics, measured impedance
+            curves where available (Murata: measured complex Z; Würth Elektronik: REDEXPERT |Z| with
+            Bode gain-phase-reconstructed phase, marked '~', validated to 0.03 dB median on this quantity).</li>
+          <li>Voltage flags compare each position's actual stress (delta X: line-to-line; star/pair X
+            and Y: phase-to-earth; DC bus: no crest factor) against AC-basis ratings — a DC-only figure
+            never silences an AC position; class ceilings per IEC 60384-14 (X2 ≤ 310 / Y2 ≤ 300 VAC).</li>
+          <li>Conducted scope only ({{ scanCtx ? scanCtx.standardId : 'CISPR 32/25' }} conducted limits);
+            the radiated screen provides a separate ±20 dB triage estimate, not reported here.</li>
+        </ul>
+        <p class="rep-meta">References: CISPR 32:2015+A1, CISPR 25:2021, CISPR 16-1-1, CISPR 17,
+          IEC 60384-14, IEC 60990, WE ANP015. Generated locally in the browser; no data left this machine.</p>
+      </section>
+
+      <section>
+        <h2>Appendix — SPICE deck (filter + LISN)</h2>
+        <pre>{{ netlist }}</pre>
+      </section>
     </div>
   </div>
 </template>
