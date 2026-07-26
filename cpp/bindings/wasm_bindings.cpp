@@ -150,9 +150,8 @@ std::string limit_analysis_js(const std::string& standardId, const std::string& 
     if (!anyCovered) {
         throw std::invalid_argument("no trace point falls inside the selected limit's bands");
     }
-    auto [fLoIt, fHiIt] = std::minmax_element(freqs.begin(), freqs.end());
     json unswept = json::array();
-    for (const auto& [f0, f1] : Hertz::unswept_regions(line, *fLoIt, *fHiIt)) {
+    for (const auto& [f0, f1] : Hertz::unswept_regions(line, freqs)) {
         unswept.push_back({f0, f1});
     }
     double requiredAttenuation =

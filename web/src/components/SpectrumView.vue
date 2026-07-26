@@ -201,12 +201,16 @@ const chartSeries = computed(() => {
   traces.value.forEach((t, i) => {
     if (t.analysis) {
       // runs of CONSECUTIVE same-coverage points: a polyline may only connect
-      // neighboring samples — a chord across the other set's span draws data
-      // where nothing was measured
+      // neighboring samples — a chord across the other set's span (or across a
+      // sampling HOLE the sweep jumped over) draws data where nothing was
+      // measured. 0.35 decades matches the engine's unswept-hole criterion.
       const runs = []
       t.analysis.covered.forEach((isCovered, k) => {
         const point = { f: t.frequenciesHz[k], v: t.levelsDbuv[k] }
-        if (!runs.length || runs[runs.length - 1].covered !== isCovered) {
+        const last = runs[runs.length - 1]
+        const prevF = last?.points[last.points.length - 1]?.f
+        if (!last || last.covered !== isCovered ||
+            (prevF > 0 && Math.log10(point.f / prevF) > 0.35)) {
           runs.push({ covered: isCovered, points: [] })
         }
         runs[runs.length - 1].points.push(point)
@@ -236,11 +240,17 @@ const chartSeries = computed(() => {
 // bands the scan never reached must be named next to the verdict, or a
 // 150 kHz-30 MHz sweep "passes" CISPR 25 with the FM band unmeasured.
 const unsweptSummary = computed(() => {
-  const ranges = new Set()
-  for (const t of traces.value) {
-    for (const [f0, f1] of t.analysis?.unsweptHz ?? []) ranges.add(`${fmtHz(f0)}–${fmtHz(f1)}`)
+  const regions = traces.value.flatMap((t) => t.analysis?.unsweptHz ?? [])
+    .sort((a, b) => a[0] - b[0])
+  const merged = []
+  for (const [f0, f1] of regions) {
+    if (merged.length && f0 <= merged[merged.length - 1][1] * 1.000000001) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], f1)
+    } else {
+      merged.push([f0, f1])
+    }
   }
-  return [...ranges]
+  return merged.map(([f0, f1]) => `${fmtHz(f0)}–${fmtHz(f1)}`)
 })
 const uncoveredPointSummary = computed(() => {
   const rows = []

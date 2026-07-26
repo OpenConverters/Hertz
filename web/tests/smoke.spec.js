@@ -464,3 +464,22 @@ test('spectrum: a PASS names the limit bands the scan never reached (Berger roun
   })
   await expect(page.getByTestId('unswept-note')).not.toBeVisible()
 })
+
+test('spectrum: an interior sampling hole is named NOT SWEPT, not painted over (Berger round-11 R11-1)', async ({ page }) => {
+  // Spliced scan: 0.15-1 MHz and 20-30 MHz with nothing in between — 56% of
+  // the CISPR 32 span. The extent check saw a full sweep; the verdict must
+  // name the 1-20 MHz hole.
+  const lines = ['Frequency (MHz),Quasi-peak (dBuV)']
+  for (let f = 0.15; f < 1; f *= 1.05) lines.push(f.toFixed(5) + ',45.0')
+  lines.push('1.00000,45.0')
+  for (let f = 20; f < 30; f *= 1.02) lines.push(f.toFixed(4) + ',50.0')
+  lines.push('30.0000,50.0')
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.locator('input[type="file"]').first().setInputFiles({
+    name: 'holed_c32.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
+  })
+  await expect(page.getByTestId('verdict')).toHaveText('PASS')
+  await expect(page.getByTestId('unswept-note')).toContainText('NOT SWEPT')
+  await expect(page.getByTestId('unswept-note')).toContainText('1 MHz–20 MHz')
+})

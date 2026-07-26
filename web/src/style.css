@@ -32,6 +32,7 @@
   /* status — reserved */
   --fault: #ff5d55;
   --ok:    #3fe27f;
+  --amber: #ffb347;     /* caution tier: MARGINAL chip, not-swept / uncertainty notes */
 
   --grat:        rgba(63, 226, 127, 0.045);
   --grat-strong: rgba(63, 226, 127, 0.12);

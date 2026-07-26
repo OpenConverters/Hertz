@@ -11,6 +11,7 @@ from hertz.limits import (
     OutsideCoverage,
     cispr25_conducted_voltage,
     unswept_regions,
+    unswept_regions_sampled,
 )
 
 
@@ -86,6 +87,33 @@ def test_unswept_regions_name_what_the_scan_never_reached():
     assert regions == [(30e6, 54e6), (68e6, 108e6)]
     # a full-span sweep leaves nothing
     assert unswept_regions(CISPR32_CLASS_B_MAINS_QP, 150e3, 30e6) == []
+
+
+def test_unswept_regions_catch_interior_sampling_holes():
+    # R11-1 (round 11): a spliced scan (0.15-1 MHz + 20-30 MHz, nothing in
+    # between) must report the 1-20 MHz hole — the extent check alone saw a
+    # full sweep. Holes are clipped to the limit's segments, so the
+    # unregulated space between CISPR 25 bands is never flagged.
+    freqs = list(np.geomspace(150e3, 1e6, 61)) + list(np.geomspace(20e6, 30e6, 41))
+    regions = unswept_regions_sampled(CISPR32_CLASS_B_MAINS_QP, freqs)
+    assert len(regions) == 1
+    assert regions[0] == pytest.approx((1e6, 20e6))
+    # two spot samples: the whole interior is a hole
+    regions = unswept_regions_sampled(CISPR32_CLASS_B_MAINS_QP, [150e3, 30e6])
+    assert regions[0] == pytest.approx((150e3, 30e6))
+    # a CISPR 25 band-by-band acquisition is NOT a hole: the jumps land in
+    # unregulated space
+    c25 = cispr25_conducted_voltage(3, "quasi_peak")
+    band_by_band = (list(np.geomspace(150e3, 300e3, 20)) +
+                    list(np.geomspace(530e3, 1.8e6, 20)) +
+                    list(np.geomspace(5.9e6, 6.2e6, 20)) +
+                    list(np.geomspace(26e6, 28e6, 20)) +
+                    list(np.geomspace(30e6, 54e6, 20)) +
+                    list(np.geomspace(68e6, 108e6, 20)))
+    assert unswept_regions_sampled(c25, band_by_band) == []
+    # a dense uniform sweep flags nothing
+    assert unswept_regions_sampled(
+        CISPR32_CLASS_B_MAINS_QP, list(np.geomspace(150e3, 30e6, 100))) == []
 
 
 def test_lower_limit_applies_at_segment_boundary():

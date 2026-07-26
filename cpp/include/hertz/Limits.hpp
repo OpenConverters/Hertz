@@ -103,6 +103,26 @@ class LimitLine {
 // judged against CISPR 25 has not measured the 68-108 MHz FM band at all, and
 // saying "PASS, >=10 dB in hand" without that qualification is a false clean
 // bill. Contiguous regions across touching segments are merged for reporting.
+// A consecutive-sample gap wider than this (in decades; 0.35 dec = a factor
+// 2.24 in frequency) is a HOLE in the sweep, not sampling density: any real
+// analyzer export sits far below it, and a "scan" that jumps a factor > 2
+// has simply not measured the spectrum in between.
+inline constexpr double UNSWEPT_GAP_DECADES = 0.35;
+
+inline std::vector<std::pair<double, double>> merge_regions(
+    std::vector<std::pair<double, double>> regions) {
+    std::sort(regions.begin(), regions.end());
+    std::vector<std::pair<double, double>> merged;
+    for (const auto& region : regions) {
+        if (!merged.empty() && region.first <= merged.back().second * (1.0 + 1e-9)) {
+            merged.back().second = std::max(merged.back().second, region.second);
+        } else {
+            merged.push_back(region);
+        }
+    }
+    return merged;
+}
+
 inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& line,
                                                               double fLoHz, double fHiHz) {
     std::vector<std::pair<double, double>> regions;
@@ -114,16 +134,35 @@ inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& l
             regions.emplace_back(std::max(segment.fStartHz, fHiHz), segment.fStopHz);
         }
     }
-    std::sort(regions.begin(), regions.end());
-    std::vector<std::pair<double, double>> merged;
-    for (const auto& region : regions) {
-        if (!merged.empty() && region.first <= merged.back().second * (1.0 + 1e-9)) {
-            merged.back().second = std::max(merged.back().second, region.second);
-        } else {
-            merged.push_back(region);
+    return merge_regions(std::move(regions));
+}
+
+// Sampling-aware variant: extent regions PLUS interior holes — regulated
+// sub-spans the sweep jumped over (spliced band-by-band acquisitions, a lost
+// segment, a retune gap). Reported holes are clipped to the limit's segments,
+// so the unregulated space between CISPR 25 bands is never flagged.
+inline std::vector<std::pair<double, double>> unswept_regions(const LimitLine& line,
+                                                              std::vector<double> freqsHz) {
+    if (freqsHz.empty()) {
+        throw std::invalid_argument("unswept_regions needs at least one sample frequency");
+    }
+    std::sort(freqsHz.begin(), freqsHz.end());
+    auto regions = unswept_regions(line, freqsHz.front(), freqsHz.back());
+    for (size_t i = 1; i < freqsHz.size(); ++i) {
+        double fa = freqsHz[i - 1];
+        double fb = freqsHz[i];
+        if (fa <= 0.0 || std::log10(fb / fa) <= UNSWEPT_GAP_DECADES) {
+            continue;
+        }
+        for (const auto& segment : line.segments()) {
+            double f0 = std::max(fa, segment.fStartHz);
+            double f1 = std::min(fb, segment.fStopHz);
+            if (f0 < f1) {
+                regions.emplace_back(f0, f1);
+            }
         }
     }
-    return merged;
+    return merge_regions(std::move(regions));
 }
 
 // Drawable polyline of a limit line: one run PER SEGMENT with the exact band

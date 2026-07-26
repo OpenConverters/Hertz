@@ -9,6 +9,8 @@ broadcast bands, so "no limit here" is real information, never a zero.
 
 from dataclasses import dataclass
 
+import math
+
 import numpy as np
 
 
@@ -79,6 +81,24 @@ class LimitLine:
         return self.level(f_hz) - measured_dbuv
 
 
+# A consecutive-sample gap wider than this (in decades; 0.35 dec = a factor
+# 2.24 in frequency) is a HOLE in the sweep, not sampling density: any real
+# analyzer export sits far below it, and a "scan" that jumps a factor > 2 has
+# simply not measured the spectrum in between.
+UNSWEPT_GAP_DECADES = 0.35
+
+
+def _merge_regions(regions):
+    regions = sorted(regions)
+    merged = []
+    for f0, f1 in regions:
+        if merged and f0 <= merged[-1][1] * (1.0 + 1e-9):
+            merged[-1][1] = max(merged[-1][1], f1)
+        else:
+            merged.append([f0, f1])
+    return [tuple(r) for r in merged]
+
+
 def unswept_regions(line, f_lo_hz, f_hi_hz):
     """Parts of a limit line's regulated spans the scan NEVER REACHED —
     everything of each segment outside [f_lo_hz, f_hi_hz] (the scan's own
@@ -90,14 +110,27 @@ def unswept_regions(line, f_lo_hz, f_hi_hz):
             regions.append((s.f_start_hz, min(s.f_stop_hz, f_lo_hz)))
         if s.f_stop_hz > f_hi_hz:
             regions.append((max(s.f_start_hz, f_hi_hz), s.f_stop_hz))
-    regions.sort()
-    merged = []
-    for f0, f1 in regions:
-        if merged and f0 <= merged[-1][1] * (1.0 + 1e-9):
-            merged[-1][1] = max(merged[-1][1], f1)
-        else:
-            merged.append([f0, f1])
-    return [tuple(r) for r in merged]
+    return _merge_regions(regions)
+
+
+def unswept_regions_sampled(line, freqs_hz):
+    """Sampling-aware variant: extent regions PLUS interior holes — regulated
+    sub-spans the sweep jumped over (spliced band-by-band acquisitions, a lost
+    segment, a retune gap). Reported holes are clipped to the limit's
+    segments, so the unregulated space between CISPR 25 bands is never
+    flagged."""
+    freqs = sorted(float(f) for f in freqs_hz)
+    if not freqs:
+        raise ValueError("unswept_regions_sampled needs at least one sample frequency")
+    regions = list(unswept_regions(line, freqs[0], freqs[-1]))
+    for fa, fb in zip(freqs, freqs[1:]):
+        if fa <= 0.0 or math.log10(fb / fa) <= UNSWEPT_GAP_DECADES:
+            continue
+        for s in line.segments:
+            f0, f1 = max(fa, s.f_start_hz), min(fb, s.f_stop_hz)
+            if f0 < f1:
+                regions.append((f0, f1))
+    return _merge_regions(regions)
 
 
 # CISPR 32 / EN 55032, AC mains conducted, 150 kHz - 30 MHz.

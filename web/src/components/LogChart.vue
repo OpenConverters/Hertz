@@ -67,7 +67,8 @@ const path = (points) => {
   // isolated sample stays visible instead of silently vanishing
   if (points.length === 1) {
     const px = x(points[0].f), py = y(points[0].v)
-    return 'M' + (px - 3).toFixed(1) + ' ' + py.toFixed(1) + ' L' + (px + 3).toFixed(1) + ' ' + py.toFixed(1)
+    const x0 = Math.max(px - 3, margins.left), x1 = Math.min(px + 3, width - margins.right)
+    return 'M' + x0.toFixed(1) + ' ' + py.toFixed(1) + ' L' + x1.toFixed(1) + ' ' + py.toFixed(1)
   }
   return points.map((p, i) => (i === 0 ? 'M' : 'L') + x(p.f).toFixed(1) + ' ' + y(p.v).toFixed(1)).join(' ')
 }

@@ -119,6 +119,32 @@ TEST_CASE("Unswept regions name what the scan never reached (R10-1, round 10)", 
     CHECK(Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), 150e3, 30e6).empty());
 }
 
+TEST_CASE("Unswept regions catch interior sampling holes (R11-1, round 11)", "[limits]") {
+    // spliced scan: 0.15-1 MHz + 20-30 MHz — the 1-20 MHz hole must be named
+    std::vector<double> freqs;
+    for (int i = 0; i <= 60; ++i) freqs.push_back(150e3 * std::pow(1e6 / 150e3, i / 60.0));
+    for (int i = 0; i <= 40; ++i) freqs.push_back(20e6 * std::pow(30e6 / 20e6, i / 40.0));
+    auto regions = Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(), freqs);
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0].first == Approx(1e6));
+    CHECK(regions[0].second == Approx(20e6));
+    // two spot samples: the whole interior is a hole
+    auto spot = Hertz::unswept_regions(Hertz::cispr32_class_b_mains_qp(),
+                                       std::vector<double>{150e3, 30e6});
+    REQUIRE(spot.size() == 1);
+    CHECK(spot[0].first == Approx(150e3));
+    CHECK(spot[0].second == Approx(30e6));
+    // a CISPR 25 band-by-band acquisition is NOT a hole: jumps land in
+    // unregulated space between the bands
+    auto c25 = Hertz::cispr25_conducted_voltage(3, Hertz::Detector::QUASI_PEAK);
+    std::vector<double> bands;
+    for (auto [f0, f1] : {std::pair{150e3, 300e3}, {530e3, 1.8e6}, {5.9e6, 6.2e6},
+                          {26e6, 28e6}, {30e6, 54e6}, {68e6, 108e6}}) {
+        for (int i = 0; i <= 19; ++i) bands.push_back(f0 * std::pow(f1 / f0, i / 19.0));
+    }
+    CHECK(Hertz::unswept_regions(c25, bands).empty());
+}
+
 TEST_CASE("Margin sign convention", "[limits]") {
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 50.0) > 0.0);
     CHECK(Hertz::cispr32_class_b_mains_qp().margin(200e3, 80.0) < 0.0);
