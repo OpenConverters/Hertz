@@ -553,3 +553,22 @@ test('spectrum: the real CISPR 25 bench scan loads with attribution and fails Cl
   await page.getByTestId('standard').selectOption('cispr25_class_3')
   await expect(page.getByTestId('verdict')).toHaveText('PASS')
 })
+
+test('filter: the caps manufacturer filter scopes the recommended parts, not only the values', async ({ page }) => {
+  // Würth selected as X-cap manufacturer must never recommend WIMA — the
+  // closest-value sort otherwise favors the biggest manufacturer in the pool.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('sec-comp').click()
+  await page.getByTestId('cx-source').selectOption('catalog')
+  await page.getByTestId('cx-mfr').selectOption('Würth Elektronik')
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('sch-CX1').click()
+  await expect(page.getByTestId('part-panel')).toContainText('Würth Elektronik')
+  await expect(page.getByTestId('part-panel')).not.toContainText('WIMA')
+  await page.getByTestId('sch-CY1').click()
+  await expect(page.getByTestId('part-panel')).toContainText('Würth Elektronik')
+  await expect(page.getByTestId('part-panel')).not.toContainText('WIMA')
+})

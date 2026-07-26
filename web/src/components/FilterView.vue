@@ -550,10 +550,18 @@ const recommendations = () => {
     return { kind, target: targetValueOf('cmc'), parts, unavailable: false }
   }
   const cls = kind === 'cx' ? 'X2' : 'Y2'
+  // The caps manufacturer filter scopes the RECOMMENDED parts too — the value
+  // candidates and the offered parts must come from the same pool, or a
+  // Würth-filtered design recommends WIMA (closest-value sorting favors the
+  // biggest manufacturer otherwise).
+  const capsMfr = cxSource.value === 'catalog' ? cxMfr.value : ''
   pool = (capsCatalog.value?.parts ?? [])
-    .filter((p) => p.safetyClass === cls)
+    .filter((p) => p.safetyClass === cls && (!capsMfr || p.manufacturer === capsMfr))
     .map((p) => ({ ...p, valueF: p.capacitanceF }))
-  if (!pool.length) return { kind, target, parts: [], unavailable: true }
+  if (!pool.length) {
+    return { kind, target, parts: [], unavailable: !capsCatalog.value,
+             filteredOut: !!capsCatalog.value, capsMfr }
+  }
   const parts = pool
     .map((p) => ({ ...p, deviation: Math.abs(p.valueF - target) / target }))
     .sort((a, b) => a.deviation - b.deviation || String(a.mpn).localeCompare(String(b.mpn)))
@@ -737,7 +745,7 @@ function downloadNetlist() {
         </select></label>
       <label v-if="cxSource === 'manual'" class="field"><span>Values (µF)</span>
         <input v-model="cxCandidatesUf" type="text" /></label>
-      <label v-else class="field"><span>Manufacturer</span>
+      <label v-else class="field"><span>Manufacturer — scopes the X2 candidates AND the recommended X2/Y2 parts</span>
         <select v-model="cxMfr" data-test="cx-mfr"><option value="">all manufacturers</option>
           <option v-for="m in cxManufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
       </div>
@@ -842,6 +850,10 @@ function downloadNetlist() {
                   — target {{ fmtSi(recommendations().target, kindOf(selectedRef) === 'cmc' ? 'H' : 'F') }}</p>
                 <p v-if="recommendations().unavailable" class="note">Parts catalog not reachable from this
                   deployment — bind manually via the BOM later, or design on values only.</p>
+                <p v-else-if="recommendations().filteredOut" class="note" data-test="parts-filtered-out">
+                  No {{ kindOf(selectedRef) === 'cx' ? 'X2' : 'Y2' }} parts from
+                  {{ recommendations().capsMfr }} in the catalog — loosen the manufacturer filter
+                  under “X capacitor candidates”.</p>
                 <table v-else class="data">
                   <thead><tr><th>Part</th><th>Manufacturer</th><th>Value</th>
                     <th v-if="kindOf(selectedRef) === 'cmc'">Meas. IL @ f<sub>design</sub></th>
