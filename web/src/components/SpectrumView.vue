@@ -250,14 +250,14 @@ const unsweptSummary = computed(() => {
       merged.push([f0, f1])
     }
   }
-  return merged.map(([f0, f1]) => {
-    // a narrow (but >= RBW) span can round to identical labels — raise the
-    // precision rather than print "30 MHz-30 MHz"
-    if (fmtHz(f0) === fmtHz(f1)) {
-      return `${(f0 / 1e6).toFixed(3)} MHz–${(f1 / 1e6).toFixed(3)} MHz`
-    }
-    return `${fmtHz(f0)}–${fmtHz(f1)}`
-  })
+  // full precision, never the display formatter's 3 significant figures: a
+  // NOT SWEPT endpoint printed as "16.9 MHz" would understate a 16.95 MHz
+  // gap edge by 50 kHz
+  const preciseHz = (f) => {
+    const strip = (s) => s.replace(/\.?0+$/, '')
+    return f >= 1e6 ? `${strip((f / 1e6).toFixed(2))} MHz` : `${strip((f / 1e3).toFixed(1))} kHz`
+  }
+  return merged.map(([f0, f1]) => `${preciseHz(f0)}–${preciseHz(f1)}`)
 })
 const uncoveredPointSummary = computed(() => {
   const rows = []
@@ -343,6 +343,10 @@ function onDrop(event) {
         </label>
         <p v-if="standardId.startsWith('cispr25')" class="note">CISPR 25 defines limits only inside
           protected broadcast bands — points between the bands are shown grey and never judged.</p>
+        <p class="note">Coverage is checked against the selected limit: bands or spans the scan never
+          reached are called out as NOT SWEPT. Gaps narrower than 10× the band's CISPR RBW
+          (2 kHz below 150 kHz, 90 kHz to 30 MHz, 1.2 MHz above) are below the reporting
+          threshold — silence means covered at that resolution, not bin-by-bin.</p>
       </div>
 
       <div v-for="p in columnPickers" :key="p.name" class="panel" data-test="column-picker">
