@@ -832,3 +832,25 @@ TEST_CASE("cable ferrite insertion loss and candidate selection", "[cable]") {
     CHECK_THROWS(Hertz::select_cable_mitigation({100e6}, {-3.0}, {bead100}, 25.0));  // nothing required
     CHECK_THROWS(Hertz::select_cable_mitigation({100e6}, {5.0}, {}, 25.0));          // empty list
 }
+
+TEST_CASE("cable ferrite complex impedance — phase changes the insertion loss", "[cable]") {
+    const double halfPi = 1.5707963267948966, quarterPi = 0.7853981633974483;
+
+    // Same |Z| = 150 ohm between 25 ohm refs, but PURELY REACTIVE (phase = pi/2):
+    // IL = 20*log10|(50 + j150)/50| = 20*log10(sqrt(10)) = 10.0 dB, versus 12.041
+    // dB for the resistive part — phase is not cosmetic, it moves the loss.
+    const Hertz::FerritePart reactive{"reactive-150", {10e6, 1e9}, {150.0, 150.0}, {halfPi, halfPi}};
+    CHECK(Hertz::ferrite_insertion_loss_db(reactive, 1, 25.0, {100e6})[0] == Catch::Approx(10.0).margin(0.01));
+
+    // 45 degrees: Z = 150*(cos45 + j sin45); IL = 20*log10|(50 + Z)/50| = 11.538 dB.
+    const Hertz::FerritePart mixed{"mixed-150", {10e6, 1e9}, {150.0, 150.0}, {quarterPi, quarterPi}};
+    CHECK(Hertz::ferrite_insertion_loss_db(mixed, 1, 25.0, {100e6})[0] == Catch::Approx(11.538).margin(0.02));
+
+    // an empty phase vector is the resistive part exactly (regression on the golden).
+    const Hertz::FerritePart resistive{"resistive-150", {10e6, 1e9}, {150.0, 150.0}, {}};
+    CHECK(Hertz::ferrite_insertion_loss_db(resistive, 1, 25.0, {100e6})[0] == Catch::Approx(12.041).margin(0.01));
+
+    // phase, when supplied, must align with the |Z| points.
+    const Hertz::FerritePart badPhase{"bad", {10e6, 1e9}, {150.0, 150.0}, {halfPi}};
+    CHECK_THROWS(Hertz::ferrite_insertion_loss_db(badPhase, 1, 25.0, {100e6}));
+}

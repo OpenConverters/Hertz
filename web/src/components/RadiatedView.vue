@@ -3,7 +3,7 @@
 // spectrum (current probe / absorbing clamp, dBµA) in, an E-field estimate
 // against the CISPR 32 radiated limits out. The model is the classic
 // electrically-short CM radiator — a triage tool, never a measurement.
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import LogChart from './LogChart.vue'
 import { api } from '../engine.js'
 import { fmtHz, fmtDb } from '../format.js'
@@ -20,16 +20,60 @@ const error = ref('')
 const dragOver = ref(false)
 const fileInput = ref(null)
 
+// Real ferrite candidates: the TAS catalog slice (subtype chipBead) exported by
+// scripts/export_ferrites.py — a main slice + a curves side file (|Z| magnitude
+// with Bode-reconstructed phase), same as the CMC catalog the filter designer
+// uses. Fetched once on mount; the picker consumes the curve-carrying parts.
+const ferriteCatalog = ref(null)   // {version, count, parts:[{mpn, zAt100MHzOhm, ...}]}
+const ferriteCurves = ref(null)    // {version, curves:{mpn:{f, re, im, rec}}}
+const ferriteState = ref('loading') // 'loading' | 'ready' | 'unavailable'
+let ferriteFetch = null
+onMounted(() => {
+  ferriteFetch = (async () => {
+    try {
+      const [main, curves] = await Promise.all([
+        fetch('/kelvin/hertz-ferrites.v1.json'),
+        fetch('/kelvin/hertz-ferrites-curves.v1.json'),
+      ])
+      if (!main.ok || !curves.ok) throw new Error(`${main.status}/${curves.status}`)
+      ferriteCatalog.value = await main.json()
+      ferriteCurves.value = await curves.json()
+      ferriteState.value = 'ready'
+    } catch {
+      ferriteState.value = 'unavailable'
+    }
+  })()
+})
+
 const standardId = () => `cispr32_rad_${cls.value}_${distance.value}m`
 
-// Illustrative cable-ferrite / clip-on CM-choke |Z| curves (magnitude, Ω) — a
-// datasheet stand-in, ordered small-first so the picker returns the least part.
-// Swap for a real vendor catalog. Each spans the radiated band (30 MHz–1 GHz).
-const EXAMPLE_FERRITES = [
-  { name: 'clip-on S', frequenciesHz: [10e6, 30e6, 100e6, 300e6, 1e9], zOhm: [30, 90, 180, 220, 200] },
-  { name: 'clip-on M', frequenciesHz: [10e6, 30e6, 100e6, 300e6, 1e9], zOhm: [60, 170, 330, 400, 360] },
-  { name: 'clip-on L', frequenciesHz: [10e6, 30e6, 100e6, 300e6, 1e9], zOhm: [120, 300, 560, 650, 600] },
-]
+// Curve-carrying catalog parts whose |Z|(f) spans [fLo, fHi], as FerritePart
+// candidates (magnitude + reconstructed phase), sliced to the band (plus one
+// bracketing point each side, for interpolation) and ordered SMALL-FIRST so the
+// picker returns the least adequate part. Parts that do not cover the whole
+// flagged band are dropped and COUNTED — never extrapolated, never hidden.
+function ferriteCandidates(fLo, fHi) {
+  const curves = ferriteCurves.value?.curves || {}
+  const parts = []
+  let coverageDropped = 0
+  for (const p of ferriteCatalog.value?.parts || []) {
+    const c = curves[p.mpn]
+    if (!c || !c.f?.length) continue
+    if (c.f[0] > fLo || c.f[c.f.length - 1] < fHi) { coverageDropped += 1; continue }
+    // keep the in-band points plus one bracket below fLo and above fHi
+    let lo = 0
+    while (lo + 1 < c.f.length && c.f[lo + 1] <= fLo) lo += 1
+    let hi = c.f.length - 1
+    while (hi > 0 && c.f[hi - 1] >= fHi) hi -= 1
+    const f = [], zOhm = [], phaseRad = []
+    for (let i = lo; i <= hi; i += 1) {
+      f.push(c.f[i]); zOhm.push(Math.hypot(c.re[i], c.im[i])); phaseRad.push(Math.atan2(c.im[i], c.re[i]))
+    }
+    parts.push({ name: p.mpn, frequenciesHz: f, zOhm, phaseRad, _z: p.zAt100MHzOhm ?? p.zPeakOhm ?? 0, rec: !!c.rec })
+  }
+  parts.sort((a, b) => a._z - b._z)
+  return { parts, coverageDropped }
+}
 
 async function ingest(files) {
   const file = files[0]
@@ -66,7 +110,7 @@ async function estimate() {
     const fLo = Math.max(30e6, trace.value.frequenciesHz[0])
     const fHi = Math.min(1000e6, trace.value.frequenciesHz[trace.value.frequenciesHz.length - 1])
     const limitRuns = fLo < fHi ? engine.limitPolyline(standardId(), 'quasi_peak', fLo, fHi) : null
-    const mitigation = cableMitigation(engine, analysis)
+    const mitigation = await cableMitigation(engine, analysis)
     result.value = { efield: est.efieldDbuvm, uncertainty: est.modelUncertaintyDb, analysis, limitRuns, mitigation }
   } catch (e) {
     error.value = e.message
@@ -74,9 +118,11 @@ async function estimate() {
 }
 
 // Turn the screen into a fix: the CM-CURRENT attenuation target (dB vs freq) over
-// the covered radiated band, then the least cable ferrite that meets it. Returns
-// null off-band, {needed:false} when the screen already passes, else {pick,...}.
-function cableMitigation(engine, analysis) {
+// the covered radiated band, then the least catalogued ferrite that meets it.
+// Returns null off-band, {needed:false} when the screen already passes, else
+// {pick,...}. A pick needs the catalog — if it is unreachable, that is surfaced
+// (the target is still shown), never papered over with invented parts.
+async function cableMitigation(engine, analysis) {
   const freqs = trace.value.frequenciesHz
   const idx = analysis.limitsDbuv.map((l, i) => (l != null ? i : -1)).filter((i) => i >= 0)
   if (!idx.length) return null
@@ -84,10 +130,27 @@ function cableMitigation(engine, analysis) {
   const target = engine.radiatedCmTarget(fc, idx.map((i) => trace.value.dbua[i]),
     Number(cableM.value), Number(distance.value), idx.map((i) => analysis.limitsDbuv[i]), Number(margin.value))
   if (!target.needed) return { needed: false, target }
+  await ferriteFetch
+  if (ferriteState.value !== 'ready') {
+    return { needed: true, target, pick: { error: 'ferrite catalog unreachable from this deployment — the target above is the attenuation to add; select a cable ferrite / clip-on CM core whose |Z| curve meets it' } }
+  }
+  const { parts, coverageDropped } = ferriteCandidates(fc[0], fc[fc.length - 1])
+  if (!parts.length) {
+    return { needed: true, target, coverageDropped,
+             pick: { error: `no catalogued ferrite covers the whole flagged band (${fmtHz(fc[0])}–${fmtHz(fc[fc.length - 1])}) — ${coverageDropped} parts were excluded for insufficient |Z|-curve coverage` } }
+  }
   let pick = null
-  try { pick = engine.cableMitigation(fc, target.target, EXAMPLE_FERRITES, Number(cmRef.value), Number(maxTurns.value)) }
+  try { pick = engine.cableMitigation(fc, target.target, parts, Number(cmRef.value), Number(maxTurns.value)) }
   catch (e) { pick = { error: e.message } }
-  return { needed: true, target, pick }
+  if (pick && pick.partName) pick.rec = parts.find((p) => p.name === pick.partName)?.rec === true
+  return { needed: true, target, pick, candidateCount: parts.length, coverageDropped }
+}
+
+// catalog row behind the pick, for the maker / headline-|Z| readout
+function pickPart() {
+  const name = result.value?.mitigation?.pick?.partName
+  if (!name) return null
+  return (ferriteCatalog.value?.parts || []).find((p) => p.mpn === name) || null
 }
 
 // clearly-synthetic example: a 12 µA switching comb decaying over 30–300 MHz
@@ -191,7 +254,11 @@ const violations = () => {
             Up here a mains filter's choke has self-resonated, so the fix is a cable ferrite / clip-on CM choke.</p>
           <div v-if="result.mitigation.pick.error" class="err">{{ result.mitigation.pick.error }}</div>
           <div v-else class="readout">
-            <div class="cell"><b>Suggested part</b><span data-test="mitigation-part">{{ result.mitigation.pick.partName }}</span></div>
+            <div class="cell"><b>Suggested part</b>
+              <span data-test="mitigation-part">{{ result.mitigation.pick.partName
+                }}<span v-if="result.mitigation.pick.rec" title="phase reconstructed from |Z| (Bode gain–phase)"> ~</span></span>
+              <span v-if="pickPart()" class="unit">{{ pickPart().manufacturer
+                }}{{ pickPart().zAt100MHzOhm ? ` · ${Math.round(pickPart().zAt100MHzOhm)} Ω @100 MHz` : '' }}</span></div>
             <div class="cell"><b>Cable turns</b><span>{{ result.mitigation.pick.turns }}</span></div>
             <div class="cell"><b>Meets target</b>
               <span class="chip" :class="result.mitigation.pick.meetsTarget ? 'pass' : 'fail'" data-test="mitigation-meets">
@@ -200,9 +267,13 @@ const violations = () => {
               <span :style="{ color: result.mitigation.pick.worstMarginDb < 0 ? 'var(--fault)' : 'var(--ok)' }">
                 {{ fmtDb(result.mitigation.pick.worstMarginDb) }}</span><span class="unit">dB</span></div>
           </div>
-          <p class="note">Candidate list is an illustrative stand-in; the CM loop impedance ({{ cmRef }} Ω)
-            is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so treat the pick as a
-            starting part, not a spec.</p>
+          <p class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b> catalogued ferrite beads
+            whose measured |Z| curve covers the band (TAS catalog, <code>chipBead</code> — SMD suppression
+            beads; phase reconstructed from |Z|, marked <b>~</b>). These are single-pass series parts, not
+            clamp-on cable cores, but the model is the same series common-mode impedance. The CM loop
+            impedance ({{ cmRef }} Ω) is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so
+            treat the pick as a starting part, not a spec.<span v-if="result.mitigation.coverageDropped">
+            {{ result.mitigation.coverageDropped }} parts were excluded for not covering the whole band.</span></p>
         </template>
         <p v-else class="note" data-test="mitigation-none">Screen passes — no cable common-mode mitigation indicated.</p>
       </div>

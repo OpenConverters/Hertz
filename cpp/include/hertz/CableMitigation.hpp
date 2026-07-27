@@ -28,24 +28,32 @@ namespace Hertz {
 // Two honest constraints from the physics, not papered over:
 //  * The CM loop impedance is genuinely uncertain (it IS the +-20 dB in the
 //    radiated screen), so it is an explicit argument with no hidden default.
-//  * A ferrite's datasheet |Z| is treated as RESISTIVE — true in the loss band
-//    where beads are used (|Z| ~ R), conservative below it (small |Z| anyway).
+//  * A ferrite's impedance is COMPLEX. When the datasheet/catalog carries phase
+//    (phaseRad below), it is used as Z = |Z|*e^{j*phase}; when only |Z| is known
+//    (phaseRad empty) it is treated as RESISTIVE — true in the loss band where
+//    beads are used (|Z| ~ R), conservative below it (small |Z| anyway).
 
 struct FerritePart {
     std::string name;
     std::vector<double> frequenciesHz;  // datasheet |Z| curve, strictly increasing
     std::vector<double> zOhm;           // |Z| magnitude at those frequencies, positive
+    std::vector<double> phaseRad;       // OPTIONAL Z phase (rad); empty => resistive |Z|
 };
 
-// |Z| of `part` at `freqs` by log-log interpolation of its datasheet curve — a
-// smooth published curve (like a limit line), so interpolation is legitimate.
-// Raises outside the curve's coverage: no extrapolation of a part's impedance.
-inline std::vector<double> ferrite_impedance_at(const FerritePart& part,
-                                                const std::vector<double>& freqs) {
+// Complex Z of `part` at `freqs` — |Z| by log-log interpolation and (when the
+// part carries it) phase by LINEAR interpolation in log f, both off the same
+// smooth published curve, so interpolation is legitimate. With no phase the
+// result is purely real. Raises outside the curve's coverage: no extrapolation.
+inline std::vector<Complex> ferrite_impedance_at(const FerritePart& part,
+                                                 const std::vector<double>& freqs) {
     const auto& fp = part.frequenciesHz;
     const auto& zp = part.zOhm;
+    const auto& pp = part.phaseRad;
     if (fp.size() < 2 || fp.size() != zp.size()) {
         throw std::invalid_argument(part.name + ": datasheet needs >= 2 aligned (f, |Z|) points");
+    }
+    if (!pp.empty() && pp.size() != fp.size()) {
+        throw std::invalid_argument(part.name + ": phase, when given, must align with the |Z| points");
     }
     for (size_t i = 0; i < fp.size(); ++i) {
         if (!(zp[i] > 0.0)) throw std::invalid_argument(part.name + ": datasheet |Z| must be positive");
@@ -53,7 +61,7 @@ inline std::vector<double> ferrite_impedance_at(const FerritePart& part,
             throw std::invalid_argument(part.name + ": datasheet frequencies must be strictly increasing");
         }
     }
-    std::vector<double> out;
+    std::vector<Complex> out;
     out.reserve(freqs.size());
     for (double f : freqs) {
         if (!(f >= fp.front()) || !(f <= fp.back())) {
@@ -64,7 +72,9 @@ inline std::vector<double> ferrite_impedance_at(const FerritePart& part,
         double lf0 = std::log(fp[j - 1]), lf1 = std::log(fp[j]);
         double lz0 = std::log(zp[j - 1]), lz1 = std::log(zp[j]);
         double t = (lf1 == lf0) ? 0.0 : (std::log(f) - lf0) / (lf1 - lf0);
-        out.push_back(std::exp(lz0 + t * (lz1 - lz0)));
+        double mag = std::exp(lz0 + t * (lz1 - lz0));
+        double phase = pp.empty() ? 0.0 : pp[j - 1] + t * (pp[j] - pp[j - 1]);
+        out.push_back(Complex(mag * std::cos(phase), mag * std::sin(phase)));
     }
     return out;
 }
@@ -81,9 +91,9 @@ inline std::vector<double> ferrite_insertion_loss_db(const FerritePart& part, in
     const Complex ref(cmReferenceOhm, 0.0);
     std::vector<double> il;
     il.reserve(z.size());
-    for (double zi : z) {
-        // |Z| taken as resistive (see header): series real impedance.
-        il.push_back(insertion_loss_db(series_impedance(Complex(scale * zi, 0.0)), ref, ref));
+    for (const Complex& zi : z) {
+        // series complex impedance (real-only when the part carries no phase).
+        il.push_back(insertion_loss_db(series_impedance(scale * zi), ref, ref));
     }
     return il;
 }

@@ -475,9 +475,16 @@ std::string cable_mitigation_js(const std::string& freqsJson, const std::string&
     return guarded([&]() -> std::string {
         std::vector<Hertz::FerritePart> parts;
         for (const auto& p : json::parse(partsJson)) {
+            // phaseRad is optional: present for real catalog curves (complex Z),
+            // absent for magnitude-only parts (treated as resistive |Z|).
+            std::vector<double> phase;
+            if (p.contains("phaseRad") && !p.at("phaseRad").is_null()) {
+                phase = p.at("phaseRad").get<std::vector<double>>();
+            }
             parts.push_back({p.at("name").get<std::string>(),
                              p.at("frequenciesHz").get<std::vector<double>>(),
-                             p.at("zOhm").get<std::vector<double>>()});
+                             p.at("zOhm").get<std::vector<double>>(),
+                             phase});
         }
         auto choice = Hertz::select_cable_mitigation(
             json::parse(freqsJson).get<std::vector<double>>(),
