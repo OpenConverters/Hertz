@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import LogChart from './LogChart.vue'
 import { api, STANDARDS } from '../engine.js'
 import { store } from '../store.js'
+import { trackEvent } from '../telemetry.js'
 import { demoScanCsv, realScanCsv, realCmDmScans, mdpiQrfCsv,
          REAL_SCAN_NAME, REAL_CM_NAME, REAL_DM_NAME, MDPI_SCAN_NAME } from '../demo.js'
 import { fmtHz, fmtDb } from '../format.js'
@@ -291,6 +292,7 @@ const chartViolations = computed(() => {
 })
 
 async function designTheFix() {
+  trackEvent('design-the-fix', { target: standardId.value, detector: detector.value })
   const judged = traces.value.filter((t) => t.analysis)
   if (traceSemantics.value !== 'lines' && judged.length === 2) {
     // separated CM/DM pair: hand over PER-MODE binding sets, judged with the
@@ -372,6 +374,7 @@ async function loadMdpi() {
 }
 
 function loadExample(id) {
+  trackEvent('scan-example-loaded', { target: id })
   if (id === 'demo') return ingest([demoScanCsv()])
   if (id === 'baltic') return loadRealScan()
   if (id === 'baltic-cmdm') return loadRealCmDm()

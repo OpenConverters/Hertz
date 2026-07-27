@@ -10,6 +10,7 @@ import FilterSchematic from './FilterSchematic.vue'
 import LisnView from './LisnView.vue'
 import { api } from '../engine.js'
 import { buildFilterCias, filterComponents, topologyLines } from '../ciasFilter.js'
+import { trackEvent } from '../telemetry.js'
 import { store } from '../store.js'
 import { fmtHz, fmtDb, fmtSi } from '../format.js'
 
@@ -533,6 +534,8 @@ async function runDesign(makeParams, { keepBindings }) {
     ilCm.value = attempt.cm
     ilDm.value = attempt.dm
     roundTrip.value = null
+    trackEvent('filter-designed', { target: topology.value, stages: design.value.stages,
+      fromScan: !!scanCtx.value, escalated: escalated.value })
     worstCaseAt.value = attempt.at
     const d = design.value
     interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF * (d.cXDmFactor ?? 1),
@@ -667,6 +670,7 @@ async function bindPart(part) {
       safetyClass: part.safetyClass ?? null }
   }
   bindings.value = { ...bindings.value }
+  trackEvent('part-bound', { target: part.manufacturer, kind, quantity: part.quantity ?? 1 })
   await recomputeAsBuilt()
   if (kind !== 'cmc') return
   measured.value = null
@@ -858,6 +862,9 @@ async function runRoundTrip() {
       result.verdict[mode] = { spice: spiceAt, twin: twinAt, delta: Math.abs(spiceAt - twinAt) }
     }
     roundTrip.value = result
+    trackEvent('roundtrip-run', { target: topology.value,
+      cmDeltaDb: Math.round(result.verdict.cm.delta * 100) / 100,
+      dmDeltaDb: Math.round(result.verdict.dm.delta * 100) / 100 })
   } catch (e) {
     roundTrip.value = { error: e.message }
   } finally {
@@ -926,6 +933,7 @@ const predictedRefRuns = () => (predicted.value.limitRuns ? [{
 const unrealizable = () => design.value && design.value.lDmH >= 2 * design.value.lCmSelectedH
 
 function downloadCias() {
+  trackEvent('cias-exported', { target: topology.value, stages: design.value.stages })
   const brick = buildFilterCias(design.value.stages, bindings.value, topology.value)
   const blob = new Blob([JSON.stringify(brick, null, 2)], { type: 'application/json' })
   const a = document.createElement('a')
@@ -949,6 +957,7 @@ const reportProject = ref('')
 const reportEut = ref('')
 const reportAuthor = ref('')
 function printReport() {
+  trackEvent('report-opened', { target: topology.value })
   showReportDialog.value = true
 }
 function confirmPrintReport() {
