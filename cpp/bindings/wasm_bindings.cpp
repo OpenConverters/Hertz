@@ -291,6 +291,31 @@ std::string filter_spice_netlist_js(const std::string& designJson, const std::st
 });
 }
 
+// Reference bench for the ngspice round-trip (#299): same drive + LISNs, no filter.
+std::string filter_reference_netlist_js(const std::string& lisnKind, const std::string& mode,
+                                        int nLines)  {
+    return guarded([&]() -> std::string {
+    Hertz::Lisn lisn = lisnKind == "cispr25" ? Hertz::cispr25_lisn() : Hertz::cispr16_lisn();
+    return Hertz::lisn_reference_deck(lisn, mode, nLines);
+});
+}
+
+// The analytic ABCD twin evaluated under the DECK's actual terminations, at the
+// caller's (ngspice-sweep) frequencies — see SpiceDeck.hpp deck_abcd_il.
+std::string deck_abcd_il_js(const std::string& designJson, const std::string& lisnKind,
+                            const std::string& mode, const emscripten::val& freqsArray)  {
+    return guarded([&]() -> std::string {
+    json design = json::parse(designJson);
+    Hertz::Lisn lisn = lisnKind == "cispr25" ? Hertz::cispr25_lisn() : Hertz::cispr16_lisn();
+    auto il = Hertz::deck_abcd_il(
+        lisn, mode, design.value("nLines", 2), design.at("stages").get<int>(),
+        design.at("lCmSelectedH").get<double>(), design.at("cYPerLineF").get<double>(),
+        design.at("lDmH").get<double>(), design.at("cXSelectedF").get<double>(),
+        design.value("cXDmFactor", 1.0), to_vector(freqsArray));
+    return json(il).dump();
+});
+}
+
 std::string lisn_data_js(const std::string& kind, double fMinHz, double fMaxHz,
                          int pointsPerDecade)  {
     return guarded([&]() -> std::string {
@@ -430,6 +455,8 @@ EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("limitPolyline", &limit_polyline_js);
     emscripten::function("designFilter", &design_filter_js);
     emscripten::function("filterSpiceNetlist", &filter_spice_netlist_js);
+    emscripten::function("filterReferenceNetlist", &filter_reference_netlist_js);
+    emscripten::function("deckAbcdIl", &deck_abcd_il_js);
     emscripten::function("lisnData", &lisn_data_js);
     emscripten::function("separateTraces", &separate_js);
     emscripten::function("measureWaveform", &measure_waveform_js);

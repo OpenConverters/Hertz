@@ -914,3 +914,36 @@ test('filter: an HF-only scan no longer dead-ends on the K constraint (user repo
   await expect(page.getByTestId('k-warning')).not.toBeVisible()
   await expect(page.getByTestId('leakage-floor-note')).toContainText('cannot leak more than')
 })
+
+test('filter: the ngspice round-trip cross-checks the ABCD model in-browser (ABT #299)', async ({ page }) => {
+  test.setTimeout(180_000)   // first click compiles the ~11 MB ngspice engine
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('areq-cm').fill('35')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('pane-select-a').selectOption('il')
+  await page.getByTestId('run-roundtrip').click()
+  // first click compiles the ~11 MB ngspice engine
+  await expect(page.getByTestId('roundtrip-verdict')).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByTestId('roundtrip-verdict')).toHaveClass(/pass/)
+  await expect(page.getByTestId('roundtrip-verdict')).toContainText('NGSPICE×ABCD')
+  await expect(page.getByTestId('il-chart').getByText(/CM ngspice round-trip/)).toBeVisible()   // overlay in the legend
+})
+
+test('filter: the 3-phase deck round-trips through ngspice (all-pairs K loads) (ABT #299)', async ({ page }) => {
+  test.setTimeout(180_000)
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('topology').selectOption('3ph')
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await expect(page.getByTestId('lcm')).toBeVisible()
+  await page.getByTestId('pane-select-a').selectOption('il')
+  await page.getByTestId('run-roundtrip').click()
+  await expect(page.getByTestId('roundtrip-verdict')).toBeVisible({ timeout: 90_000 })
+  await expect(page.getByTestId('roundtrip-verdict')).toHaveClass(/pass/)
+})

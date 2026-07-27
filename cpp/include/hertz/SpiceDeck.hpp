@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "hertz/Lisn.hpp"
+#include "hertz/Network.hpp"
 
 namespace Hertz {
 
@@ -17,9 +18,10 @@ namespace Hertz {
 // self-inductances and equal K, any line-to-line DM loop sees
 // 2·L·(1-K) = L_dm regardless of the other windings, so the two-winding
 // derivation carries over unchanged.
-inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double cYPerLineF,
-                                     double lDmH, const Lisn& lisn, const std::string& mode,
-                                     int nLines = 2) {
+namespace detail {
+inline std::string spice_deck_impl(int stages, double lCmH, double cXF, double cYPerLineF,
+                                   double lDmH, const Lisn& lisn, const std::string& mode,
+                                   int nLines, bool includeFilter) {
     if (stages < 1 || stages > 4) {
         throw std::invalid_argument("stages must be 1..4");
     }
@@ -29,10 +31,13 @@ inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double
     if (mode != "cm" && mode != "dm") {
         throw std::invalid_argument("netlist mode must be cm or dm");
     }
-    double coupling = 1.0 - lDmH / (2.0 * lCmH);
-    if (!(coupling > 0.0 && coupling < 1.0)) {
-        throw std::invalid_argument(
-            "leakage inductance is not consistent with the CM inductance (K out of (0,1))");
+    double coupling = 1.0;
+    if (includeFilter) {
+        coupling = 1.0 - lDmH / (2.0 * lCmH);
+        if (!(coupling > 0.0 && coupling < 1.0)) {
+            throw std::invalid_argument(
+                "leakage inductance is not consistent with the CM inductance (K out of (0,1))");
+        }
     }
     std::vector<std::string> line;
     if (nLines == 2) {
@@ -45,10 +50,17 @@ inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double
     const char* topo = nLines == 2 ? "single-phase pair" : nLines == 3 ? "3-phase 3-wire (delta X)"
                                                                        : "3-phase + neutral (star X)";
     char head[320];
-    std::snprintf(head, sizeof(head),
-                  "* Hertz line filter — ANP015 design, %s\n"
-                  "* CM choke per stage: %.6g H per winding, leakage (DM loop) %.6g H -> K=%.6f\n",
-                  topo, lCmH, lDmH, coupling);
+    if (includeFilter) {
+        std::snprintf(head, sizeof(head),
+                      "* Hertz line filter — ANP015 design, %s\n"
+                      "* CM choke per stage: %.6g H per winding, leakage (DM loop) %.6g H -> K=%.6f\n",
+                      topo, lCmH, lDmH, coupling);
+    } else {
+        std::snprintf(head, sizeof(head),
+                      "* Hertz REFERENCE bench, %s — same drive and LISNs, NO filter\n"
+                      "* IL of the filter deck = vdb(meas_*) here minus vdb(meas_*) there\n",
+                      topo);
+    }
     std::string netlist = head;
     netlist += lisn.to_spice_subckt("LISN");
     char buffer[256];
@@ -56,7 +68,7 @@ inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double
     for (int i = 0; i < nLines; ++i) {
         node.push_back(line[i] + "_src");
     }
-    for (int s = 1; s <= stages; ++s) {
+    for (int s = 1; includeFilter && s <= stages; ++s) {
         std::vector<std::string> out;
         for (int i = 0; i < nLines; ++i) {
             out.push_back(s == stages ? line[i] + "_out" : line[i] + "_" + std::to_string(s));
@@ -101,8 +113,9 @@ inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double
         node = out;
     }
     for (int i = 0; i < nLines; ++i) {
-        std::snprintf(buffer, sizeof(buffer), "Xlisn_%s %s_out mains_%s meas_%s LISN\n",
-                      line[i].c_str(), line[i].c_str(), line[i].c_str(), line[i].c_str());
+        // reference bench: the LISNs sit straight on the source nodes
+        std::snprintf(buffer, sizeof(buffer), "Xlisn_%s %s mains_%s meas_%s LISN\n",
+                      line[i].c_str(), node[i].c_str(), line[i].c_str(), line[i].c_str());
         netlist += buffer;
     }
     std::snprintf(buffer, sizeof(buffer), "Vmains mains_%s 0 DC 0\n", line[0].c_str());
@@ -141,6 +154,72 @@ inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double
     }
     netlist += "\n.end\n";
     return netlist;
+}
+}  // namespace detail
+
+inline std::string filter_spice_deck(int stages, double lCmH, double cXF, double cYPerLineF,
+                                     double lDmH, const Lisn& lisn, const std::string& mode,
+                                     int nLines = 2) {
+    return detail::spice_deck_impl(stages, lCmH, cXF, cYPerLineF, lDmH, lisn, mode, nLines, true);
+}
+
+// The reference bench for the ngspice round-trip (ABT #299): identical drive
+// and one LISN per line, NO filter. The filter's insertion loss is the
+// measurement-port ratio between this deck's run and the filter deck's run —
+// the LISN's own eut->receiver divider cancels exactly in the ratio, so no
+// analytic LISN correction is needed.
+inline std::string lisn_reference_deck(const Lisn& lisn, const std::string& mode, int nLines = 2) {
+    return detail::spice_deck_impl(1, 1.0, 1.0, 1.0, 1.0, lisn, mode, nLines, false);
+}
+
+// ABCD insertion loss under the DECK's actual terminations — the analytic twin
+// of the ngspice round-trip. Same elements the deck nets, ideal (the deck
+// states ESL/ESR are not modeled):
+//  - CM: series inductance is the coupled stack's common-mode value
+//    L·(1+(n−1)K)/n with K = 1 − L_dm/(2L) (exact for equal self-L, equal
+//    all-pairs K, equal drive); shunt = n·C_Y per stage. Source: the deck's n
+//    1 mΩ drive resistors in parallel; load: n LISN EUT ports in parallel.
+//  - DM: series = L_dm (the pairwise loop 2L(1−K), independent of the other
+//    windings by symmetric cancellation); shunt = effective X (delta 1.5·C)
+//    plus the two Y capacitors in series across the loop (C_Y/2). Source: the
+//    deck's ideal voltage drive (0 Ω); load: out one LISN arm, back another
+//    (2·Z_LISN).
+// Frequencies are the caller's — pass the ngspice sweep so the two engines
+// are compared at identical points.
+inline std::vector<double> deck_abcd_il(const Lisn& lisn, const std::string& mode, int nLines,
+                                        int stages, double lCmH, double cYPerLineF, double lDmH,
+                                        double cXF, double cXDmFactor,
+                                        const std::vector<double>& freqsHz) {
+    if (mode != "cm" && mode != "dm") {
+        throw std::invalid_argument("mode must be cm or dm");
+    }
+    if (nLines < 2 || nLines > 4) {
+        throw std::invalid_argument("nLines must be 2..4");
+    }
+    double coupling = 1.0 - lDmH / (2.0 * lCmH);
+    if (!(coupling > 0.0 && coupling < 1.0)) {
+        throw std::invalid_argument(
+            "leakage inductance is not consistent with the CM inductance (K out of (0,1))");
+    }
+    std::vector<double> out;
+    out.reserve(freqsHz.size());
+    for (double f : freqsHz) {
+        std::complex<double> zLisn = lisn.eut_impedance(f);
+        Abcd network;
+        Complex zSource, zLoad;
+        if (mode == "cm") {
+            double lCmEffective = lCmH * (1.0 + (nLines - 1) * coupling) / nLines;
+            network = lc_filter_abcd(f, lCmEffective, nLines * cYPerLineF, stages);
+            zSource = Complex(1e-3 / nLines, 0.0);
+            zLoad = zLisn / static_cast<double>(nLines);
+        } else {
+            network = lc_filter_abcd(f, lDmH, cXF * cXDmFactor + cYPerLineF / 2.0, stages);
+            zSource = Complex(0.0, 0.0);
+            zLoad = 2.0 * zLisn;
+        }
+        out.push_back(insertion_loss_db(network, zSource, zLoad));
+    }
+    return out;
 }
 
 }  // namespace Hertz

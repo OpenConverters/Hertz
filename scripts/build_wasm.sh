@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Build the Hertz WASM engine into web/public/ (hertz.js + hertz.wasm).
-# Links the Emscripten-built MKF static libs from WebLibMKF for the FFT.
+# Build the Hertz WASM engine into web/public/ (hertz.js + hertz.wasm), and
+# stage Kirchhoff's ngspice-enabled engine (kirchhoff.js) next to it — the
+# independent solver the #299 round-trip cross-check runs in the browser.
 #   env: EMSDK_ENV     (default /home/alf/emsdk/emsdk_env.sh)
 #        WEBLIBMKF     (default ~/OpenMagnetics/WebLibMKF)
+#        KH_WASM       (default ~/OpenConverters/Kirchhoff/build-wasm-ng/kirchhoff.js;
+#                       must be the ENABLE_NGSPICE=ON build — the OFF build
+#                       reports 'Kirchhoff built without libngspice' at run time)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -25,4 +29,11 @@ em++ -O2 -std=c++20 -fwasm-exceptions --bind \
   -sALLOW_MEMORY_GROWTH=1 -sDYNAMIC_EXECUTION=0 -sENVIRONMENT=web,worker \
   -o web/public/hertz.js
 
-ls -la web/public/hertz.js web/public/hertz.wasm
+# Kirchhoff's in-browser ngspice (ABT #299). Loud failure, never a silent skip:
+# without it the round-trip button cannot run.
+KH_WASM="${KH_WASM:-$HOME/OpenConverters/Kirchhoff/build-wasm-ng/kirchhoff.js}"
+[ -f "$KH_WASM" ] || { echo "Kirchhoff wasm engine not found: $KH_WASM — build it with
+  cmake --build ~/OpenConverters/Kirchhoff/build-wasm-ng --target libKirchhoff" >&2; exit 1; }
+cp "$KH_WASM" web/public/kirchhoff.js
+
+ls -la web/public/hertz.js web/public/hertz.wasm web/public/kirchhoff.js

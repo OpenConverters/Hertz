@@ -532,6 +532,7 @@ async function runDesign(makeParams, { keepBindings }) {
     design.value = attempt.d
     ilCm.value = attempt.cm
     ilDm.value = attempt.dm
+    roundTrip.value = null
     worstCaseAt.value = attempt.at
     const d = design.value
     interaction.value = engine.inputFilterInteraction(d.lDmH, d.cXSelectedF * (d.cXDmFactor ?? 1),
@@ -551,6 +552,10 @@ watch(gridVrms, (v) => {
 })
 
 const ilSeries = () => [
+  ...(roundTrip.value?.cm ? [{ id: 'cmsp', label: 'CM ngspice round-trip (LISN bench)', color: 'var(--s-1)', dash: '9 3',
+    points: roundTrip.value.cm.f.map((f, i) => ({ f, v: roundTrip.value.cm.il[i] })) }] : []),
+  ...(roundTrip.value?.dm ? [{ id: 'dmsp', label: 'DM ngspice round-trip (LISN bench)', color: 'var(--s-2)', dash: '9 3',
+    points: roundTrip.value.dm.f.map((f, i) => ({ f, v: roundTrip.value.dm.il[i] })) }] : []),
   ...(measured.value?.cm ? [{ id: 'cmm', label: `CM measured (${measured.value.mpn})`, color: 'var(--s-1)', dash: '1 4',
     points: measured.value.cm.f.map((f, i) => ({ f, v: measured.value.cm.db[i] })) }] : []),
   ...(measured.value?.dm ? [{ id: 'dmm', label: `DM measured (${measured.value.mpn})`, color: 'var(--s-2)', dash: '1 4',
@@ -810,6 +815,56 @@ function ilSourceFor(mode) {
   if (mode === 'dm') return one('dm')
   return (fHz) => Math.min(one('cm')(fHz), one('dm')(fHz))
 }
+// ── #299: ngspice round-trip — an INDEPENDENT engine (Kirchhoff's in-browser
+// libngspice) solves the exported deck; the ABCD twin is evaluated under the
+// deck's ACTUAL terminations (deckAbcdIl). IL = vdb_ref − vdb_filtered — the
+// LISN's own eut→receiver divider cancels exactly in the ratio.
+const roundTrip = ref(null)     // {cm:{f,il,twin}, dm:{...}, verdict:{cm:{spice,twin,delta},...}} | {error}
+const roundTripBusy = ref(false)
+let khEnginePromise = null
+function kirchhoffEngine() {
+  if (!khEnginePromise) {
+    khEnginePromise = import(/* @vite-ignore */ new URL('/kirchhoff.js', window.location.origin).href)
+      .then((m) => m.default())
+  }
+  return khEnginePromise
+}
+async function runRoundTrip() {
+  if (!design.value) return
+  roundTripBusy.value = true
+  roundTrip.value = null
+  try {
+    const kh = await kirchhoffEngine()
+    const engine = await api()
+    const port = nLines.value === 2 ? 'meas_line' : 'meas_l1'
+    const result = { verdict: {} }
+    for (const mode of ['cm', 'dm']) {
+      const filt = JSON.parse(kh.run_ngspice_ac(engine.filterSpiceNetlist(design.value, netlistLisn.value, mode)))
+      const ref = JSON.parse(kh.run_ngspice_ac(engine.filterReferenceNetlist(netlistLisn.value, mode, nLines.value)))
+      if (!filt.success) throw new Error(`ngspice (${mode} filter deck): ${filt.error}`)
+      if (!ref.success) throw new Error(`ngspice (${mode} reference deck): ${ref.error}`)
+      const keyF = Object.keys(filt.vectors).find((k) => k.toLowerCase() === port)
+      const keyR = Object.keys(ref.vectors).find((k) => k.toLowerCase() === port)
+      if (!keyF || !keyR) throw new Error(`measurement vector ${port} missing from the ngspice result`)
+      const mag = (v, i) => Math.hypot(v.re[i], v.im?.[i] ?? 0)
+      const f = filt.frequenciesHz
+      const il = f.map((_, i) => 20 * Math.log10(mag(ref.vectors[keyR], i) / mag(filt.vectors[keyF], i)))
+      const twin = engine.deckAbcdIl(design.value, netlistLisn.value, mode, f)
+      const fD = mode === 'cm' ? design.value.fDesignCmHz : design.value.fDesignDmHz
+      const fClamped = Math.min(Math.max(fD, f[0]), f[f.length - 1])
+      const spiceAt = ilInterp(fClamped, { f, db: il })
+      const twinAt = ilInterp(fClamped, { f, db: twin })
+      result[mode] = { f, il, twin }
+      result.verdict[mode] = { spice: spiceAt, twin: twinAt, delta: Math.abs(spiceAt - twinAt) }
+    }
+    roundTrip.value = result
+  } catch (e) {
+    roundTrip.value = { error: e.message }
+  } finally {
+    roundTripBusy.value = false
+  }
+}
+
 const predicted = ref(null)   // {traces: [{name, mode, f[], measured[], predicted[]}], analysis, limitRuns}
 async function computePredicted() {
   predicted.value = null
@@ -1230,6 +1285,23 @@ function downloadNetlist() {
               <div v-else-if="ilCm && ilDm">
                 <p class="section-label">In-circuit insertion loss — solid: nominal · dashed: CISPR 17 worst case · dot: requirement</p>
                 <LogChart :series="ilSeries()" :violations="requirementMarkers()" violation-label="your requirements (CM green, DM blue)" y-label="dB" :height="260" data-test="il-chart" />
+                <p style="display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; margin: 0.4rem 0 0.1rem">
+                  <button class="ghost" data-test="run-roundtrip" :disabled="roundTripBusy" @click="runRoundTrip">
+                    {{ roundTripBusy ? 'RUNNING NGSPICE…' : 'NGSPICE ROUND-TRIP' }}</button>
+                  <span v-if="roundTrip?.verdict" class="chip"
+                        :class="roundTrip.verdict.cm.delta <= 1 && roundTrip.verdict.dm.delta <= 1 ? 'pass' : 'fail'"
+                        data-test="roundtrip-verdict">
+                    NGSPICE×ABCD CM Δ{{ roundTrip.verdict.cm.delta.toFixed(2) }} dB ·
+                    DM Δ{{ roundTrip.verdict.dm.delta.toFixed(2) }} dB @ f<sub>design</sub></span>
+                  <span v-if="roundTrip?.error" class="err" data-test="roundtrip-error">
+                    ngspice round-trip failed: {{ roundTrip.error }}</span>
+                </p>
+                <p class="note">Independent cross-check (#299): the exported deck — this filter plus one
+                  LISN per line — is solved by Kirchhoff's in-browser ngspice, and the ABCD model is
+                  re-evaluated under the deck's own bench (≈0 Ω source, complex LISN load), ideal
+                  elements as the deck states. The dashed round-trip curves are LISN-bench IL, not the
+                  25/100 Ω chip quantities. Δ > 1 dB means the engines model DIFFERENT circuits and is
+                  flagged, never averaged away. First run downloads the ~11 MB engine.</p>
                 <p class="note">If the dashed worst-case curve still clears your requirement at the design
                   frequency, termination uncertainty cannot eat the margin. Ideal-element curves ignore
                   self-resonance and winding capacitance — above a few MHz a real single-stage filter

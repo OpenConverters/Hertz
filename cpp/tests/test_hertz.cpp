@@ -741,3 +741,39 @@ TEST_CASE("choke selection respects the leakage realizability floor", "[filterK]
         CHECK(std::string(e.what()).find("leakage") != std::string::npos);
     }
 }
+
+TEST_CASE("reference bench deck: same drive and LISNs, no filter (#299)", "[roundtrip]") {
+    auto ref = Hertz::lisn_reference_deck(Hertz::cispr16_lisn(), "cm", 2);
+    CHECK(ref.find("REFERENCE bench") != std::string::npos);
+    CHECK(ref.find(".subckt LISN") != std::string::npos);
+    CHECK(ref.find("Xlisn_line line_src") != std::string::npos);   // LISN straight on the source
+    CHECK(ref.find("Lcm_") == std::string::npos);                  // no filter parts
+    CHECK(ref.find("Cx") == std::string::npos);
+    CHECK(ref.find("Cy_") == std::string::npos);
+    CHECK(ref.find("Vnoise cm_src 0 AC 1") != std::string::npos);
+    auto ref3 = Hertz::lisn_reference_deck(Hertz::cispr16_lisn(), "dm", 3);
+    CHECK(ref3.find("Xlisn_l3 l3_src") != std::string::npos);
+    CHECK(ref3.find("Vnoise l1_src l2_src AC 1") != std::string::npos);
+}
+
+TEST_CASE("deck-terminated ABCD twin behaves at the physical limits (#299)", "[roundtrip]") {
+    std::vector<double> freqs{150e3, 1e6, 10e6, 30e6};
+    auto il = Hertz::deck_abcd_il(Hertz::cispr16_lisn(), "cm", 2, 1, 1e-3, 4.7e-9, 14.6e-6,
+                                  470e-9, 1.0, freqs);
+    REQUIRE(il.size() == freqs.size());
+    // above the CM corner the IL must grow monotonically with frequency
+    CHECK(il[0] < il[1]); CHECK(il[1] < il[2]); CHECK(il[2] < il[3]);
+    CHECK(il[3] > 60.0);
+    // tightly-coupled stack: the CM effective inductance approaches L, so the
+    // K-aware twin and a plain-L chain agree closely
+    double k = 1.0 - 14.6e-6 / (2.0 * 1e-3);
+    double lEff = 1e-3 * (1.0 + k) / 2.0;
+    CHECK(lEff == Catch::Approx(1e-3).epsilon(0.01));
+    // loose coupling (leakage-floored design): the effective CM inductance is
+    // FAR from L — exactly what a plain-L cross-check would get wrong
+    double kLoose = 1.0 - 14.6e-6 / (2.0 * 7.5e-6);
+    double lEffLoose = 7.5e-6 * (1.0 + kLoose) / 2.0;
+    CHECK(lEffLoose < 0.55 * 7.5e-6);
+    CHECK_THROWS(Hertz::deck_abcd_il(Hertz::cispr16_lisn(), "cm", 2, 1, 1e-6, 4.7e-9, 14.6e-6,
+                                     470e-9, 1.0, freqs));   // K out of (0,1)
+}

@@ -10,5 +10,6 @@ web/node_modules/
 web/dist/
 web/public/hertz.js
 web/public/hertz.wasm
+web/public/kirchhoff.js
 web/test-results/
 web/playwright-report/

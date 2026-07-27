@@ -59,6 +59,10 @@ const xCyL = (s) => xCmc(s) + 195
 const xCyN = (s) => xCyL(s) + 26
 const xXk = (s, k) => xCx(s) + k * 34            // n>2: X-capacitor cluster
 const xYk = (s, i) => xCmc(s) + 205 + i * 26     // n>2: Y-capacitor cluster
+// n-rail CMC core: one bar pair BETWEEN each adjacent winding pair (the
+// multi-winding transformer convention). Bars run parallel to the windings and
+// never cross a conductor — vertical bars through the coils read as junctions.
+const coreY = (i) => (rails.value[i] + rails.value[i + 1]) / 2
 
 // ── KH-style render verification ─────────────────────────────────────────────
 // Values and components come from the CIAS truth (ciasFilter.js); only the
@@ -323,15 +327,19 @@ const cls = (ref) => ({
            :role="interactive ? 'button' : null" :aria-label="`Select CMC${s}`">
           <rect :x="xCmc(s) - 8" :y="rails[0] - 22" width="76" :height="rails[N - 1] - rails[0] + 34" fill="transparent" />
           <g stroke="currentColor" stroke-width="2" fill="none">
+            <!-- windings: humps face the core bar beside them (top winding down,
+                 every other up) — the same convention as the 2-rail symbol -->
             <path v-for="(ry, i) in rails" :key="'w' + i"
-                  :d="`M ${xCmc(s)} ${ry} ` + [0, 1, 2, 3].map(() => `a 7.5 9 0 0 1 15 0`).join(' ')" />
+                  :d="`M ${xCmc(s)} ${ry} ` + [0, 1, 2, 3].map(() => `a 7.5 9 0 0 ${i === 0 ? 0 : 1} 15 0`).join(' ')" />
+            <!-- shared core: a bar pair between each adjacent winding pair -->
+            <template v-for="(_, i) in rails.slice(0, N - 1)" :key="'core' + i">
+              <line :x1="xCmc(s) + 4" :y1="coreY(i) - 4" :x2="xCmc(s) + 56" :y2="coreY(i) - 4" />
+              <line :x1="xCmc(s) + 4" :y1="coreY(i) + 4" :x2="xCmc(s) + 56" :y2="coreY(i) + 4" />
+            </template>
           </g>
-          <!-- shared core: dashed bars, not a conductor -->
-          <g stroke="currentColor" stroke-width="2" stroke-dasharray="5 4" fill="none">
-            <line :x1="xCmc(s) + 26" :y1="rails[0] - 14" :x2="xCmc(s) + 26" :y2="rails[N - 1] + 6" />
-            <line :x1="xCmc(s) + 34" :y1="rails[0] - 14" :x2="xCmc(s) + 34" :y2="rails[N - 1] + 6" />
-          </g>
-          <circle v-for="(ry, i) in rails" :key="'d' + i" :cx="xCmc(s) + 5" :cy="ry - 10" r="2.6" fill="currentColor" />
+          <!-- polarity dots: same (left) end on every winding, clear of the humps -->
+          <circle v-for="(ry, i) in rails" :key="'d' + i" :cx="xCmc(s) + 5" :cy="ry + (i === 0 ? -7 : 7)"
+                  r="2.6" fill="currentColor" />
           <text :x="xCmc(s) + 30" :y="rails[0] - 18" text-anchor="middle" font-family="var(--mono)" font-size="12"
                 fill="currentColor">CMC{{ s }}</text>
           <text :x="xCmc(s) + 64" :y="rails[0] - 6" font-family="var(--mono)"

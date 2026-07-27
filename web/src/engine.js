@@ -34,6 +34,13 @@ export async function api() {
       if (text.startsWith('{')) unwrap(text)
       return text
     },
+    filterReferenceNetlist: (lisnKind, mode, nLines) => {
+      const text = mod.filterReferenceNetlist(lisnKind, mode, nLines)
+      if (text.startsWith('{')) unwrap(text)
+      return text
+    },
+    deckAbcdIl: (design, lisnKind, mode, freqsHz) =>
+      unwrap(mod.deckAbcdIl(JSON.stringify(design), lisnKind, mode, Float64Array.from(freqsHz))),
     lisnData: (kind, fMin, fMax, pointsPerDecade = 60) =>
       unwrap(mod.lisnData(kind, fMin, fMax, pointsPerDecade)),
     separateTraces: (line, neutral) =>
