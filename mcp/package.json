@@ -1,0 +1,25 @@
+{
+  "name": "hertz-mcp-app",
+  "version": "0.1.0",
+  "description": "Hertz MCP App — spectrum-vs-limit widget",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rm -rf dist && INPUT=spectrum.html vite build && INPUT=curves.html vite build && INPUT=chart.html vite build && INPUT=filter.html vite build && INPUT=wasmprobe.html vite build",
+    "dev": "vite"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vue": "^3.5.40"
+  },
+  "private": "true",
+  "devDependencies": {
+    "vite": "^8.1.5",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

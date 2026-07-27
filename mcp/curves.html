@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hertz curves</title>
+    <style>
+      :root {
+        --fg: #1c1f24; --muted: #6b7280; --grid: #d7dbe0; --card: rgba(0,0,0,.04);
+        --c1: #1d6fd8; --c2: #d1342f; --c3: #0b8a4b; --c4: #b45309; --c5: #7c3aed;
+        --s-1: #13aa51; --s-2: #3987e5; --s-3: #d4548e; --s-limit: #c07f28;
+        --sel: #0b8a4b; --noteb: rgba(180,83,9,.10);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e7e9ee; --muted: #9aa3b0; --grid: #333a44; --card: rgba(255,255,255,.06);
+          --c1: #5aa9ff; --c2: #ff6b63; --c3: #3ddc8b; --c4: #fbbf24; --c5: #c4b5fd;
+          --sel: #3ddc8b; --noteb: rgba(251,191,36,.13);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: transparent; color: var(--fg);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; padding: 10px 12px 2px; }
+      #subtitle { color: var(--muted); font-size: 12.5px; padding: 0 12px 6px; }
+      #note {
+        display: none; margin: 0 12px 8px; padding: 6px 9px;
+        background: var(--noteb); border-radius: 6px; font-size: 12.5px;
+      }
+      svg { width: 100%; height: auto; display: block; cursor: crosshair; }
+      .grid { stroke: var(--grid); stroke-width: 1; }
+      .tick, .axis { fill: var(--muted); font-size: 10.5px; }
+      .ser { fill: none; stroke-width: 1.7; stroke-linejoin: round; }
+      .mark { fill: var(--c2); }
+      .cursor { stroke: var(--sel); stroke-width: 1; stroke-dasharray: 3 3; }
+      .sel { fill: var(--sel); }
+      #legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 6px 12px 0; font-size: 12px; color: var(--muted); }
+      .key { display: inline-flex; align-items: center; gap: 5px; }
+      .key i { width: 11px; height: 3px; border-radius: 2px; display: inline-block; }
+      .foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px 12px; }
+      #readout { flex: 1 1 240px; font-size: 12.5px; background: var(--card); border-radius: 6px; padding: 6px 9px; }
+      button {
+        font: inherit; font-size: 12.5px; padding: 5px 11px; border-radius: 6px;
+        border: 1px solid var(--grid); background: var(--card); color: var(--fg); cursor: pointer;
+      }
+      .disclaimer { color: var(--muted); font-size: 11px; padding: 0 12px 10px; }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">Result</h1>
+    <div id="subtitle"></div>
+    <div id="note"></div>
+    <svg id="chart" viewBox="0 0 760 380" role="img" aria-label="Curves versus frequency"></svg>
+    <div id="legend"></div>
+    <div class="foot">
+      <span id="readout">Click a curve to inspect a point.</span>
+      <button id="fullscreen">Expand</button>
+    </div>
+    <p class="disclaimer">Pre-compliance estimate only — not a compliance statement.</p>
+    <script type="module" src="/src/curves.js"></script>
+  </body>
+</html>

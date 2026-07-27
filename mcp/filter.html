@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hertz filter</title>
+    <style>
+      :root {
+        --fg: #1c1f24; --muted: #6b7280; --line: #d7dbe0;
+        --card: rgba(0,0,0,.04); --noteb: rgba(180,83,9,.10); --on: #1d6fd8;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e7e9ee; --muted: #9aa3b0; --line: #333a44;
+          --card: rgba(255,255,255,.06); --noteb: rgba(251,191,36,.13); --on: #5aa9ff;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: transparent; color: var(--fg);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .wrap { padding: 10px 12px 12px; }
+      .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; flex: 1 1 auto; }
+      .tabs { display: flex; gap: 4px; }
+      .tabs button {
+        font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--card); color: var(--muted); cursor: pointer;
+      }
+      .tabs button.on { color: var(--on); border-color: var(--on); font-weight: 600; }
+      .sub { color: var(--muted); font-size: 12.5px; margin: 3px 0 8px; }
+      .note { background: var(--noteb); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; margin-bottom: 8px; }
+      .head select {
+        font: inherit; font-size: 12.5px; padding: 4px 8px; border-radius: 6px;
+        border: 1px solid var(--line); background: var(--card); color: var(--fg);
+      }
+      .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+      .tbl th {
+        text-align: left; font-weight: 600; color: var(--muted);
+        border-bottom: 1px solid var(--line); padding: 4px 6px;
+      }
+      .tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); }
+      .tbl tr.bound td { background: rgba(19, 170, 81, .10); }
+      .tbl button {
+        font: inherit; font-size: 11.5px; padding: 2px 8px; border-radius: 5px;
+        border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer;
+      }
+      .tbl button:disabled { opacity: .45; cursor: default; }
+      .tag { font-size: 11px; color: #13aa51; font-weight: 600; }
+      .muted { color: var(--muted); }
+      .pane-msg { font-size: 12.5px; color: var(--muted); padding: 8px 2px; }
+      .err {
+        background: rgba(255,93,85,.12); border-radius: 6px;
+        padding: 6px 9px; font-size: 12.5px; margin-bottom: 8px;
+      }
+      .readout {
+        margin-top: 8px; font-size: 12.5px; background: var(--card);
+        border-radius: 6px; padding: 6px 9px;
+      }
+      .readout.muted { color: var(--muted); }
+      .disclaimer { color: var(--muted); font-size: 11px; margin: 8px 0 0; }
+      svg { width: 100%; height: auto; display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/filter.js"></script>
+  </body>
+</html>

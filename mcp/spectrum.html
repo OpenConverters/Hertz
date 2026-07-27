@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hertz spectrum</title>
+    <style>
+      :root {
+        --bg: transparent;
+        --fg: #1c1f24;
+        --muted: #6b7280;
+        --grid: #d7dbe0;
+        --trace: #1d6fd8;
+        --limit: #d1342f;
+        --hole: rgba(209, 52, 47, 0.09);
+        --sel: #0b8a4b;
+        --card: rgba(0, 0, 0, 0.04);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #e7e9ee;
+          --muted: #9aa3b0;
+          --grid: #333a44;
+          --trace: #5aa9ff;
+          --limit: #ff6b63;
+          --hole: rgba(255, 107, 99, 0.13);
+          --sel: #3ddc8b;
+          --card: rgba(255, 255, 255, 0.06);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .head {
+        display: flex; align-items: baseline; gap: 10px;
+        padding: 10px 12px 4px;
+      }
+      h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+      .verdict {
+        font-weight: 700; font-size: 12px; letter-spacing: 0.06em;
+        padding: 2px 8px; border-radius: 999px;
+      }
+      .verdict.pass { color: #0b8a4b; background: rgba(11, 138, 75, 0.14); }
+      .verdict.fail { color: #d1342f; background: rgba(209, 52, 47, 0.14); }
+      #subtitle { color: var(--muted); font-size: 12.5px; padding: 0 12px 6px; }
+      #holes {
+        display: none; margin: 0 12px 8px; padding: 6px 9px;
+        background: var(--hole); border-radius: 6px; font-size: 12.5px;
+      }
+      svg { width: 100%; height: auto; display: block; cursor: crosshair; }
+      .grid { stroke: var(--grid); stroke-width: 1; }
+      .tick { fill: var(--muted); font-size: 10.5px; }
+      .axis { fill: var(--muted); font-size: 10.5px; }
+      .trace { fill: none; stroke: var(--trace); stroke-width: 1.4; stroke-linejoin: round; }
+      .limit { stroke: var(--limit); stroke-width: 2; stroke-dasharray: 6 4; }
+      .hole { fill: var(--hole); }
+      .offender { fill: var(--limit); }
+      .cursor { stroke: var(--sel); stroke-width: 1; stroke-dasharray: 3 3; }
+      .sel { fill: var(--sel); }
+      .foot {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        padding: 8px 12px 12px;
+      }
+      #readout {
+        flex: 1 1 260px; min-width: 200px; font-size: 12.5px;
+        background: var(--card); border-radius: 6px; padding: 6px 9px;
+      }
+      button {
+        font: inherit; font-size: 12.5px; padding: 5px 11px; border-radius: 6px;
+        border: 1px solid var(--grid); background: var(--card); color: var(--fg);
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.45; cursor: default; }
+      .disclaimer { color: var(--muted); font-size: 11px; padding: 0 12px 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <h1>Conducted emissions</h1>
+      <span id="verdict" class="verdict"></span>
+    </div>
+    <div id="subtitle">Waiting for scan…</div>
+    <div id="holes"></div>
+    <svg id="chart" viewBox="0 0 760 380" role="img" aria-label="Spectrum versus limit line"></svg>
+    <div class="foot">
+      <span id="readout">Click the trace to inspect a point.</span>
+      <button id="ask" disabled>Ask about this point</button>
+      <button id="fullscreen">Expand</button>
+    </div>
+    <p class="disclaimer">Pre-compliance estimate only — not a compliance statement.</p>
+    <script type="module" src="/src/spectrum.js"></script>
+  </body>
+</html>

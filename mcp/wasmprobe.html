@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>WASM probe</title>
+    <style>
+      :root { --fg:#1c1f24; --muted:#6b7280; --line:#d7dbe0; --card:rgba(0,0,0,.04); }
+      @media (prefers-color-scheme: dark) {
+        :root { --fg:#e7e9ee; --muted:#9aa3b0; --line:#333a44; --card:rgba(255,255,255,.06); }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin:0; background:transparent; color:var(--fg); padding:12px;
+        font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .head { display:flex; align-items:baseline; gap:10px; }
+      h1 { font-size:15px; margin:0; font-weight:650; }
+      .verdict { font-weight:700; font-size:12px; letter-spacing:.06em; padding:2px 8px; border-radius:999px; }
+      .verdict.ok  { color:#0b8a4b; background:rgba(11,138,75,.15); }
+      .verdict.bad { color:#d1342f; background:rgba(209,52,47,.15); }
+      table { border-collapse:collapse; width:100%; font-size:12.5px; margin-top:10px; }
+      td { padding:5px 6px; border-bottom:1px solid var(--line); }
+      td.y { color:#0b8a4b; font-weight:600; }
+      td.n { color:#d1342f; font-weight:600; }
+      #err {
+        display:none; margin-top:10px; padding:6px 9px; border-radius:6px;
+        background:rgba(209,52,47,.12); font-size:12px; font-family:ui-monospace,monospace;
+      }
+      #meaning { margin-top:10px; font-size:12.5px; background:var(--card); border-radius:6px; padding:8px 9px; }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <h1>WebAssembly in this host</h1>
+      <span id="verdict" class="verdict">probing…</span>
+    </div>
+    <table><tbody id="rows"></tbody></table>
+    <div id="err"></div>
+    <div id="meaning"></div>
+    <script type="module" src="/src/wasmprobe.js"></script>
+  </body>
+</html>

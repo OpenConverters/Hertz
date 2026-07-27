@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hertz chart</title>
+    <style>
+      :root { --fg: #1c1f24; --muted: #6b7280; --line: #d7dbe0; --noteb: rgba(180,83,9,.10); }
+      @media (prefers-color-scheme: dark) {
+        :root { --fg: #e7e9ee; --muted: #9aa3b0; --line: #333a44; --noteb: rgba(251,191,36,.13); }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: transparent; color: var(--fg);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .wrap { padding: 10px 12px 12px; }
+      h1 { font-size: 15px; margin: 0 0 2px; font-weight: 650; letter-spacing: -.01em; }
+      .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 6px; }
+      .note { background: var(--noteb); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; margin-bottom: 8px; }
+      .disclaimer { color: var(--muted); font-size: 11px; margin: 8px 0 0; }
+      svg { width: 100%; height: auto; display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/chart.js"></script>
+  </body>
+</html>
