@@ -4,11 +4,12 @@
 // vite dev server / any non-*.openconverters.com host), so dev traffic never
 // pollutes the data:
 //
-//   1) A same-origin POST to /telemetry, proxied by nginx to the local
-//      `oc-telemetry` service. The Hertz vhost does NOT proxy /telemetry (no
-//      oc-telemetry-only.conf include), so that sink simply 404s here and is
-//      swallowed — Hertz reports through Umami only. Wire the nginx include if
-//      the richer event table is ever wanted.
+//   1) [NOT WIRED ON HERTZ] The sibling apps also POST to /telemetry, proxied by
+//      nginx to the local `oc-telemetry` service. The Hertz vhost does not
+//      include oc-telemetry-only.conf, so that endpoint 405s here — posting to
+//      it anyway would log a console error on EVERY event and mask real
+//      failures, so this build simply does not post. Add the nginx include and
+//      restore the beacon together if the richer event table is ever wanted.
 //   2) window.umami.track(...) — the reused OM Umami instance served same-origin
 //      under /stats. Auto-pageviews are handled by the Umami script itself; this
 //      only mirrors the discrete product events.
@@ -91,25 +92,9 @@ export function trackEvent(eventType, { target = null, ...props } = {}) {
             app_version: _ctx.appVersion,
         });
 
-        // sendBeacon survives page unload (export clicks, navigations); fall back
-        // to keepalive fetch. Both are fire-and-forget.
-        let sent = false;
-        try {
-            if (navigator && typeof navigator.sendBeacon === 'function') {
-                sent = navigator.sendBeacon('/telemetry',
-                    new Blob([body], { type: 'application/json' }));
-            }
-        } catch (_) { sent = false; }
-        if (!sent) {
-            fetch('/telemetry', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
-                keepalive: true,
-            }).catch(() => {});
-        }
+        void body;   // the /telemetry sink is not wired on Hertz (see header)
 
-        // Mirror to Umami (lightweight props only). No-ops until the script loads.
+        // Umami is the ONLY sink here (lightweight props only). No-ops until the script loads.
         if (typeof window !== 'undefined' && window.umami &&
             typeof window.umami.track === 'function') {
             window.umami.track(eventType, hasProps ? { target, ...props } : { target });
