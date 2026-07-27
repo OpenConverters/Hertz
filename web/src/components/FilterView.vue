@@ -1214,11 +1214,15 @@ function downloadNetlist() {
                           ? (measuredIlAt[p.mpn].rec ? '~' : '') + measuredIlAt[p.mpn].db.toFixed(1) + ' dB' : '—' }}</td>
                       <td v-if="kindOf(selectedRef) === 'cmc'" class="note">
                         {{ p.ratedVoltageAcV ? p.ratedVoltageAcV + ' VAC' : p.ratedVoltageDcV ? p.ratedVoltageDcV + ' VDC' : 'unrated — verify' }}</td>
-                      <td>{{ kindOf(selectedRef) === 'cmc'
-                        ? (p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify')
-                        : p.safetyClass + (p.ratedVoltageV ? ' / ' + p.ratedVoltageV + ' V*' : '') }}
-                        <span v-if="kindOf(selectedRef) === 'cmc' && saturationWarn(p)"
-                              style="color: var(--fault)" data-test="saturation-warn"> {{ saturationWarn(p) }}</span></td>
+                      <td>
+                        <template v-if="kindOf(selectedRef) === 'cmc'">
+                          {{ p.ratedCurrentA !== null && p.ratedCurrentA !== undefined ? p.ratedCurrentA.toFixed(1) : 'unrated — verify' }}
+                          <span v-if="saturationWarn(p)" style="color: var(--fault)" data-test="saturation-warn"> {{ saturationWarn(p) }}</span>
+                        </template>
+                        <template v-else>{{ p.safetyClass }}<template v-if="p.ratedVoltageV"> / {{ p.ratedVoltageV }} V<abbr
+                          data-test="voltage-caveat"
+                          style="cursor: help; color: var(--amber); text-decoration: underline dotted; text-underline-offset: 2px"
+                          title="Datasheet rated voltage — may be a DC rating, not the AC mains rating. The X2/Y2 safety class is defined for ≤310 VAC across the line; verify the AC rating on the datasheet before relying on this number.">*</abbr></template></template></td>
                       <td><button class="ghost" data-test="bind-part" @click="bindPart(p)">Use</button></td>
                     </tr>
                   </tbody>
