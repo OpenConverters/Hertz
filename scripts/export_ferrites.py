@@ -155,7 +155,11 @@ def main(source_path, output_path, curves_path=None):
             except (KeyError, IndexError, json.JSONDecodeError):
                 continue
             subtype = str(electrical.get("subtype", "")).lower().replace("_", "").replace("-", "")
-            if subtype != "chipbead":
+            # chipBead = SMD suppression bead (single-pass series element);
+            # cableCore = clamp-on / cable ferrite core the cable is threaded
+            # through. Both are a 1-port series impedance the picker consumes; the
+            # `kind` tag lets the cable-mitigation UI prefer real clamp-on cores.
+            if subtype not in ("chipbead", "cablecore"):
                 continue
             rows = measured_magnitudes(electrical.get("impedancePoints"))
             curve = build_curve(rows)
@@ -169,6 +173,7 @@ def main(source_path, output_path, curves_path=None):
                 "mpn": info.get("reference"),
                 "manufacturer": MANUFACTURER_CANONICAL.get(info.get("name"), info.get("name")),
                 "family": info.get("family") or "",
+                "kind": "cableCore" if subtype == "cablecore" else "bead",
                 "zAt100MHzOhm": interp_loglog(rows, Z_HEADLINE_HZ),
                 "zPeakOhm": max(m for _, m in rows),
                 "fPeakHz": max(rows, key=lambda r: r[1])[0],
@@ -184,7 +189,10 @@ def main(source_path, output_path, curves_path=None):
                               p["zAt100MHzOhm"] is None, p["zAt100MHzOhm"] or 0.0))
     with open(output_path, "w") as output:
         json.dump({"version": 1, "count": len(parts), "parts": parts}, output)
-    print(f"wrote {len(parts)} ferrite beads to {output_path} "
+    kinds = {}
+    for p in parts:
+        kinds[p["kind"]] = kinds.get(p["kind"], 0) + 1
+    print(f"wrote {len(parts)} ferrite parts ({kinds}) to {output_path} "
           f"({skipped_no_curve} skipped without a resolvable impedance curve)")
     if curves_path is not None:
         with open(curves_path, "w") as handle:

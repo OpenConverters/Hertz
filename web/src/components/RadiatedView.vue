@@ -52,11 +52,19 @@ const standardId = () => `cispr32_rad_${cls.value}_${distance.value}m`
 // bracketing point each side, for interpolation) and ordered SMALL-FIRST so the
 // picker returns the least adequate part. Parts that do not cover the whole
 // flagged band are dropped and COUNTED — never extrapolated, never hidden.
+//
+// This is a CABLE-mitigation picker, so real clamp-on / cable ferrite cores
+// (kind 'cableCore') are the physically-correct candidates — you thread the
+// cable through them. SMD suppression beads (kind 'bead') are used only if no
+// cable cores are catalogued at all, and the UI says so.
 function ferriteCandidates(fLo, fHi) {
   const curves = ferriteCurves.value?.curves || {}
+  const all = ferriteCatalog.value?.parts || []
+  const haveCableCores = all.some((p) => p.kind === 'cableCore')
+  const pool = haveCableCores ? all.filter((p) => p.kind === 'cableCore') : all
   const parts = []
   let coverageDropped = 0
-  for (const p of ferriteCatalog.value?.parts || []) {
+  for (const p of pool) {
     const c = curves[p.mpn]
     if (!c || !c.f?.length) continue
     if (c.f[0] > fLo || c.f[c.f.length - 1] < fHi) { coverageDropped += 1; continue }
@@ -72,7 +80,7 @@ function ferriteCandidates(fLo, fHi) {
     parts.push({ name: p.mpn, frequenciesHz: f, zOhm, phaseRad, _z: p.zAt100MHzOhm ?? p.zPeakOhm ?? 0, rec: !!c.rec })
   }
   parts.sort((a, b) => a._z - b._z)
-  return { parts, coverageDropped }
+  return { parts, coverageDropped, usingBeads: !haveCableCores }
 }
 
 async function ingest(files) {
@@ -134,16 +142,16 @@ async function cableMitigation(engine, analysis) {
   if (ferriteState.value !== 'ready') {
     return { needed: true, target, pick: { error: 'ferrite catalog unreachable from this deployment — the target above is the attenuation to add; select a cable ferrite / clip-on CM core whose |Z| curve meets it' } }
   }
-  const { parts, coverageDropped } = ferriteCandidates(fc[0], fc[fc.length - 1])
+  const { parts, coverageDropped, usingBeads } = ferriteCandidates(fc[0], fc[fc.length - 1])
   if (!parts.length) {
-    return { needed: true, target, coverageDropped,
-             pick: { error: `no catalogued ferrite covers the whole flagged band (${fmtHz(fc[0])}–${fmtHz(fc[fc.length - 1])}) — ${coverageDropped} parts were excluded for insufficient |Z|-curve coverage` } }
+    return { needed: true, target, coverageDropped, usingBeads,
+             pick: { error: `no catalogued ${usingBeads ? 'ferrite bead' : 'cable ferrite core'} covers the whole flagged band (${fmtHz(fc[0])}–${fmtHz(fc[fc.length - 1])}) — ${coverageDropped} parts were excluded for insufficient |Z|-curve coverage` } }
   }
   let pick = null
   try { pick = engine.cableMitigation(fc, target.target, parts, Number(cmRef.value), Number(maxTurns.value)) }
   catch (e) { pick = { error: e.message } }
   if (pick && pick.partName) pick.rec = parts.find((p) => p.name === pick.partName)?.rec === true
-  return { needed: true, target, pick, candidateCount: parts.length, coverageDropped }
+  return { needed: true, target, pick, candidateCount: parts.length, coverageDropped, usingBeads }
 }
 
 // catalog row behind the pick, for the maker / headline-|Z| readout
@@ -267,10 +275,17 @@ const violations = () => {
               <span :style="{ color: result.mitigation.pick.worstMarginDb < 0 ? 'var(--fault)' : 'var(--ok)' }">
                 {{ fmtDb(result.mitigation.pick.worstMarginDb) }}</span><span class="unit">dB</span></div>
           </div>
-          <p class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b> catalogued ferrite beads
-            whose measured |Z| curve covers the band (TAS catalog, <code>chipBead</code> — SMD suppression
-            beads; phase reconstructed from |Z|, marked <b>~</b>). These are single-pass series parts, not
-            clamp-on cable cores, but the model is the same series common-mode impedance. The CM loop
+          <p v-if="!result.mitigation.usingBeads" class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b>
+            real Würth clamp-on / cable ferrite cores whose measured |Z| curve covers the band (MAS catalog,
+            <code>cableCore</code> — WE REDEXPERT, 1-turn |Z|; phase reconstructed from |Z|, marked <b>~</b>).
+            Thread the cable through the core; more turns raise |Z| by ≈turns². The CM loop impedance
+            ({{ cmRef }} Ω) is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so treat the pick
+            as a starting part, not a spec.<span v-if="result.mitigation.coverageDropped">
+            {{ result.mitigation.coverageDropped }} cores were excluded for not covering the whole band.</span></p>
+          <p v-else class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b> catalogued ferrite beads
+            whose measured |Z| curve covers the band (<code>chipBead</code> — SMD suppression beads; phase
+            reconstructed from |Z|, marked <b>~</b>). No cable cores are catalogued in this deployment, so these
+            single-pass beads stand in — same series-impedance model, but not clamp-on parts. The CM loop
             impedance ({{ cmRef }} Ω) is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so
             treat the pick as a starting part, not a spec.<span v-if="result.mitigation.coverageDropped">
             {{ result.mitigation.coverageDropped }} parts were excluded for not covering the whole band.</span></p>

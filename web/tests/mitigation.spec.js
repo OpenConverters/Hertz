@@ -7,9 +7,9 @@ import { test, expect } from '@playwright/test'
 const FERRITES = {
   version: 1, count: 3,
   parts: [
-    { mpn: 'FIX-S', manufacturer: 'Fixture', family: 'FIX', zAt100MHzOhm: 180, zPeakOhm: 220, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
-    { mpn: 'FIX-M', manufacturer: 'Fixture', family: 'FIX', zAt100MHzOhm: 330, zPeakOhm: 400, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
-    { mpn: 'FIX-L', manufacturer: 'Fixture', family: 'FIX', zAt100MHzOhm: 560, zPeakOhm: 650, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
+    { mpn: 'FIX-S', manufacturer: 'Fixture', family: 'FIX', kind: 'cableCore', zAt100MHzOhm: 180, zPeakOhm: 220, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
+    { mpn: 'FIX-M', manufacturer: 'Fixture', family: 'FIX', kind: 'cableCore', zAt100MHzOhm: 330, zPeakOhm: 400, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
+    { mpn: 'FIX-L', manufacturer: 'Fixture', family: 'FIX', kind: 'cableCore', zAt100MHzOhm: 560, zPeakOhm: 650, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
   ],
 }
 const CURVES = {
@@ -38,7 +38,7 @@ test('radiated screen emits a CM-attenuation target and picks a catalog ferrite'
   const part = await page.getByTestId('mitigation-part').textContent()
   expect(part).toMatch(/FIX-[SML]/)                            // one of the stubbed catalog parts
   await expect(page.getByTestId('mitigation-meets')).toBeVisible()
-  await expect(mit).toContainText('catalogued ferrite beads')  // honest catalog provenance note
+  await expect(mit).toContainText('cable ferrite cores')       // real clamp-on cores, not beads
   console.log('PART:', part, '| MEETS:', await page.getByTestId('mitigation-meets').textContent())
   expect(errors, errors.join('\n')).toHaveLength(0)
 })
