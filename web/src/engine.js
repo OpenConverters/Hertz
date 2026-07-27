@@ -54,6 +54,12 @@ export async function api() {
       unwrap(mod.inputFilterInteraction(lH, cF, vInMin, pIn)),
     radiatedEstimate: (freqs, dbua, cableM, distM) =>
       unwrap(mod.radiatedEstimate(JSON.stringify(freqs), JSON.stringify(dbua), cableM, distM)),
+    radiatedCmTarget: (freqs, dbua, cableM, distM, limitDbuvm, marginDb = 6) =>
+      unwrap(mod.radiatedCmTarget(JSON.stringify(freqs), JSON.stringify(dbua), cableM, distM,
+                                  JSON.stringify(limitDbuvm), marginDb)),
+    cableMitigation: (freqs, requiredDb, parts, cmReferenceOhm, maxTurns = 1) =>
+      unwrap(mod.cableMitigation(JSON.stringify(freqs), JSON.stringify(requiredDb),
+                                 JSON.stringify(parts), cmReferenceOhm, maxTurns)),
     measuredIlCurves: (freqs, zRe, zIm, cShuntF, stages, refZ) =>
       unwrap(mod.measuredIlCurves(JSON.stringify(freqs), JSON.stringify(zRe), JSON.stringify(zIm), cShuntF, stages, refZ)),
   }

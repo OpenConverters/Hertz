@@ -11,13 +11,25 @@ import { fmtHz, fmtDb } from '../format.js'
 const cableM = ref(1)
 const distance = ref('3')     // measurement distance the limit is scaled to
 const cls = ref('b')
+const margin = ref(6)         // buffer on the CM-attenuation target (dB)
+const cmRef = ref(150)        // CM loop impedance (Ω) — genuinely uncertain (it IS the ±20 dB)
+const maxTurns = ref(3)       // most cable passes the picker may use on one core
 const trace = ref(null)       // {name, frequenciesHz, dbua}
-const result = ref(null)      // {efield, uncertainty, analysis, limitRuns}
+const result = ref(null)      // {efield, uncertainty, analysis, limitRuns, mitigation}
 const error = ref('')
 const dragOver = ref(false)
 const fileInput = ref(null)
 
 const standardId = () => `cispr32_rad_${cls.value}_${distance.value}m`
+
+// Illustrative cable-ferrite / clip-on CM-choke |Z| curves (magnitude, Ω) — a
+// datasheet stand-in, ordered small-first so the picker returns the least part.
+// Swap for a real vendor catalog. Each spans the radiated band (30 MHz–1 GHz).
+const EXAMPLE_FERRITES = [
+  { name: 'clip-on S', frequenciesHz: [10e6, 30e6, 100e6, 300e6, 1e9], zOhm: [30, 90, 180, 220, 200] },
+  { name: 'clip-on M', frequenciesHz: [10e6, 30e6, 100e6, 300e6, 1e9], zOhm: [60, 170, 330, 400, 360] },
+  { name: 'clip-on L', frequenciesHz: [10e6, 30e6, 100e6, 300e6, 1e9], zOhm: [120, 300, 560, 650, 600] },
+]
 
 async function ingest(files) {
   const file = files[0]
@@ -54,10 +66,28 @@ async function estimate() {
     const fLo = Math.max(30e6, trace.value.frequenciesHz[0])
     const fHi = Math.min(1000e6, trace.value.frequenciesHz[trace.value.frequenciesHz.length - 1])
     const limitRuns = fLo < fHi ? engine.limitPolyline(standardId(), 'quasi_peak', fLo, fHi) : null
-    result.value = { efield: est.efieldDbuvm, uncertainty: est.modelUncertaintyDb, analysis, limitRuns }
+    const mitigation = cableMitigation(engine, analysis)
+    result.value = { efield: est.efieldDbuvm, uncertainty: est.modelUncertaintyDb, analysis, limitRuns, mitigation }
   } catch (e) {
     error.value = e.message
   }
+}
+
+// Turn the screen into a fix: the CM-CURRENT attenuation target (dB vs freq) over
+// the covered radiated band, then the least cable ferrite that meets it. Returns
+// null off-band, {needed:false} when the screen already passes, else {pick,...}.
+function cableMitigation(engine, analysis) {
+  const freqs = trace.value.frequenciesHz
+  const idx = analysis.limitsDbuv.map((l, i) => (l != null ? i : -1)).filter((i) => i >= 0)
+  if (!idx.length) return null
+  const fc = idx.map((i) => freqs[i])
+  const target = engine.radiatedCmTarget(fc, idx.map((i) => trace.value.dbua[i]),
+    Number(cableM.value), Number(distance.value), idx.map((i) => analysis.limitsDbuv[i]), Number(margin.value))
+  if (!target.needed) return { needed: false, target }
+  let pick = null
+  try { pick = engine.cableMitigation(fc, target.target, EXAMPLE_FERRITES, Number(cmRef.value), Number(maxTurns.value)) }
+  catch (e) { pick = { error: e.message } }
+  return { needed: true, target, pick }
 }
 
 // clearly-synthetic example: a 12 µA switching comb decaying over 30–300 MHz
@@ -119,6 +149,12 @@ const violations = () => {
             <option value="b">Class B (residential)</option>
             <option value="a">Class A (industrial)</option>
           </select></label>
+        <div class="row" style="margin-top: 0.7rem">
+          <label class="field"><span>CM loop impedance (Ω)</span>
+            <input v-model.number="cmRef" type="number" min="1" step="1" data-test="cm-ref" @change="estimate" /></label>
+          <label class="field"><span>Max cable turns</span>
+            <input v-model.number="maxTurns" type="number" min="1" max="10" step="1" data-test="max-turns" @change="estimate" /></label>
+        </div>
         <p class="note">Model: |E| = 1.257·10⁻⁶ · f · L<sub>eff</sub> · I<sub>CM</sub> / d, the
           electrically-short CM radiator (Ott/Paul), L<sub>eff</sub> capped at λ/4 above cable
           resonance — the model behind “≈5 µA on 1 m fails Class B at 3 m”.</p>
@@ -145,6 +181,30 @@ const violations = () => {
           far off this worst-case short-radiator model. A pass with more than
           {{ result.uncertainty }} dB in hand is meaningful; anything closer — and every fail —
           belongs on an open-area test site or in a chamber. This is triage, not a measurement.</p>
+      </div>
+      <div v-if="result && result.mitigation" class="panel" style="margin-bottom: 1rem" data-test="mitigation">
+        <p class="section-label">Cable common-mode mitigation</p>
+        <template v-if="result.mitigation.needed">
+          <p class="note">Because |E| ∝ I<sub>CM</sub>, the field is over the limit by exactly the
+            common-mode <b>current</b> attenuation you must add — worst case
+            <b>{{ fmtDb(result.mitigation.target.governingDb) }} dB at {{ fmtHz(result.mitigation.target.governingHz) }}</b>.
+            Up here a mains filter's choke has self-resonated, so the fix is a cable ferrite / clip-on CM choke.</p>
+          <div v-if="result.mitigation.pick.error" class="err">{{ result.mitigation.pick.error }}</div>
+          <div v-else class="readout">
+            <div class="cell"><b>Suggested part</b><span data-test="mitigation-part">{{ result.mitigation.pick.partName }}</span></div>
+            <div class="cell"><b>Cable turns</b><span>{{ result.mitigation.pick.turns }}</span></div>
+            <div class="cell"><b>Meets target</b>
+              <span class="chip" :class="result.mitigation.pick.meetsTarget ? 'pass' : 'fail'" data-test="mitigation-meets">
+                {{ result.mitigation.pick.meetsTarget ? 'YES' : 'NO — best effort' }}</span></div>
+            <div class="cell"><b>Worst margin</b>
+              <span :style="{ color: result.mitigation.pick.worstMarginDb < 0 ? 'var(--fault)' : 'var(--ok)' }">
+                {{ fmtDb(result.mitigation.pick.worstMarginDb) }}</span><span class="unit">dB</span></div>
+          </div>
+          <p class="note">Candidate list is an illustrative stand-in; the CM loop impedance ({{ cmRef }} Ω)
+            is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so treat the pick as a
+            starting part, not a spec.</p>
+        </template>
+        <p v-else class="note" data-test="mitigation-none">Screen passes — no cable common-mode mitigation indicated.</p>
       </div>
       <LogChart v-if="result" :series="series()" :ref-runs="refRuns()" :violations="violations()"
                 violation-label="over limit" y-label="dBµV/m" data-test="radiated-chart" />

@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "hertz/CableMitigation.hpp"
 #include "hertz/CombDetection.hpp"
 #include "hertz/Detector.hpp"
 #include "hertz/FilterDesign.hpp"
@@ -445,6 +446,48 @@ std::string radiated_estimate_js(const std::string& freqsJson, const std::string
     });
 }
 
+// Radiated screen -> common-mode CURRENT attenuation target (dB vs frequency)
+// plus the governing (worst, frequency) design point when any band is over.
+std::string radiated_cm_target_js(const std::string& freqsJson, const std::string& dbuaJson,
+                                  double cableLengthM, double distanceM,
+                                  const std::string& limitJson, double marginDb) {
+    return guarded([&]() -> std::string {
+        auto freqs = json::parse(freqsJson).get<std::vector<double>>();
+        auto target = Hertz::radiated_cm_attenuation_target_db(
+            freqs, json::parse(dbuaJson).get<std::vector<double>>(), cableLengthM, distanceM,
+            json::parse(limitJson).get<std::vector<double>>(), marginDb);
+        bool needed = false;
+        for (double t : target) if (t > 0.0) needed = true;
+        json out{{"target", target}, {"needed", needed},
+                 {"modelUncertaintyDb", Hertz::RADIATED_MODEL_UNCERTAINTY_DB}};
+        if (needed) {
+            auto governing = Hertz::governing_requirement(freqs, target);
+            out["governingDb"] = governing.attenuationDb;
+            out["governingHz"] = governing.frequencyHz;
+        }
+        return out.dump();
+    });
+}
+
+// Cable ferrite / CM-choke picker against a CM-attenuation target.
+std::string cable_mitigation_js(const std::string& freqsJson, const std::string& reqJson,
+                                const std::string& partsJson, double cmReferenceOhm, int maxTurns) {
+    return guarded([&]() -> std::string {
+        std::vector<Hertz::FerritePart> parts;
+        for (const auto& p : json::parse(partsJson)) {
+            parts.push_back({p.at("name").get<std::string>(),
+                             p.at("frequenciesHz").get<std::vector<double>>(),
+                             p.at("zOhm").get<std::vector<double>>()});
+        }
+        auto choice = Hertz::select_cable_mitigation(
+            json::parse(freqsJson).get<std::vector<double>>(),
+            json::parse(reqJson).get<std::vector<double>>(), parts, cmReferenceOhm, maxTurns);
+        return json{{"partName", choice.partName}, {"turns", choice.turns},
+                    {"worstMarginDb", choice.worstMarginDb}, {"meetsTarget", choice.meetsTarget},
+                    {"insertionLossDb", choice.insertionLossDb}}.dump();
+    });
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(hertz) {
@@ -465,4 +508,6 @@ EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("inputFilterInteraction", &input_filter_interaction_js);
     emscripten::function("measuredIlCurves", &measured_il_curves_js);
     emscripten::function("radiatedEstimate", &radiated_estimate_js);
+    emscripten::function("radiatedCmTarget", &radiated_cm_target_js);
+    emscripten::function("cableMitigation", &cable_mitigation_js);
 }

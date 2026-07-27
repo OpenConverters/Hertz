@@ -11,6 +11,7 @@
 #include <numbers>
 #include <vector>
 
+#include "hertz/CableMitigation.hpp"
 #include "hertz/Detector.hpp"
 #include "hertz/FilterDesign.hpp"
 #include "hertz/Limits.hpp"
@@ -776,4 +777,58 @@ TEST_CASE("deck-terminated ABCD twin behaves at the physical limits (#299)", "[r
     CHECK(lEffLoose < 0.55 * 7.5e-6);
     CHECK_THROWS(Hertz::deck_abcd_il(Hertz::cispr16_lisn(), "cm", 2, 1, 1e-6, 4.7e-9, 14.6e-6,
                                      470e-9, 1.0, freqs));   // K out of (0,1)
+}
+
+TEST_CASE("radiated CM-attenuation target and governing point", "[radiated]") {
+    const double dbua5uA = 20.0 * std::log10(5.0);  // 5 uA -> 13.979 dBuA
+
+    // over-limit + margin, in the CM-current domain. 50 MHz E = 40.40 dBuV/m over
+    // a 40 dBuV/m limit, +6 -> 6.40 dB; a quiet 1e-7 A point sits under the limit.
+    auto target = Hertz::radiated_cm_attenuation_target_db(
+        {50e6, 200e6}, {dbua5uA, -20.0}, 1.0, 3.0, {40.0, 40.0}, 6.0);
+    CHECK(target[0] == Catch::Approx(6.40).margin(0.05));
+    CHECK(target[1] < 0.0);
+    CHECK_THROWS(Hertz::radiated_cm_attenuation_target_db(
+        {50e6, 80e6}, {10.0, 10.0}, 1.0, 3.0, {40.0}, 6.0));  // limit length mismatch
+
+    auto g = Hertz::governing_requirement({30e6, 80e6, 200e6}, {2.0, 8.0, 3.0});
+    CHECK(g.attenuationDb == Catch::Approx(8.0));
+    CHECK(g.frequencyHz == Catch::Approx(80e6));
+    CHECK_THROWS(Hertz::governing_requirement({30e6, 80e6}, {-1.0, -5.0}));  // already compliant
+}
+
+TEST_CASE("cable ferrite insertion loss and candidate selection", "[cable]") {
+    const Hertz::FerritePart bead150{"bead-150", {10e6, 1e9}, {150.0, 150.0}};
+    const Hertz::FerritePart bead100{"bead-100", {10e6, 1e9}, {100.0, 100.0}};
+    const Hertz::FerritePart bead250{"bead-250", {10e6, 1e9}, {250.0, 250.0}};
+
+    // 150 ohm between 25 ohm refs: 20*log10((25+150+25)/50) = 20*log10(4) = 12.041 dB.
+    CHECK(Hertz::ferrite_insertion_loss_db(bead150, 1, 25.0, {100e6})[0] == Catch::Approx(12.041).margin(0.01));
+    // 2 turns -> 4*150 = 600 ohm: 20*log10(13) = 22.279 dB.
+    CHECK(Hertz::ferrite_insertion_loss_db(bead150, 2, 25.0, {100e6})[0] == Catch::Approx(22.279).margin(0.01));
+    CHECK_THROWS(Hertz::ferrite_insertion_loss_db(bead150, 1, 25.0, {5e6}));   // below the curve
+    CHECK_THROWS(Hertz::ferrite_insertion_loss_db(bead150, 1, 25.0, {2e9}));   // above the curve
+
+    // bead-100 gives 9.54 dB (misses the 10 dB point); bead-250 gives 15.56 dB.
+    auto pick = Hertz::select_cable_mitigation({30e6, 100e6, 300e6}, {5.0, 10.0, 4.0},
+                                               {bead100, bead250}, 25.0, 1);
+    CHECK(pick.partName == "bead-250");
+    CHECK(pick.turns == 1);
+    CHECK(pick.meetsTarget);
+    CHECK(pick.worstMarginDb == Catch::Approx(5.563).margin(0.01));
+
+    // only bead-100: 1 turn misses, 2 turns (400 ohm -> 19.08 dB) meets.
+    auto pick2 = Hertz::select_cable_mitigation({30e6, 100e6, 300e6}, {5.0, 10.0, 4.0},
+                                                {bead100}, 25.0, 2);
+    CHECK(pick2.partName == "bead-100");
+    CHECK(pick2.turns == 2);
+    CHECK(pick2.meetsTarget);
+
+    // unreachable: best near-miss reported, never a silent pass.
+    auto miss = Hertz::select_cable_mitigation({100e6}, {30.0}, {bead100}, 25.0, 1);
+    CHECK_FALSE(miss.meetsTarget);
+    CHECK(miss.worstMarginDb == Catch::Approx(9.542 - 30.0).margin(0.01));
+
+    CHECK_THROWS(Hertz::select_cable_mitigation({100e6}, {-3.0}, {bead100}, 25.0));  // nothing required
+    CHECK_THROWS(Hertz::select_cable_mitigation({100e6}, {5.0}, {}, 25.0));          // empty list
 }

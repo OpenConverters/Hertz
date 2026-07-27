@@ -48,4 +48,33 @@ inline std::vector<double> radiated_efield_dbuvm(const std::vector<double>& freq
     return efield;
 }
 
+// Buffer added on top of the raw over-limit when turning the screen into a
+// mitigation target — small (the model already carries its own
+// RADIATED_MODEL_UNCERTAINTY_DB), and a caller can override.
+inline constexpr double RADIATED_TARGET_MARGIN_DB = 6.0;
+
+// Required common-mode CURRENT attenuation (dB per frequency) to bring the
+// radiated E-field SCREENING estimate under limitDbuvm. The model is LINEAR in
+// I_cm (|E| ~ I_cm), so every dB the field sits over the limit is one dB of
+// CM-current suppression to add — this is exactly that requirement, the same
+// "attenuation target vs frequency" shape the conducted path feeds a synthesiser
+// (required_attenuation_db). The matching consumer for the radiated band is
+// Hertz::select_cable_mitigation (CableMitigation.hpp) — a mains filter's choke
+// has self-resonated up here, so a cable ferrite is what actually helps.
+// Values <= 0 mean already under the limit there. TRIAGE, not a compliant spec.
+inline std::vector<double> radiated_cm_attenuation_target_db(
+        const std::vector<double>& frequenciesHz, const std::vector<double>& cmCurrentDbuA,
+        double cableLengthM, double distanceM, const std::vector<double>& limitDbuvm,
+        double marginDb = RADIATED_TARGET_MARGIN_DB) {
+    auto efield = radiated_efield_dbuvm(frequenciesHz, cmCurrentDbuA, cableLengthM, distanceM);
+    if (limitDbuvm.size() != efield.size()) {
+        throw std::invalid_argument("limit array must match the frequency array length");
+    }
+    std::vector<double> target(efield.size());
+    for (size_t i = 0; i < efield.size(); ++i) {
+        target[i] = efield[i] - limitDbuvm[i] + marginDb;  // measured - limit + margin
+    }
+    return target;
+}
+
 }  // namespace Hertz

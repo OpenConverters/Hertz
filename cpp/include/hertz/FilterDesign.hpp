@@ -34,6 +34,32 @@ inline double required_attenuation_db(double measuredDbuv, double limitDbuv, dou
     return measuredDbuv - limitDbuv + marginDb;
 }
 
+// The single (attenuation, frequency) a synthesiser must hit, reduced from an
+// attenuation TARGET (dB vs frequency — e.g. required_attenuation_db over a band,
+// or radiated_cm_attenuation_target_db): the worst (largest) requirement and the
+// frequency it occurs at. Feeds design_line_filter (a_req + f_design) for the
+// conducted path or select_cable_mitigation for the radiated band. Throws if
+// nothing needs attenuation, so a caller never "designs" for a met limit.
+struct GoverningRequirement {
+    double attenuationDb;
+    double frequencyHz;
+};
+
+inline GoverningRequirement governing_requirement(const std::vector<double>& frequenciesHz,
+                                                  const std::vector<double>& aReqDb) {
+    if (frequenciesHz.size() != aReqDb.size() || frequenciesHz.empty()) {
+        throw std::invalid_argument("frequencies and requirements must be equal-length non-empty arrays");
+    }
+    size_t worst = 0;
+    for (size_t i = 1; i < aReqDb.size(); ++i) {
+        if (aReqDb[i] > aReqDb[worst]) worst = i;
+    }
+    if (!(aReqDb[worst] > 0.0)) {
+        throw std::invalid_argument("no attenuation required — the limit is already met across the band");
+    }
+    return {aReqDb[worst], frequenciesHz[worst]};
+}
+
 // f_CO = f_design / 10^(A/(40·n)) — eqs. (4) single stage, (11) two stage.
 // A of exactly 0 is legal (resonance AT the design frequency suffices — the
 // mode needs no headroom); a NEGATIVE requirement means no filter at all.
