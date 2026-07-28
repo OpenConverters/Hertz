@@ -154,11 +154,21 @@ async function cableMitigation(engine, analysis) {
   return { needed: true, target, pick, candidateCount: parts.length, coverageDropped, usingBeads }
 }
 
-// catalog row behind the pick, for the maker / headline-|Z| readout
+// catalog row behind the pick, for the maker / form / fit / headline-|Z| readout
 function pickPart() {
   const name = result.value?.mitigation?.pick?.partName
   if (!name) return null
   return (ferriteCatalog.value?.parts || []).find((p) => p.mpn === name) || null
+}
+const FORM_LABEL = { solidRing: 'solid ring', snapOn: 'snap-on', split: 'split', screwable: 'screwable' }
+function pickMeta() {
+  const p = pickPart()
+  if (!p) return ''
+  const bits = [p.manufacturer]
+  if (FORM_LABEL[p.mountingForm]) bits.push(FORM_LABEL[p.mountingForm])
+  if (p.cableMaxM) bits.push(`≤${Math.round(p.cableMaxM * 1000)} mm cable`)
+  if (p.zAt100MHzOhm) bits.push(`${Math.round(p.zAt100MHzOhm)} Ω @100 MHz`)
+  return bits.join(' · ')
 }
 
 // clearly-synthetic example: a 12 µA switching comb decaying over 30–300 MHz
@@ -265,8 +275,7 @@ const violations = () => {
             <div class="cell"><b>Suggested part</b>
               <span data-test="mitigation-part">{{ result.mitigation.pick.partName
                 }}<span v-if="result.mitigation.pick.rec" title="phase reconstructed from |Z| (Bode gain–phase)"> ~</span></span>
-              <span v-if="pickPart()" class="unit">{{ pickPart().manufacturer
-                }}{{ pickPart().zAt100MHzOhm ? ` · ${Math.round(pickPart().zAt100MHzOhm)} Ω @100 MHz` : '' }}</span></div>
+              <span v-if="pickPart()" class="unit" data-test="mitigation-meta">{{ pickMeta() }}</span></div>
             <div class="cell"><b>Cable turns</b><span>{{ result.mitigation.pick.turns }}</span></div>
             <div class="cell"><b>Meets target</b>
               <span class="chip" :class="result.mitigation.pick.meetsTarget ? 'pass' : 'fail'" data-test="mitigation-meets">

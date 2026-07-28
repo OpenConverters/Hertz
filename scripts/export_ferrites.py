@@ -179,6 +179,9 @@ def main(source_path, output_path, curves_path=None):
                 "fPeakHz": max(rows, key=lambda r: r[1])[0],
                 "ratedCurrentA": rated_a,
                 "dcrOhm": plausible_dcr(resolve_dimensional(dcr) if dcr is not None else None, rated_a),
+                # cable-core selection metadata (null for beads)
+                "mountingForm": electrical.get("mountingForm"),
+                "cableMaxM": electrical.get("maximumCableOuterDiameter"),
             }
             if part["mpn"] and part["manufacturer"]:
                 parts.append(part)
