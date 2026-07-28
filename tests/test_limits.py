@@ -228,6 +228,17 @@ def test_lower_limit_applies_at_segment_boundary():
     np.testing.assert_allclose(levels, [79.0, 73.0, 73.0])
 
 
+def test_limit_line_names_carry_the_detector():
+    # One class carries a peak, a quasi-peak and an average line; a report that
+    # labels all three "CISPR 25 Class 3 conducted" cannot say which limit it
+    # judged against.
+    names = {d: cispr25_conducted_voltage(3, d).name
+             for d in ("peak", "quasi_peak", "average")}
+    assert len(set(names.values())) == 3
+    for detector, name in names.items():
+        assert name == f"CISPR 25 Class 3 conducted ({detector})"
+
+
 def test_cispr25_gap_between_bands_raises():
     with pytest.raises(OutsideCoverage):
         cispr25_conducted_voltage(5, "quasi_peak").level(400e3)  # between LW and MW

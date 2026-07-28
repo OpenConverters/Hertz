@@ -1,16 +1,18 @@
 """Hertz MCP App server — conducted-EMI pre-compliance inside an LLM chat.
 
-Exposes the Hertz Python reference engine (``src/hertz/``) as MCP tools, and
-ships an interactive spectrum-vs-limit widget as an MCP Apps UI resource
-(SEP-1865). Hosts that understand MCP Apps render the widget; hosts that only
-speak plain MCP still get the tools and the text verdict.
+Exposes the Hertz C++ engine (``cpp/include/hertz/``, through the ``PyHertz``
+pybind11 module) as MCP tools, and ships an interactive spectrum-vs-limit widget
+as an MCP Apps UI resource (SEP-1865). Hosts that understand MCP Apps render the
+widget; hosts that only speak plain MCP still get the tools and the text verdict.
 
 Run:
     python mcp/server.py                 # streamable HTTP on 127.0.0.1:8400/mcp
+    HERTZ_ENGINE=python python mcp/server.py   # numpy reference instead
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -22,33 +24,54 @@ import numpy as np
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO / "src"))
 
-from hertz import network, utils                       # noqa: E402
-from hertz.comb import detect_comb                     # noqa: E402
-from hertz.detector import band_for_frequency, measure  # noqa: E402
-from hertz.filter_design import (                      # noqa: E402
-    achieved_attenuation_db,
-    cutoff_frequency,
-    design_frequency,
-    design_line_filter,
-    discharge_resistor_power,
-    input_filter_interaction,
-    max_discharge_resistance,
-    required_attenuation_db,
-    y_capacitor_leakage_current,
-)
-from hertz.limits import (                             # noqa: E402
-    CISPR32_CLASS_A_MAINS_AVG,
-    CISPR32_CLASS_A_MAINS_QP,
-    CISPR32_CLASS_B_MAINS_AVG,
-    CISPR32_CLASS_B_MAINS_QP,
-    cispr25_conducted_voltage,
-    cispr32_radiated,
-    unswept_regions_sampled,
-)
-from hertz.lisn import cispr16_lisn, cispr25_lisn      # noqa: E402
-from hertz.radiated import radiated_efield_dbuvm       # noqa: E402
-from hertz.separation import separate                  # noqa: E402
-from hertz.traces import read_spectrum_csv, spectrum_csv_columns  # noqa: E402
+# --- engine -----------------------------------------------------------------
+# The C++ core is the product engine and the default here; the numpy reference
+# stays reachable with HERTZ_ENGINE=python for A/B work. That is an explicit
+# choice, never a fallback: an unbuilt PyHertz raises with build instructions
+# rather than quietly serving different numbers than the web app does. The two
+# packages are API-identical, so everything below reads the same either way.
+_ENGINE = os.environ.get("HERTZ_ENGINE", "cpp").strip().lower()
+if _ENGINE not in ("cpp", "python"):
+    raise ValueError(f"HERTZ_ENGINE must be 'cpp' or 'python' -- got {_ENGINE!r}")
+_PKG = "hertz_cpp" if _ENGINE == "cpp" else "hertz"
+
+comb = importlib.import_module(f"{_PKG}.comb")
+detector = importlib.import_module(f"{_PKG}.detector")
+filter_design = importlib.import_module(f"{_PKG}.filter_design")
+limits = importlib.import_module(f"{_PKG}.limits")
+lisn_models = importlib.import_module(f"{_PKG}.lisn")
+network = importlib.import_module(f"{_PKG}.network")
+radiated = importlib.import_module(f"{_PKG}.radiated")
+separation = importlib.import_module(f"{_PKG}.separation")
+traces = importlib.import_module(f"{_PKG}.traces")
+utils = importlib.import_module(f"{_PKG}.utils")
+
+detect_comb = comb.detect_comb
+band_for_frequency = detector.band_for_frequency
+measure = detector.measure
+achieved_attenuation_db = filter_design.achieved_attenuation_db
+cutoff_frequency = filter_design.cutoff_frequency
+design_frequency = filter_design.design_frequency
+design_line_filter = filter_design.design_line_filter
+discharge_resistor_power = filter_design.discharge_resistor_power
+input_filter_interaction = filter_design.input_filter_interaction
+max_discharge_resistance = filter_design.max_discharge_resistance
+required_attenuation_db = filter_design.required_attenuation_db
+y_capacitor_leakage_current = filter_design.y_capacitor_leakage_current
+CISPR32_CLASS_A_MAINS_AVG = limits.CISPR32_CLASS_A_MAINS_AVG
+CISPR32_CLASS_A_MAINS_QP = limits.CISPR32_CLASS_A_MAINS_QP
+CISPR32_CLASS_B_MAINS_AVG = limits.CISPR32_CLASS_B_MAINS_AVG
+CISPR32_CLASS_B_MAINS_QP = limits.CISPR32_CLASS_B_MAINS_QP
+cispr25_conducted_voltage = limits.cispr25_conducted_voltage
+cispr32_radiated = limits.cispr32_radiated
+unswept_regions_sampled = limits.unswept_regions_sampled
+cispr16_lisn = lisn_models.cispr16_lisn
+cispr25_lisn = lisn_models.cispr25_lisn
+radiated_efield_dbuvm = radiated.radiated_efield_dbuvm
+separate = separation.separate
+read_spectrum_csv = traces.read_spectrum_csv
+spectrum_csv_columns = traces.spectrum_csv_columns
+
 from mcp.server.fastmcp import FastMCP                 # noqa: E402
 from mcp.server.transport_security import (            # noqa: E402
     TransportSecuritySettings,
@@ -100,16 +123,30 @@ MAX_TRACE_POINTS = 900
 # service" error. Name the public host here (HERTZ_PUBLIC_HOST), or set
 # HERTZ_ALLOW_ANY_HOST=1 for throwaway tunnels whose name changes per run.
 _public_host = os.environ.get("HERTZ_PUBLIC_HOST", "").strip()
+# Accept a pasted URL, not just a bare hostname: a Host header carries neither
+# scheme nor path, so "https://x.trycloudflare.com/mcp" would never match the
+# incoming "x.trycloudflare.com" and the 421 masquerades as an OAuth failure.
+if "://" in _public_host:
+    _public_host = _public_host.split("://", 1)[1]
+_public_host = _public_host.split("/", 1)[0].strip()
 if os.environ.get("HERTZ_ALLOW_ANY_HOST") == "1":
     _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 else:
     _allowed = ["127.0.0.1:8400", "localhost:8400", "127.0.0.1", "localhost"]
     if _public_host:
         _allowed += [_public_host, f"{_public_host}:443"]
-    _security = TransportSecuritySettings(
-        allowed_hosts=_allowed,
-        allowed_origins=["*"] if not _public_host else [f"https://{_public_host}", "*"],
-    )
+    # allowed_origins is matched EXACTLY (or with a trailing ":*" port wildcard)
+    # — a bare "*" is not a wildcard, just a literal that never matches, so it
+    # reads as "allow everything" while 403-ing every browser-resident host.
+    # Name the origins that actually call: Claude, a local reference host, and
+    # the tunnel itself. HERTZ_ALLOWED_ORIGINS adds more, comma-separated.
+    _origins = ["https://claude.ai", "https://www.claude.ai",
+                "http://localhost:*", "http://127.0.0.1:*"]
+    if _public_host:
+        _origins.append(f"https://{_public_host}")
+    _origins += [o.strip() for o in
+                 os.environ.get("HERTZ_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    _security = TransportSecuritySettings(allowed_hosts=_allowed, allowed_origins=_origins)
 
 mcp = FastMCP("Hertz EMC", host="127.0.0.1", port=8400, transport_security=_security)
 

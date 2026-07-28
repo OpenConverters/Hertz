@@ -51,6 +51,12 @@ TEST_CASE("CISPR 25 class 5 LW band and detector offsets", "[limits]") {
     CHECK(Hertz::cispr25_conducted_voltage(5, Hertz::Detector::AVERAGE).level(200e3) == Approx(50.0));
     CHECK_THROWS_AS(qp.level(400e3), Hertz::OutsideCoverage);  // gap between LW and MW
 
+    // One class carries three lines; naming them all "CISPR 25 Class 5
+    // conducted" leaves a report unable to say which limit it judged against.
+    CHECK(qp.name() == "CISPR 25 Class 5 conducted (quasi_peak)");
+    CHECK(Hertz::cispr25_conducted_voltage(5, Hertz::Detector::AVERAGE).name() ==
+          "CISPR 25 Class 5 conducted (average)");
+
     // Table 4 class steps are band-dependent (F8-2, round 8): 10 dB LW, 8 dB
     // MW, 6 dB from SW up. The old flat +10/+20 was up to 8 dB too permissive.
     auto qpLevel = [](int cls, double f) {

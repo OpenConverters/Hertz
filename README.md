@@ -28,13 +28,17 @@ manufacturer's component catalog supplied as candidate lists.
 Two implementations of the same engine, sharing one set of golden test vectors:
 
 - **`cpp/` — the product core** (C++20, header-only): compiles natively, to
-  **WASM** (browser tools run entirely client-side — no simulation servers),
-  and later to Python bindings via pybind11. Reuses the OpenMagnetics **MKF**
+  **WASM** (browser tools run entirely client-side — no simulation servers), and
+  to Python via pybind11 (`PyHertz`). Reuses the OpenMagnetics **MKF**
   library (its radix-2 FFT today; its wideband choke impedance model next), so
   build MKF first and point `HERTZ_MKF_ROOT` at the checkout.
 - **`src/hertz/` — the Python reference** (numpy): the readable spec and
   cross-validation implementation; every C++ behavior is asserted against the
   same numbers here.
+- **`src/hertz_cpp/` — the same API on the C++ engine**: a drop-in replacement
+  for `hertz` that calls `PyHertz`. It adapts shapes only (numpy in/out, tuple
+  returns, path-taking CSV readers) and reimplements no formula, so the
+  reference suite can be pointed straight at the C++ engine.
 
 CSV parsing is string-based in the C++ core by design: the host (browser `File`
 API, Python `open()`) reads the file and passes its content — the WASM-native
@@ -51,7 +55,18 @@ pytest
 cmake -S cpp -B cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja -C cpp/build -j4
 ./cpp/build/test_hertz
+
+# The SAME 92 tests against the C++ engine through PyHertz (built by the
+# command above; -DHERTZ_BUILD_PYBIND=OFF skips it). The tests are the golden
+# vectors shared by both implementations, so a failure here is a real
+# disagreement between the two engines — never something to silence.
+pytest --backend=cpp
 ```
+
+`PyHertz` mirrors `src/hertz/*.py` name for name, plus the surface the Python
+reference does not carry: SPICE deck emission (`filter_spice_deck`,
+`lisn_reference_deck`, `deck_abcd_il`), the radiated CM-attenuation target, the
+cable-ferrite picker, and `limit_polyline_runs`.
 
 ## Web GUI (`web/`)
 

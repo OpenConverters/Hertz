@@ -19,12 +19,12 @@ ignored. One server, graceful degradation.
 ```bash
 cd mcp
 npm install && npm run build      # bundles the widget → dist/spectrum.html
-python server.py                  # streamable HTTP on 127.0.0.1:8400/mcp
+python3 server.py                  # streamable HTTP on 127.0.0.1:8400/mcp
 ```
 
-Python needs `mcp`, `numpy`, `uvicorn`, `starlette`. The widget bundle must
-exist before the server can serve the UI resource — it raises rather than
-serving a blank page.
+Python needs `mcp`, `numpy`, `uvicorn`, `starlette`, and a built `PyHertz` (see
+[Engine](#engine)). The widget bundle must exist before the server can serve the
+UI resource — it raises rather than serving a blank page.
 
 ## Use it from Claude (web or Desktop)
 
@@ -43,10 +43,10 @@ a tunnel. Custom connectors require a paid plan (Pro, Max, or Team).
 2. **Start the server with that hostname allowed:**
 
    ```bash
-   HERTZ_PUBLIC_HOST=<random>.trycloudflare.com python server.py
+   HERTZ_PUBLIC_HOST=<random>.trycloudflare.com python3 server.py
    ```
 
-   Hostname only — no `https://`, no `/mcp`. For throwaway tunnels whose name
+   A pasted URL is fine — the scheme and path are stripped for you. For throwaway tunnels whose name
    changes every run, `HERTZ_ALLOW_ANY_HOST=1` skips the check entirely (fine
    for a laptop, not for anything public).
 
@@ -170,12 +170,31 @@ and the streamable transport must read the `Mcp-Session-Id` response header —
 which cross-origin JS cannot do unless it is explicitly exposed. `allow_origins`
 is `*` here; tighten it for anything public.
 
+## Engine
+
+Runs on the **C++ core** through the `PyHertz` pybind11 module (`src/hertz_cpp/`
+is the API-compatible wrapper), so the chat, the web app and the CLI all answer
+from the same engine. Build it with the C++ core:
+
+```bash
+cmake -S cpp -B cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release && ninja -C cpp/build
+```
+
+`HERTZ_ENGINE=python` switches to the numpy reference (`src/hertz/`) for A/B
+work. That is an explicit choice, not a fallback: with no PyHertz built the
+server refuses to start and says how to build it, rather than quietly serving
+different numbers than hertz.openconverters.com.
+
+Every tool has been A/B'd across both engines; they agree to floating-point
+noise (worst seen: 6.5e-6 dB on a receiver reading, MKF's radix-2 FFT vs numpy's
+pocketfft).
+
 ## Status
 
-Spike. Uses the Python reference engine (`src/hertz/`), not the C++/WASM core —
-an MCP server is a server, so the WASM path's advantage (zero server compute)
-does not apply here, and the Python reference is cross-validated against the
-same golden vectors.
+Spike. Not yet done: filter design and LISN widgets, file upload rather than
+CSV-as-argument, auth.
 
-Not yet done: filter design and LISN widgets, file upload rather than CSV-as-
-argument, auth.
+The C++-only surface the Python reference never carried is now reachable from
+here and not yet exposed as tools: SPICE deck emission (`filter_spice_deck`,
+`lisn_reference_deck`, `deck_abcd_il` — the netlist pane), the cable-ferrite
+picker (`select_cable_mitigation`) and the radiated CM-attenuation target.

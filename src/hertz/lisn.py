@@ -43,7 +43,9 @@ class Lisn:
 
     def to_spice_subckt(self, name=None, terminated=True):
         """SPICE subcircuit, nodes: eut mains meas (meas is the receiver port)."""
-        sub = name if name is not None else self.name.replace(" ", "_")
+        # a caller-supplied name is folded too: a space in a .subckt name makes
+        # the following word a node, silently emitting a different circuit
+        sub = (name if name is not None else self.name).replace(" ", "_")
         lines = [
             f".subckt {sub} eut mains meas",
             f"L1 eut mains {self.inductance_h:.6g}",

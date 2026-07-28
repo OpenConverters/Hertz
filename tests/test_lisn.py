@@ -46,3 +46,12 @@ def test_spice_subckt_contains_elements():
 def test_spice_subckt_unterminated():
     text = cispr25_lisn().to_spice_subckt(name="LISN5", terminated=False)
     assert "R1" not in text
+
+
+def test_spice_subckt_name_spaces_are_folded():
+    # A space in a .subckt name makes the following word a NODE: ".subckt A B
+    # eut mains meas" is subcircuit "A" with four nodes, a silently different
+    # circuit. The default name was folded but a caller-supplied one was not.
+    text = cispr16_lisn().to_spice_subckt(name="LISN 50")
+    assert ".subckt LISN_50 eut mains meas" in text
+    assert text.strip().endswith(".ends LISN_50")

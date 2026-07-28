@@ -363,10 +363,14 @@ inline LimitLine cispr25_conducted_voltage(int emissionClass, Detector detector)
         throw std::invalid_argument("CISPR 25 class must be 1..5");
     }
     double detectorOffset;
+    // The detector belongs in the NAME: the same class carries a peak, a
+    // quasi-peak and an average line, and a report that labels all three
+    // "CISPR 25 Class 3 conducted" cannot say which limit it judged against.
+    const char* detectorName;
     switch (detector) {
-        case Detector::PEAK: detectorOffset = 13.0; break;
-        case Detector::QUASI_PEAK: detectorOffset = 0.0; break;
-        case Detector::AVERAGE: detectorOffset = -7.0; break;
+        case Detector::PEAK: detectorOffset = 13.0; detectorName = "peak"; break;
+        case Detector::QUASI_PEAK: detectorOffset = 0.0; detectorName = "quasi_peak"; break;
+        case Detector::AVERAGE: detectorOffset = -7.0; detectorName = "average"; break;
         default: throw std::invalid_argument("unknown detector");
     }
     std::vector<LimitSegment> segments;
@@ -375,8 +379,9 @@ inline LimitLine cispr25_conducted_voltage(int emissionClass, Detector detector)
         segments.emplace_back(band.fStartHz, band.fStopHz, band.class5QuasiPeakDbuv + offset,
                               band.class5QuasiPeakDbuv + offset);
     }
-    return LimitLine("CISPR 25 Class " + std::to_string(emissionClass) + " conducted", detector,
-                     std::move(segments));
+    return LimitLine("CISPR 25 Class " + std::to_string(emissionClass) + " conducted (" +
+                         detectorName + ")",
+                     detector, std::move(segments));
 }
 
 }  // namespace Hertz

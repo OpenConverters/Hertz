@@ -68,6 +68,19 @@ def test_comb_with_missing_harmonics_still_found():
     assert result.f_sw_hz == pytest.approx(300e3, rel=0.01)
 
 
+def test_unmatchable_spectrum_reports_nothing_instead_of_crashing():
+    # A 100 kHz comb on this grid is dense enough that the log-median baseline
+    # rides ON it: only a handful of peaks survive, and no candidate matches
+    # any of them. The weighted least-squares sums are then empty — 0/0 used to
+    # make f_sw NaN and the refinement pass raised "cannot convert float NaN to
+    # integer". "No comb found" is a legitimate result, never an exception.
+    freqs, levels = synthetic_comb(f_sw=100e3)
+    result = detect_comb(freqs, levels)
+    assert not result.found
+    assert result.f_sw_hz is None
+    assert len(result.residual_peaks) > 0
+
+
 def test_input_validation():
     with pytest.raises(ValueError):
         detect_comb([1.0, 2.0], [0.0, 0.0])

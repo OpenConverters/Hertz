@@ -129,11 +129,17 @@ def detect_comb(freqs_hz, levels_dbuv, f_sw_min_hz=20e3, f_sw_max_hz=5e6):
                 for c in candidate_values), key=lambda item: item[1])
     matched, _, _, candidate = best
 
-    # prominence-weighted least squares through the origin: f ≈ n·f_sw
+    # prominence-weighted least squares through the origin: f ≈ n·f_sw.
+    # The best candidate can match NOTHING (a dense ridge whose peaks all sit
+    # outside every candidate's tolerance), leaving empty sums: fall back to the
+    # candidate itself rather than dividing 0/0 into a NaN that the refinement
+    # pass then raises on — "no comb" is a legitimate result, not a crash.
     weights = np.array([prominence[i] for i in matched.values()])
     orders = np.array(list(matched.keys()), dtype=float)
     matched_freqs = np.array([freqs[i] for i in matched.values()])
-    f_sw = float(np.sum(weights * orders * matched_freqs) / np.sum(weights * orders**2))
+    denominator = float(np.sum(weights * orders**2))
+    f_sw = (float(np.sum(weights * orders * matched_freqs)) / denominator
+            if denominator > 0.0 else candidate)
 
     matched, _, coverage = _match(freqs, peak_indices, prominence, f_sw, freqs[-1])
     matched_set = set(matched.values())
