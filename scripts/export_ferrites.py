@@ -12,6 +12,23 @@ part is a candidate ONLY when it carries a resolvable measured |Z|(f) curve;
 parts without one are skipped (counted, reported) — a bead with no curve cannot
 be selected, and inventing one would poison the pick.
 
+Two DIFFERENT things get skipped there, and they are counted separately because
+they mean opposite things about the data:
+
+  * SINGLE-POINT parts carry exactly one measured |Z| (typically the headline
+    Z@100 MHz). The part is real and fully specified by its maker — we simply
+    cannot place it against a flagged BAND from one point. Two points is the
+    minimum that establishes any slope; from one, every |Z|(f) through it is
+    equally consistent, so a curve built from it would be invention, not
+    measurement. These are the parts an upstream curve ingest would recover.
+  * NO-DATA parts carry no usable impedance point at all — nothing to recover
+    without new source data.
+
+Both counts ride in the OUTPUT FILE (`excluded`, per kind), not just this
+script's stdout: the picker draws from a filtered pool, and a user comparing its
+answer against a distributor search must be able to see how much of the catalog
+was set aside and why. A count that dies in a build log cannot do that.
+
 The main slice keeps what the picker and the parts table show: MPN, maker,
 family, the headline |Z| at 100 MHz, the measured peak (|Z|, f), rated current
 and DCR. The curve itself goes to the side file keyed by MPN, striding the
@@ -126,7 +143,12 @@ def interp_loglog(rows, f_target):
 
 
 def build_curve(rows):
-    """Strided (<= 64) complex curve with Bode-reconstructed phase, or None."""
+    """Strided (<= 64) complex curve with Bode-reconstructed phase, or None.
+
+    Needs >= 2 measured points: the Bode phase reconstruction is a d ln|Z|/d ln f
+    slope, which a single point does not define. Do not soften this to accept one
+    point with an assumed slope — that fabricates the very curve the pick is
+    justified by."""
     if len(rows) < 2:
         return None
     stride = max(1, -(-len(rows) // MAX_CURVE_POINTS))
@@ -145,7 +167,11 @@ def build_curve(rows):
 def main(source_path, output_path, curves_path=None):
     parts = []
     curves = {}
-    skipped_no_curve = 0
+    # Per KIND, because the picker uses one pool or the other: cable cores when
+    # any are catalogued, beads only as the documented fallback. Reporting a
+    # bead-pool exclusion while the pick came from cable cores is noise.
+    excluded = {"cableCore": {"singlePointOnly": 0, "noImpedanceData": 0},
+                "bead": {"singlePointOnly": 0, "noImpedanceData": 0}}
     with open(source_path) as source:
         for line in source:
             try:
@@ -165,10 +191,14 @@ def main(source_path, output_path, curves_path=None):
             # NOT be RECOMMENDED by the mitigation picker — you can't buy it.
             if str(info.get("status", "")).lower() == "obsolete":
                 continue
+            kind = "cableCore" if subtype == "cablecore" else "bead"
             rows = measured_magnitudes(electrical.get("impedancePoints"))
             curve = build_curve(rows)
             if curve is None:
-                skipped_no_curve += 1
+                # one measured point is a real, fully-specified part we cannot
+                # place against a band; zero is missing source data. Different
+                # problems, different fixes — so never one merged tally.
+                excluded[kind]["singlePointOnly" if len(rows) == 1 else "noImpedanceData"] += 1
                 continue
             rated = electrical.get("ratedCurrents") or []
             rated_a = max(rated) if rated else None
@@ -177,7 +207,7 @@ def main(source_path, output_path, curves_path=None):
                 "mpn": info.get("reference"),
                 "manufacturer": MANUFACTURER_CANONICAL.get(info.get("name"), info.get("name")),
                 "family": info.get("family") or "",
-                "kind": "cableCore" if subtype == "cablecore" else "bead",
+                "kind": kind,
                 "zAt100MHzOhm": interp_loglog(rows, Z_HEADLINE_HZ),
                 "zPeakOhm": max(m for _, m in rows),
                 "fPeakHz": max(rows, key=lambda r: r[1])[0],
@@ -195,12 +225,17 @@ def main(source_path, output_path, curves_path=None):
     parts.sort(key=lambda p: (p["manufacturer"],
                               p["zAt100MHzOhm"] is None, p["zAt100MHzOhm"] or 0.0))
     with open(output_path, "w") as output:
-        json.dump({"version": 1, "count": len(parts), "parts": parts}, output)
+        json.dump({"version": 1, "count": len(parts), "parts": parts,
+                   "excluded": excluded}, output)
     kinds = {}
     for p in parts:
         kinds[p["kind"]] = kinds.get(p["kind"], 0) + 1
-    print(f"wrote {len(parts)} ferrite parts ({kinds}) to {output_path} "
-          f"({skipped_no_curve} skipped without a resolvable impedance curve)")
+    print(f"wrote {len(parts)} ferrite parts ({kinds}) to {output_path}")
+    for kind, counts in excluded.items():
+        if counts["singlePointOnly"] or counts["noImpedanceData"]:
+            print(f"  {kind}: skipped {counts['singlePointOnly']} with a single measured |Z| point "
+                  f"(no curve to place against a band) and {counts['noImpedanceData']} "
+                  f"with no impedance data at all")
     if curves_path is not None:
         with open(curves_path, "w") as handle:
             json.dump({"version": 1, "count": len(curves), "curves": curves}, handle)

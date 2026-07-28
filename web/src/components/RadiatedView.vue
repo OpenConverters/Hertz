@@ -76,9 +76,14 @@ function ferriteCandidates(fLo, fHi) {
   }
   const parts = []
   let coverageDropped = 0
+  let noCurveDropped = 0
   for (const p of pool) {
     const c = curves[p.mpn]
-    if (!c || !c.f?.length) continue
+    // No curve in the side file — count it. The export already excludes parts
+    // that carry no resolvable curve, so this is normally 0; leaving it a silent
+    // `continue` meant a main/curves file that drifted out of step would shrink
+    // the pool invisibly. Nothing here is allowed to vanish uncounted.
+    if (!c || !c.f?.length) { noCurveDropped += 1; continue }
     if (c.f[0] > fLo || c.f[c.f.length - 1] < fHi) { coverageDropped += 1; continue }
     // keep the in-band points plus one bracket below fLo and above fHi
     let lo = 0
@@ -92,7 +97,13 @@ function ferriteCandidates(fLo, fHi) {
     parts.push({ name: p.mpn, frequenciesHz: f, zOhm, phaseRad, _z: p.zAt100MHzOhm ?? p.zPeakOhm ?? 0, rec: !!c.rec })
   }
   parts.sort((a, b) => a._z - b._z)
-  return { parts, coverageDropped, fitDropped, usingBeads: !haveCableCores }
+  // Catalog-level exclusions from the export, for the pool actually in use. These
+  // parts never reach the browser at all, so without carrying the tally forward
+  // the picker would look like it had searched the whole catalog.
+  const kind = haveCableCores ? 'cableCore' : 'bead'
+  const catalogExcluded = ferriteCatalog.value?.excluded?.[kind] ?? null
+  return { parts, coverageDropped, noCurveDropped, fitDropped,
+           catalogExcluded, usingBeads: !haveCableCores }
 }
 
 async function ingest(files) {
@@ -154,17 +165,36 @@ async function cableMitigation(engine, analysis) {
   if (ferriteState.value !== 'ready') {
     return { needed: true, target, pick: { error: 'ferrite catalog unreachable from this deployment — the target above is the attenuation to add; select a cable ferrite / clip-on CM core whose |Z| curve meets it' } }
   }
-  const { parts, coverageDropped, fitDropped, usingBeads } = ferriteCandidates(fc[0], fc[fc.length - 1])
+  const { parts, coverageDropped, noCurveDropped, fitDropped, catalogExcluded, usingBeads } =
+    ferriteCandidates(fc[0], fc[fc.length - 1])
+  const bookkeeping = { coverageDropped, noCurveDropped, fitDropped, catalogExcluded, usingBeads }
   if (!parts.length) {
     const fitNote = fitDropped ? `${fitDropped} excluded for not fitting a ${cableOd.value} mm cable; ` : ''
-    return { needed: true, target, coverageDropped, fitDropped, usingBeads,
+    return { needed: true, target, ...bookkeeping,
              pick: { error: `no catalogued ${usingBeads ? 'ferrite bead' : 'cable ferrite core'} covers the whole flagged band (${fmtHz(fc[0])}–${fmtHz(fc[fc.length - 1])}) — ${fitNote}${coverageDropped} excluded for insufficient |Z|-curve coverage` } }
   }
   let pick = null
   try { pick = engine.cableMitigation(fc, target.target, parts, Number(cmRef.value), Number(maxTurns.value)) }
   catch (e) { pick = { error: e.message } }
   if (pick && pick.partName) pick.rec = parts.find((p) => p.name === pick.partName)?.rec === true
-  return { needed: true, target, pick, candidateCount: parts.length, coverageDropped, fitDropped, usingBeads }
+  return { needed: true, target, pick, candidateCount: parts.length, ...bookkeeping }
+}
+
+// The parts the picker never saw: excluded at EXPORT for carrying too little
+// measured impedance to place against a band. A single measured |Z| point is a
+// real part we cannot position (one point fixes no slope, so any curve through
+// it is invented); no point at all is missing source data. Surfaced so the pick
+// reads as "best of a stated pool", not "best in the world".
+function catalogExclusionNote(mit) {
+  const ex = mit.catalogExcluded
+  if (!ex) return ''
+  const noun = mit.usingBeads ? 'beads' : 'cable cores'
+  const bits = []
+  if (ex.singlePointOnly) bits.push(`${ex.singlePointOnly} publish a single |Z| point only`)
+  if (ex.noImpedanceData) bits.push(`${ex.noImpedanceData} publish no impedance data`)
+  if (!bits.length) return ''
+  return ` A further ${bits.join(' and ')} — those ${noun} carry too little measured `
+       + 'impedance to place against a band, and are not candidates here.'
 }
 
 // catalog row behind the pick, for the maker / form / fit / headline-|Z| readout
@@ -307,14 +337,19 @@ const violations = () => {
             as a starting part, not a spec.<span v-if="result.mitigation.coverageDropped">
             {{ result.mitigation.coverageDropped }} cores were excluded for not covering the whole band.</span><span
             v-if="result.mitigation.fitDropped"> {{ result.mitigation.fitDropped }} excluded for not fitting a
-            {{ cableOd }} mm cable.</span></p>
+            {{ cableOd }} mm cable.</span><span v-if="result.mitigation.noCurveDropped">
+            {{ result.mitigation.noCurveDropped }} excluded for carrying no |Z| curve in this deployment.</span><span
+            data-test="catalog-excluded">{{ catalogExclusionNote(result.mitigation) }}</span></p>
           <p v-else class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b> catalogued ferrite beads
             whose measured |Z| curve covers the band (<code>chipBead</code> — SMD suppression beads; phase
             reconstructed from |Z|, marked <b>~</b>). No cable cores are catalogued in this deployment, so these
             single-pass beads stand in — same series-impedance model, but not clamp-on parts. The CM loop
             impedance ({{ cmRef }} Ω) is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so
             treat the pick as a starting part, not a spec.<span v-if="result.mitigation.coverageDropped">
-            {{ result.mitigation.coverageDropped }} parts were excluded for not covering the whole band.</span></p>
+            {{ result.mitigation.coverageDropped }} parts were excluded for not covering the whole band.</span><span
+            v-if="result.mitigation.noCurveDropped"> {{ result.mitigation.noCurveDropped }} excluded for
+            carrying no |Z| curve in this deployment.</span><span
+            data-test="catalog-excluded">{{ catalogExclusionNote(result.mitigation) }}</span></p>
         </template>
         <p v-else class="note" data-test="mitigation-none">Screen passes — no cable common-mode mitigation indicated.</p>
       </div>

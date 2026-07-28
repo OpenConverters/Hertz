@@ -14,6 +14,10 @@ async function openProbePane(page) {
 // a predictable pick. Stubbing these exercises the real fetch→build→pick path.
 const FERRITES = {
   version: 1, count: 3,
+  // Parts the export set aside for carrying too little measured impedance to
+  // place against a band, per kind. The real catalog has 533 single-point beads.
+  excluded: { cableCore: { singlePointOnly: 7, noImpedanceData: 4 },
+              bead: { singlePointOnly: 533, noImpedanceData: 1159 } },
   parts: [
     { mpn: 'FIX-S', manufacturer: 'Fixture', family: 'FIX', kind: 'cableCore', mountingForm: 'snapOn', cableMaxM: 0.01, zAt100MHzOhm: 180, zPeakOhm: 220, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
     { mpn: 'FIX-M', manufacturer: 'Fixture', family: 'FIX', kind: 'cableCore', mountingForm: 'snapOn', cableMaxM: 0.014, zAt100MHzOhm: 330, zPeakOhm: 400, fPeakHz: 300e6, ratedCurrentA: null, dcrOhm: null },
@@ -50,6 +54,91 @@ test('radiated screen emits a CM-attenuation target and picks a catalog ferrite'
   await expect(page.getByTestId('mitigation-meta')).toContainText('mm cable')  // form + cable-fit surfaced
   console.log('PART:', part, '| MEETS:', await page.getByTestId('mitigation-meets').textContent())
   expect(errors, errors.join('\n')).toHaveLength(0)
+})
+
+test('parts excluded for a single-point |Z| are surfaced, not silently dropped', async ({ page }) => {
+  // The picker searches a FILTERED pool: parts carrying one measured |Z| point
+  // cannot be placed against a band (one point fixes no slope), so the export
+  // sets them aside. If that never reaches the UI the pick reads as "best in the
+  // catalog" when it is "best of what had curves" — the reason for the gap has
+  // to travel with the answer.
+  await page.route('**/kelvin/hertz-ferrites.v1.json', (r) => r.fulfill({ json: FERRITES }))
+  await page.route('**/kelvin/hertz-ferrites-curves.v1.json', (r) => r.fulfill({ json: CURVES }))
+  await page.goto('/')
+  await openProbePane(page)
+  await page.getByTestId('radiated-example').click()
+  await expect(page.getByTestId('radiated-verdict')).toContainText('FAIL', { timeout: 20000 })
+
+  // cable cores are the pool in use, so the CABLE-CORE tally is the one shown
+  const note = page.getByTestId('catalog-excluded')
+  await expect(note).toContainText('7 publish a single |Z| point only')
+  await expect(note).toContainText('4 publish no impedance data')
+  await expect(note).toContainText('cable cores')
+  // ...and the bead tally must NOT leak in: those are a different pool
+  await expect(note).not.toContainText('533')
+  await expect(note).not.toContainText('beads')
+})
+
+test('a bead-only deployment reports the BEAD exclusions', async ({ page }) => {
+  // The case the 533 single-point beads actually land in. With no cable cores
+  // catalogued the picker falls back to beads, and the tally that travels with
+  // the answer must switch pools with it — a cable-core count would be a lie
+  // about a pick made from beads.
+  const beadsOnly = { ...FERRITES, parts: FERRITES.parts.map((p) => ({ ...p, kind: 'bead' })) }
+  await page.route('**/kelvin/hertz-ferrites.v1.json', (r) => r.fulfill({ json: beadsOnly }))
+  await page.route('**/kelvin/hertz-ferrites-curves.v1.json', (r) => r.fulfill({ json: CURVES }))
+  await page.goto('/')
+  await openProbePane(page)
+  await page.getByTestId('radiated-example').click()
+  await expect(page.getByTestId('radiated-verdict')).toContainText('FAIL', { timeout: 20000 })
+
+  const note = page.getByTestId('catalog-excluded')
+  await expect(note).toContainText('533 publish a single |Z| point only')
+  await expect(note).toContainText('1159 publish no impedance data')
+  await expect(note).toContainText('beads')
+  await expect(note).not.toContainText('cable cores')
+})
+
+test('a catalog with nothing excluded says nothing about exclusions', async ({ page }) => {
+  // The note is evidence, not decoration — with a complete pool there is no
+  // caveat to make, and inventing one would train users to ignore it.
+  const complete = { ...FERRITES, excluded: { cableCore: { singlePointOnly: 0, noImpedanceData: 0 },
+                                              bead: { singlePointOnly: 0, noImpedanceData: 0 } } }
+  await page.route('**/kelvin/hertz-ferrites.v1.json', (r) => r.fulfill({ json: complete }))
+  await page.route('**/kelvin/hertz-ferrites-curves.v1.json', (r) => r.fulfill({ json: CURVES }))
+  await page.goto('/')
+  await openProbePane(page)
+  await page.getByTestId('radiated-example').click()
+  await expect(page.getByTestId('mitigation-part')).toBeVisible({ timeout: 20000 })
+  await expect(page.getByTestId('catalog-excluded')).toHaveText('')
+})
+
+test('an older catalog without the exclusion tally still picks a part', async ({ page }) => {
+  // hertz-ferrites.v1.json predating the tally must not break the picker: the
+  // note is absent (we know nothing), the pick is unaffected.
+  const legacy = { version: 1, count: FERRITES.count, parts: FERRITES.parts }
+  await page.route('**/kelvin/hertz-ferrites.v1.json', (r) => r.fulfill({ json: legacy }))
+  await page.route('**/kelvin/hertz-ferrites-curves.v1.json', (r) => r.fulfill({ json: CURVES }))
+  await page.goto('/')
+  await openProbePane(page)
+  await page.getByTestId('radiated-example').click()
+  await expect(page.getByTestId('mitigation-part')).toContainText(/FIX-[SML]/, { timeout: 20000 })
+  await expect(page.getByTestId('catalog-excluded')).toHaveText('')
+})
+
+test('a main/curves file pair out of step shrinks the pool VISIBLY', async ({ page }) => {
+  // The export ships parts and curves together, so a part with no curve entry
+  // means the two files drifted. Previously that was a silent `continue` — the
+  // pool quietly shrank with nothing said. Serve a curves file missing FIX-L.
+  const { 'FIX-L': _dropped, ...rest } = CURVES.curves
+  await page.route('**/kelvin/hertz-ferrites.v1.json', (r) => r.fulfill({ json: FERRITES }))
+  await page.route('**/kelvin/hertz-ferrites-curves.v1.json',
+                   (r) => r.fulfill({ json: { version: 1, count: 2, curves: rest } }))
+  await page.goto('/')
+  await openProbePane(page)
+  await page.getByTestId('radiated-example').click()
+  await expect(page.getByTestId('radiated-verdict')).toContainText('FAIL', { timeout: 20000 })
+  await expect(page.getByTestId('mitigation')).toContainText('1 excluded for carrying no |Z| curve')
 })
 
 test('an unreachable ferrite catalog is surfaced, not faked', async ({ page }) => {
