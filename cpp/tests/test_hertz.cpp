@@ -839,6 +839,32 @@ TEST_CASE("cable ferrite insertion loss and candidate selection", "[cable]") {
     CHECK_THROWS(Hertz::select_cable_mitigation({100e6}, {5.0}, {}, 25.0));          // empty list
 }
 
+TEST_CASE("candidate selection skips un-coverable parts, never aborts on one", "[cable]") {
+    // A 30-300 MHz flagged band. `wide` spans it; `narrow` stops at 100 MHz and so
+    // cannot be evaluated at 300 MHz. With a 776-part catalogue some parts' |Z|
+    // curves stop short of any given band, so the selector must SKIP those, never
+    // let one un-coverable part abort the whole recommendation.
+    const Hertz::FerritePart wide{"wide-250", {10e6, 1e9}, {250.0, 250.0}};
+    const Hertz::FerritePart narrow{"narrow-900", {10e6, 100e6}, {900.0, 900.0}};  // stops at 100 MHz
+    const std::vector<double> band{30e6, 100e6, 300e6}, req{5.0, 10.0, 4.0};
+
+    // `narrow` FIRST — the old code threw at it and killed the whole pick.
+    auto pick = Hertz::select_cable_mitigation(band, req, {narrow, wide}, 25.0, 1);
+    CHECK(pick.partName == "wide-250");   // narrow skipped, wide selected
+    CHECK(pick.meetsTarget);
+
+    // Every candidate un-coverable over the band -> a real, reported condition,
+    // not a silent empty pick.
+    CHECK_THROWS_AS(Hertz::select_cable_mitigation(band, req, {narrow}, 25.0, 1),
+                    Hertz::OutsideCoverage);
+
+    // A MALFORMED curve (non-increasing frequencies) is a DATA error, not a
+    // coverage miss — it must still surface, never be swallowed by the skip.
+    const Hertz::FerritePart broken{"broken", {100e6, 30e6}, {50.0, 50.0}};
+    CHECK_THROWS_AS(Hertz::select_cable_mitigation(band, req, {broken, wide}, 25.0, 1),
+                    std::invalid_argument);
+}
+
 TEST_CASE("cable ferrite complex impedance — phase changes the insertion loss", "[cable]") {
     const double halfPi = 1.5707963267948966, quarterPi = 0.7853981633974483;
 

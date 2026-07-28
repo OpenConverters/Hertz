@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "hertz/Limits.hpp"    // OutsideCoverage
 #include "hertz/Network.hpp"
 
 namespace Hertz {
@@ -65,7 +66,7 @@ inline std::vector<Complex> ferrite_impedance_at(const FerritePart& part,
     out.reserve(freqs.size());
     for (double f : freqs) {
         if (!(f >= fp.front()) || !(f <= fp.back())) {
-            throw std::invalid_argument(part.name + ": target frequency outside datasheet |Z| coverage — no extrapolation");
+            throw OutsideCoverage(part.name + ": target frequency outside datasheet |Z| coverage — no extrapolation");
         }
         size_t j = 1;
         while (j + 1 < fp.size() && fp[j] < f) ++j;  // fp[j-1] <= f <= fp[j]
@@ -129,7 +130,17 @@ inline MitigationChoice select_cable_mitigation(const std::vector<double>& frequ
     bool haveBest = false;
     for (int turns = 1; turns <= maxTurns; ++turns) {
         for (const auto& part : parts) {
-            auto il = ferrite_insertion_loss_db(part, turns, cmReferenceOhm, frequenciesHz);
+            std::vector<double> il;
+            try {
+                il = ferrite_insertion_loss_db(part, turns, cmReferenceOhm, frequenciesHz);
+            } catch (const OutsideCoverage&) {
+                // A part whose |Z| curve does not span the flagged band cannot be
+                // evaluated over it, so it is simply not a candidate here — skip it.
+                // One un-coverable part must never abort the whole selection (with a
+                // 776-part catalogue that is a live risk). A MALFORMED curve still
+                // throws std::invalid_argument from ferrite_impedance_at and surfaces.
+                continue;
+            }
             double worst = std::numeric_limits<double>::infinity();
             for (size_t i = 0; i < il.size(); ++i) {
                 if (requiredAttenuationDb[i] > 0.0) worst = std::min(worst, il[i] - requiredAttenuationDb[i]);
@@ -141,6 +152,13 @@ inline MitigationChoice select_cable_mitigation(const std::vector<double>& frequ
                 haveBest = true;
             }
         }
+    }
+    if (!haveBest) {
+        // Every supplied part was un-coverable over the flagged band — a real,
+        // reportable condition (the caller must widen the catalogue or band),
+        // not a silent empty pick.
+        throw OutsideCoverage(
+            "no candidate ferrite covers the flagged band — every supplied part's |Z| curve stops short of it");
     }
     return best;
 }
