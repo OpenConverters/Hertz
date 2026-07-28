@@ -161,6 +161,10 @@ def main(source_path, output_path, curves_path=None):
             # `kind` tag lets the cable-mitigation UI prefer real clamp-on cores.
             if subtype not in ("chipbead", "cablecore"):
                 continue
+            # A discontinued/obsolete part stays in KelvinDB for reference but must
+            # NOT be RECOMMENDED by the mitigation picker — you can't buy it.
+            if str(info.get("status", "")).lower() == "obsolete":
+                continue
             rows = measured_magnitudes(electrical.get("impedancePoints"))
             curve = build_curve(rows)
             if curve is None:
