@@ -71,12 +71,21 @@ cable-ferrite picker, and `limit_polyline_runs`.
 ## Web GUI (`web/`)
 
 The full engine is exposed as a browser instrument — Vue 3 + Vite + the WASM
-engine, zero server compute — deployed at **hertz.openconverters.com**. Four
-screens: **Spectrum** (scan vs limit verdict, worst offenders, required
-attenuation, handoff to the designer), **Filter** (ANP015 designer with any
-manufacturer's candidate lists + SPICE export), **Receiver** (CISPR 16-1-1
-peak/quasi-peak/average emulation of uploaded waveforms), **LISN** (impedance
-explorer + SPICE model).
+engine, zero server compute — deployed at **hertz.openconverters.com**. Two
+destinations, because the workflow is measure-then-design: **Spectrum** (scan vs
+limit verdict, worst offenders, required attenuation, handoff to the designer)
+and **Filter** — the ANP015 designer with any manufacturer's candidate lists +
+SPICE export, laid out as a workbench: an input rail on the left, two
+independently switchable output panes on the right.
+
+Everything else is a pane of that bench rather than a screen of its own, because
+each one is an input to a filter design or a reading of one, and answers little
+on its own: **MEASURE · SCOPE CAPTURE** (CISPR 16-1-1 peak/quasi-peak/average
+emulation of an uploaded waveform, which hands per-mode CM/DM targets straight to
+the rail), **MEASURE · CM PROBE** (radiated pre-scan from a CM-current capture,
+plus the cable-ferrite mitigation picker), **TEST SETUP (LISN)** (impedance
+explorer + SPICE model), and the design outputs — schematic, catalog parts, BOM,
+insertion loss, sizing & safety, SPICE netlist, predicted result.
 
 ```bash
 scripts/build_wasm.sh        # engine → web/public/ (needs emsdk + WebLibMKF)
