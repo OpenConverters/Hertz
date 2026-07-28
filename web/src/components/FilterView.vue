@@ -5,6 +5,17 @@
 // (schematic, catalog parts, BOM, insertion loss, sizing tables, netlist).
 // The whole bench fits the viewport — panes scroll inside themselves.
 import { computed, onMounted, ref, watch } from 'vue'
+// The receiver and CM-current screens were folded in here as INPUTS, as two more
+// entries in the pane switcher. As standalone destinations they were screens you
+// visited to admire a number; what earns their keep is turning a scope capture /
+// current probe into a filter requirement, which only makes sense next to the
+// designer. They go in PANES, not above the bench: .fbench is a horizontal flex
+// row (rail | workspace) inside a viewport-tall, no-page-scroll layout, so an
+// extra child there becomes a third COLUMN and squeezes the workspace until the
+// panes overlap — panes also give them the v-if laziness a closed <details>
+// does not (a collapsed <details> still mounts and runs its component).
+import ReceiverPanel from './ReceiverView.vue'
+import RadiatedPanel from './RadiatedView.vue'
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
 import LisnView from './LisnView.vue'
@@ -62,6 +73,8 @@ const PANE_VIEWS = [
   ['netlist', 'SPICE NETLIST'],
   ['result', 'PREDICTED RESULT'],
   ['lisn', 'TEST SETUP (LISN)'],
+  ['measure-scope', 'MEASURE · SCOPE CAPTURE'],
+  ['measure-probe', 'MEASURE · CM PROBE'],
 ]
 const paneA = ref('schematic')
 const paneB = ref('il')
@@ -233,10 +246,16 @@ onMounted(() => {
       if (response.ok) capsCatalog.value = await response.json()
     } catch { /* caps panes show their own unavailable state */ }
   })()
-  onMountedHandoff()
+  applyHandoff()
 })
 
-function onMountedHandoff() {
+// A hand-off can now arrive AFTER mount: the receiver and CM-current panels
+// live inside this bench rather than on screens of their own, so they produce
+// store.handoff while the filter view is already showing. Reading it once at
+// mount would silently drop everything they emit.
+watch(() => store.handoff, (h) => { if (h) applyHandoff() })
+
+function applyHandoff() {
   if (store.handoff) {
     scanCtx.value = store.handoff.scan ?? null
     if (store.handoff.binding) {
@@ -1006,8 +1025,8 @@ function downloadNetlist() {
           <input v-model.number="aReqDm" type="number" data-test="areq-dm" @input="clearBinding" /></label>
       </div>
       <p class="note">From a failed scan: <em>Design the fix</em> (Spectrum) or <em>Design filter for
-        these modes</em> (Receiver) fill this section. Below 150 kHz the design moves to the first
-        harmonic inside the measured band (ANP015).</p>
+        these modes</em> (the MEASURE · SCOPE CAPTURE pane) fill this section. Below 150 kHz the
+        design moves to the first harmonic inside the measured band (ANP015).</p>
       <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
       <button class="ghost cont" data-test="cont-req" @click="openSection = 'comp'">CONTINUE ▸ COMPONENTS</button>
       </div>
@@ -1168,8 +1187,9 @@ function downloadNetlist() {
               <div v-if="!design" class="pane-empty">
                 <div class="ws-title">LINE FILTER</div>
                 <div class="ws-sub">ANP015 sizing · in-circuit verdicts · real catalog parts</div>
-                <div class="ws-hint">Set the requirement (or bring one over from a failed scan on
-                  the Spectrum or Receiver screens) and press <b>DESIGN FILTER</b> — schematic,
+                <div class="ws-hint">Set the requirement — type it, bring one over from a failed
+                  scan on the Spectrum screen, or measure it in the <b>MEASURE</b> panes — and
+                  press <b>DESIGN FILTER</b>: schematic,
                   parts, BOM, insertion loss, safety numbers and SPICE netlist appear in these two
                   switchable panes. The test setup (LISN) view works without a design.</div>
               </div>
@@ -1416,7 +1436,7 @@ function downloadNetlist() {
             <template v-else-if="pane === 'result'">
               <div v-if="!scanCtx" class="pane-empty note">Bring a measurement over first —
                 <em>Design the fix</em> (Spectrum) or <em>Design filter for these modes</em>
-                (Receiver) carries the scan along for this comparison.</div>
+                (the MEASURE · SCOPE CAPTURE pane) carries the scan along for this comparison.</div>
               <div v-else-if="!design" class="pane-empty note">Design a filter first.</div>
               <div v-else-if="predicted">
                 <p class="section-label">Measured scan vs predicted post-filter residual — the budget view</p>
@@ -1439,6 +1459,17 @@ function downloadNetlist() {
             <!-- LISN / test setup — reference view, works without a design -->
             <template v-else-if="pane === 'lisn'">
               <LisnView />
+            </template>
+
+            <!-- measurement on-ramps: a scope capture / current probe turned into
+                 a filter requirement, in a pane next to the designer they feed.
+                 v-else-if keeps them unmounted until selected — neither does any
+                 work (catalog fetches, engine calls) while another pane is up. -->
+            <template v-else-if="pane === 'measure-scope'">
+              <ReceiverPanel />
+            </template>
+            <template v-else-if="pane === 'measure-probe'">
+              <RadiatedPanel />
             </template>
           </div>
         </section>

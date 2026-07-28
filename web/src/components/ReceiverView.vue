@@ -206,7 +206,7 @@ const modalSeries = () => [
     <div>
       <div class="panel">
         <p class="section-label">Waveform input</p>
-        <p class="note" style="margin-bottom: 0.6rem">Why this screen: it turns a plain oscilloscope
+        <p class="note" style="margin-bottom: 0.6rem">Why this pane: it turns a plain oscilloscope
           capture into what a CISPR 16-1-1 EMI receiver would display (peak / quasi-peak / average)
           — pre-compliance without owning a receiver. A two-channel capture additionally separates
           common and differential mode and hands per-mode targets straight to the filter designer.</p>

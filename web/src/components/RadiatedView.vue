@@ -14,6 +14,7 @@ const cls = ref('b')
 const margin = ref(6)         // buffer on the CM-attenuation target (dB)
 const cmRef = ref(150)        // CM loop impedance (Ω) — genuinely uncertain (it IS the ±20 dB)
 const maxTurns = ref(3)       // most cable passes the picker may use on one core
+const cableOd = ref(null)     // OPTIONAL cable outer Ø (mm) — a recommended core must fit it
 const trace = ref(null)       // {name, frequenciesHz, dbua}
 const result = ref(null)      // {efield, uncertainty, analysis, limitRuns, mitigation}
 const error = ref('')
@@ -61,7 +62,18 @@ function ferriteCandidates(fLo, fHi) {
   const curves = ferriteCurves.value?.curves || {}
   const all = ferriteCatalog.value?.parts || []
   const haveCableCores = all.some((p) => p.kind === 'cableCore')
-  const pool = haveCableCores ? all.filter((p) => p.kind === 'cableCore') : all
+  let pool = haveCableCores ? all.filter((p) => p.kind === 'cableCore') : all
+  // Cable-fit: if a cable outer Ø is given, a core can only be recommended if the
+  // cable physically threads through its hole. A core whose max cable Ø is
+  // known-smaller — or has no published hole size — cannot be guaranteed to fit,
+  // so it is excluded (a recommendation must be physically installable).
+  let fitDropped = 0
+  const odM = Number(cableOd.value) > 0 ? Number(cableOd.value) / 1000 : null
+  if (odM != null && haveCableCores) {
+    const before = pool.length
+    pool = pool.filter((p) => typeof p.cableMaxM === 'number' && p.cableMaxM >= odM)
+    fitDropped = before - pool.length
+  }
   const parts = []
   let coverageDropped = 0
   for (const p of pool) {
@@ -80,7 +92,7 @@ function ferriteCandidates(fLo, fHi) {
     parts.push({ name: p.mpn, frequenciesHz: f, zOhm, phaseRad, _z: p.zAt100MHzOhm ?? p.zPeakOhm ?? 0, rec: !!c.rec })
   }
   parts.sort((a, b) => a._z - b._z)
-  return { parts, coverageDropped, usingBeads: !haveCableCores }
+  return { parts, coverageDropped, fitDropped, usingBeads: !haveCableCores }
 }
 
 async function ingest(files) {
@@ -142,16 +154,17 @@ async function cableMitigation(engine, analysis) {
   if (ferriteState.value !== 'ready') {
     return { needed: true, target, pick: { error: 'ferrite catalog unreachable from this deployment — the target above is the attenuation to add; select a cable ferrite / clip-on CM core whose |Z| curve meets it' } }
   }
-  const { parts, coverageDropped, usingBeads } = ferriteCandidates(fc[0], fc[fc.length - 1])
+  const { parts, coverageDropped, fitDropped, usingBeads } = ferriteCandidates(fc[0], fc[fc.length - 1])
   if (!parts.length) {
-    return { needed: true, target, coverageDropped, usingBeads,
-             pick: { error: `no catalogued ${usingBeads ? 'ferrite bead' : 'cable ferrite core'} covers the whole flagged band (${fmtHz(fc[0])}–${fmtHz(fc[fc.length - 1])}) — ${coverageDropped} parts were excluded for insufficient |Z|-curve coverage` } }
+    const fitNote = fitDropped ? `${fitDropped} excluded for not fitting a ${cableOd.value} mm cable; ` : ''
+    return { needed: true, target, coverageDropped, fitDropped, usingBeads,
+             pick: { error: `no catalogued ${usingBeads ? 'ferrite bead' : 'cable ferrite core'} covers the whole flagged band (${fmtHz(fc[0])}–${fmtHz(fc[fc.length - 1])}) — ${fitNote}${coverageDropped} excluded for insufficient |Z|-curve coverage` } }
   }
   let pick = null
   try { pick = engine.cableMitigation(fc, target.target, parts, Number(cmRef.value), Number(maxTurns.value)) }
   catch (e) { pick = { error: e.message } }
   if (pick && pick.partName) pick.rec = parts.find((p) => p.name === pick.partName)?.rec === true
-  return { needed: true, target, pick, candidateCount: parts.length, coverageDropped, usingBeads }
+  return { needed: true, target, pick, candidateCount: parts.length, coverageDropped, fitDropped, usingBeads }
 }
 
 // catalog row behind the pick, for the maker / form / fit / headline-|Z| readout
@@ -235,6 +248,8 @@ const violations = () => {
             <input v-model.number="cmRef" type="number" min="1" step="1" data-test="cm-ref" @change="estimate" /></label>
           <label class="field"><span>Max cable turns</span>
             <input v-model.number="maxTurns" type="number" min="1" max="10" step="1" data-test="max-turns" @change="estimate" /></label>
+          <label class="field"><span>Cable Ø (mm, optional)</span>
+            <input v-model.number="cableOd" type="number" min="0" step="0.5" placeholder="any" data-test="cable-od" @change="estimate" /></label>
         </div>
         <p class="note">Model: |E| = 1.257·10⁻⁶ · f · L<sub>eff</sub> · I<sub>CM</sub> / d, the
           electrically-short CM radiator (Ott/Paul), L<sub>eff</sub> capped at λ/4 above cable
@@ -285,12 +300,14 @@ const violations = () => {
                 {{ fmtDb(result.mitigation.pick.worstMarginDb) }}</span><span class="unit">dB</span></div>
           </div>
           <p v-if="!result.mitigation.usingBeads" class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b>
-            real Würth clamp-on / cable ferrite cores whose measured |Z| curve covers the band (MAS catalog,
-            <code>cableCore</code> — WE REDEXPERT, 1-turn |Z|; phase reconstructed from |Z|, marked <b>~</b>).
+            real clamp-on / cable ferrite cores (9 makers) whose measured |Z| curve covers the band (MAS catalog,
+            <code>cableCore</code> — 1-turn |Z|; phase reconstructed from |Z| where only magnitude is published, marked <b>~</b>).
             Thread the cable through the core; more turns raise |Z| by ≈turns². The CM loop impedance
             ({{ cmRef }} Ω) is genuinely uncertain — it IS the ±{{ result.uncertainty }} dB — so treat the pick
             as a starting part, not a spec.<span v-if="result.mitigation.coverageDropped">
-            {{ result.mitigation.coverageDropped }} cores were excluded for not covering the whole band.</span></p>
+            {{ result.mitigation.coverageDropped }} cores were excluded for not covering the whole band.</span><span
+            v-if="result.mitigation.fitDropped"> {{ result.mitigation.fitDropped }} excluded for not fitting a
+            {{ cableOd }} mm cable.</span></p>
           <p v-else class="note">Picked from <b>{{ result.mitigation.candidateCount }}</b> catalogued ferrite beads
             whose measured |Z| curve covers the band (<code>chipBead</code> — SMD suppression beads; phase
             reconstructed from |Z|, marked <b>~</b>). No cable cores are catalogued in this deployment, so these

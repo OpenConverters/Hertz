@@ -2,8 +2,6 @@
 import { onMounted, ref } from 'vue'
 import SpectrumView from './components/SpectrumView.vue'
 import FilterView from './components/FilterView.vue'
-import ReceiverView from './components/ReceiverView.vue'
-import RadiatedView from './components/RadiatedView.vue'
 import { loadEngine } from './engine.js'
 import { store } from './store.js'
 
@@ -22,10 +20,13 @@ onMounted(async () => {
 // The nav IS the workflow: measure (analyzer scan or scope capture), then
 // design. The LISN lives inside the Filter bench — it is the filter's test
 // setup, not a separate destination.
+// RECEIVER and RADIATED (EST.) were removed as standalone destinations: as
+// independent screens they answered questions nobody arrives with. Both survive
+// as MEASURE panes in the Filter bench, where a scope capture / current probe
+// becomes a filter requirement — an input to the design, not a screen of its own
+// (that is also where the cable-mitigation ferrite picker now lives).
 const measureModes = [
   { id: 'spectrum', label: 'SPECTRUM' },
-  { id: 'receiver', label: 'RECEIVER' },
-  { id: 'radiated', label: 'RADIATED (EST.)' },
 ]
 </script>
 
@@ -50,8 +51,6 @@ const measureModes = [
     </nav>
 
     <SpectrumView v-if="store.mode === 'spectrum'" />
-    <ReceiverView v-else-if="store.mode === 'receiver'" />
-    <RadiatedView v-else-if="store.mode === 'radiated'" />
     <FilterView v-else />
 
     <p class="footnote">

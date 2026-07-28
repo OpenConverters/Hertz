@@ -1,5 +1,14 @@
 import { test, expect } from '@playwright/test'
 
+// RECEIVER and RADIATED are no longer nav destinations — they are MEASURE panes
+// inside the Filter bench, where a scope capture / current probe becomes a
+// filter requirement. Opening one in pane A leaves pane B on its default ('il'),
+// so the pane still holds exactly one file input and one band select.
+async function openMeasurePane(page, which) {
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('pane-select-a').selectOption(which)
+}
+
 test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer', async ({ page }) => {
   const consoleErrors = []
   page.on('pageerror', (e) => consoleErrors.push(String(e)))
@@ -47,7 +56,7 @@ test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
 test('receiver: demo signal separates the three detectors', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
+  await openMeasurePane(page, 'measure-scope')
   await page.getByTestId('run-demo').click()
   await expect(page.getByTestId('receiver-chart')).toBeVisible({ timeout: 45_000 })
 })
@@ -127,8 +136,8 @@ test('receiver: REAL CISPR 16-1-1 calibration waveform through the GUI', async (
   }
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
-  await page.locator('select').first().selectOption('A')
+  await openMeasurePane(page, 'measure-scope')
+  await page.getByTestId('band').selectOption('A')
   await page.locator('input[type="file"]').setInputFiles({
     name: 'cispr16_bandA_100Hz.csv', mimeType: 'text/csv',
     buffer: Buffer.from(lines.join('\n')),
@@ -149,7 +158,7 @@ test('receiver: 2-channel capture separates CM/DM and hands per-mode targets to 
   }
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
+  await openMeasurePane(page, 'measure-scope')
   await page.locator('input[type="file"]').setInputFiles({
     name: 'two_channel.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
   })
@@ -192,7 +201,7 @@ test('receiver: co-frequency CM+DM no longer under-states the requirement (Berge
   }
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
+  await openMeasurePane(page, 'measure-scope')
   await page.locator('input[type="file"]').setInputFiles({
     name: 'cofreq.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
   })
@@ -269,7 +278,7 @@ test('filter: receiver handoff sizes each mode at its own critical point (Berger
   }
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
+  await openMeasurePane(page, 'measure-scope')
   await page.locator('input[type="file"]').setInputFiles({
     name: 'two_tone_modes.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
   })
@@ -301,7 +310,7 @@ test('receiver: a compliant capture hands over nothing — no defaults dressed a
   }
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
+  await openMeasurePane(page, 'measure-scope')
   await page.locator('input[type="file"]').setInputFiles({
     name: 'quiet.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
   })
@@ -422,7 +431,7 @@ test('receiver: switching the band re-measures — a too-short record fails loud
   }
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-receiver').click()
+  await openMeasurePane(page, 'measure-scope')
   await page.locator('input[type="file"]').setInputFiles({
     name: 'short_record.csv', mimeType: 'text/csv', buffer: Buffer.from(lines.join('\n')),
   })
@@ -660,7 +669,7 @@ test('spectrum: the real QR-flyback pre-scan fails LOW and HIGH frequencies (MDP
 test('radiated: the CM-current screening estimator judges against CISPR 32 with a loud uncertainty banner', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-radiated').click()
+  await openMeasurePane(page, 'measure-probe')
   await page.getByTestId('radiated-example').click()
   await expect(page.getByTestId('radiated-verdict')).toContainText('screen')
   await expect(page.getByTestId('radiated-uncertainty')).toContainText('triage, not a measurement')
