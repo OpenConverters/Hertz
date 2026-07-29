@@ -8,7 +8,7 @@ import { demoWaveform } from '../demo.js'
 import { store } from '../store.js'
 import { fmtHz, fmtDb } from '../format.js'
 
-const BAND_RANGE = { A: [9e3, 150e3], B: [150e3, 30e6], C: [30e6, 300e6] }
+const BAND_RANGE = { A: [9e3, 150e3], B: [150e3, 30e6], C: [30e6, 300e6], D: [300e6, 1e9] }
 
 const band = ref('B')
 const lastInput = ref(null)     // retained so a band change re-MEASURES, never re-labels
@@ -224,6 +224,7 @@ const modalSeries = () => [
             <option value="A">A — 9–150 kHz (200 Hz RBW)</option>
             <option value="B">B — 150 kHz–30 MHz (9 kHz RBW)</option>
             <option value="C">C — 30–300 MHz (120 kHz RBW)</option>
+            <option value="D">D — 300 MHz–1 GHz (120 kHz RBW)</option>
           </select>
         </label>
         <button class="ghost" data-test="run-demo" :disabled="busy" @click="runDemo">Run demo signal</button>
