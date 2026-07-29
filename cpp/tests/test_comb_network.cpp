@@ -186,3 +186,25 @@ TEST_CASE("Middlebrook: interaction check", "[middlebrook]") {
     CHECK_THROWS_AS(Hertz::input_filter_interaction(0.0, 2.2e-6, 48.0, 100.0),
                     std::invalid_argument);
 }
+
+TEST_CASE("Network: a sub-step-narrow span yields finite points, never NaN", "[network]") {
+    // Regression: a frequency span narrower than one 1/pointsPerDecade step used to
+    // truncate steps to 0, so the sampling loop evaluated i/steps = 0/0 = NaN and
+    // emitted a silent NaN point instead of throwing. 1.0-1.02 MHz at 40 pts/decade
+    // is ~0.34 of a step (well under 1). Guard makes steps>=1 -> two finite points.
+    auto curves = Hertz::insertion_loss_curves(14.64e-6, 2.2e-6, 1, 100.0, 1.0e6, 1.02e6, 40);
+    REQUIRE(curves.frequenciesHz.size() >= 2);
+    REQUIRE(curves.frequenciesHz.size() == curves.standardDb.size());
+    for (double f : curves.frequenciesHz) {
+        CHECK(std::isfinite(f));
+    }
+    for (double d : curves.standardDb) {
+        CHECK(std::isfinite(d));
+    }
+    for (double d : curves.worstCaseDb) {
+        CHECK(std::isfinite(d));
+    }
+    // endpoints must still bracket the requested span
+    CHECK(curves.frequenciesHz.front() == Approx(1.0e6));
+    CHECK(curves.frequenciesHz.back() == Approx(1.02e6));
+}

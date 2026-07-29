@@ -5,6 +5,7 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <nlohmann/json.hpp>
@@ -332,7 +333,9 @@ std::string lisn_data_js(const std::string& kind, double fMinHz, double fMaxHz,
     json phase = json::array();
     double logMin = std::log10(fMinHz);
     double logMax = std::log10(fMaxHz);
-    int steps = static_cast<int>((logMax - logMin) * pointsPerDecade);
+    // Guard steps>=1 (see Network.hpp): a sub-step span would truncate to 0 and make
+    // i/steps = 0/0 = NaN in the loop below.
+    int steps = std::max(1, static_cast<int>((logMax - logMin) * pointsPerDecade));
     for (int i = 0; i <= steps; ++i) {
         double f = std::pow(10.0, logMin + (logMax - logMin) * i / steps);
         std::complex<double> z = lisn.eut_impedance(f);

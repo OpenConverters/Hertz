@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <numbers>
@@ -97,7 +98,11 @@ inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capa
     InsertionLossCurves curves;
     double logMin = std::log10(fMinHz);
     double logMax = std::log10(fMaxHz);
-    int steps = static_cast<int>((logMax - logMin) * pointsPerDecade);
+    // Guard steps>=1: a span narrower than one 1/pointsPerDecade step truncates to
+    // steps=0, and the loop below then evaluates i/steps = 0/0 = NaN. Matches the
+    // floor already applied in Limits.hpp::limit_polyline_runs. (max(1,...) only,
+    // no ceil, so point counts for every non-degenerate span are unchanged.)
+    int steps = std::max(1, static_cast<int>((logMax - logMin) * pointsPerDecade));
     Complex reference(referenceImpedanceOhm, 0.0);
     for (int i = 0; i <= steps; ++i) {
         double f = std::pow(10.0, logMin + (logMax - logMin) * i / steps);
