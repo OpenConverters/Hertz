@@ -23,6 +23,7 @@
 #include "hertz/CableMitigation.hpp"
 #include "hertz/CombDetection.hpp"
 #include "hertz/Detector.hpp"
+#include "hertz/FilterBlock.hpp"
 #include "hertz/FilterDesign.hpp"
 #include "hertz/Limits.hpp"
 #include "hertz/Lisn.hpp"
@@ -513,4 +514,41 @@ PYBIND11_MODULE(PyHertz, m) {
           py::arg("freq_unit") = py::none(), py::arg("level_unit") = py::none(),
           py::arg("z0_ohm") = 50.0, py::arg("level_column") = py::none());
     m.def("spectrum_csv_columns", &Hertz::spectrum_csv_columns, py::arg("content"));
+
+    // ------------------------------------------------- the filter BLOCK (S3/S4)
+    py::class_<Hertz::layout::GeneratedBoard>(m, "GeneratedBoard")
+        .def_readonly("kicad_pcb", &Hertz::layout::GeneratedBoard::kicadPcb)
+        .def_readonly("board_w_mm", &Hertz::layout::GeneratedBoard::boardWmm)
+        .def_readonly("board_h_mm", &Hertz::layout::GeneratedBoard::boardHmm)
+        .def_readonly("min_ln_gap_mm", &Hertz::layout::GeneratedBoard::minLNGapmm)
+        .def_readonly("min_pe_gap_mm", &Hertz::layout::GeneratedBoard::minPEGapmm)
+        .def_readonly("parts", &Hertz::layout::GeneratedBoard::parts);
+    py::class_<Hertz::layout::LayoutParasitics>(m, "LayoutParasitics")
+        .def_readonly("m_dm_nh", &Hertz::layout::LayoutParasitics::mDmNh)
+        .def_readonly("x_conn_nh", &Hertz::layout::LayoutParasitics::xConnNh)
+        .def_readonly("y_conn_nh", &Hertz::layout::LayoutParasitics::yConnNh)
+        .def_readonly("pe_spine_nh", &Hertz::layout::LayoutParasitics::peSpineNh);
+    py::class_<Hertz::layout::FilterBlock>(m, "FilterBlock")
+        .def_readonly("design", &Hertz::layout::FilterBlock::design)
+        .def_readonly("board", &Hertz::layout::FilterBlock::board)
+        .def_readonly("parasitics", &Hertz::layout::FilterBlock::par)
+        .def_readonly("layout_atten_cm_db", &Hertz::layout::FilterBlock::layoutAttenCmDb)
+        .def_readonly("layout_atten_dm_db", &Hertz::layout::FilterBlock::layoutAttenDmDb)
+        .def_readonly("meets", &Hertz::layout::FilterBlock::meets)
+        .def_readonly("escalated_stages", &Hertz::layout::FilterBlock::escalatedStages)
+        .def_readonly("iterations", &Hertz::layout::FilterBlock::iterations);
+    m.def("optimize_filter_block", &Hertz::layout::optimize_filter_block,
+          py::arg("f_sw_hz"), py::arg("a_req_cm_db"), py::arg("a_req_dm_db"),
+          py::arg("c_y_per_line_f"), py::arg("l_dm_h"), py::arg("rated_current_a"),
+          py::arg("l_cm_candidates_h"), py::arg("c_x_candidates_f"),
+          py::arg("max_stages") = 2, py::arg("cap_esl_h") = 5e-9,
+          py::arg("cap_esr_ohm") = 0.02);
+    m.def("block_spice_subckt", &Hertz::layout::block_spice_subckt,
+          py::arg("design"), py::arg("parasitics"), py::arg("cap_esl_h") = 5e-9,
+          py::arg("cap_esr_ohm") = 0.02);
+    m.def("touchstone_s2p", &Hertz::layout::touchstone_s2p, py::arg("design"),
+          py::arg("parasitics"), py::arg("mode"), py::arg("f1_hz") = 150e3,
+          py::arg("f2_hz") = 30e6, py::arg("points_per_decade") = 20,
+          py::arg("cap_esl_h") = 5e-9, py::arg("cap_esr_ohm") = 0.02);
+    m.def("block_bom_csv", &Hertz::layout::block_bom_csv, py::arg("design"));
 }

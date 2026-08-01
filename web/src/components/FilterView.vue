@@ -72,6 +72,7 @@ const PANE_VIEWS = [
   ['values', 'SIZING & SAFETY'],
   ['netlist', 'SPICE NETLIST'],
   ['result', 'PREDICTED RESULT'],
+  ['layout', 'LAYOUT & BLOCK'],
   ['lisn', 'TEST SETUP (LISN)'],
   ['measure-scope', 'MEASURE · SCOPE CAPTURE'],
   ['measure-probe', 'MEASURE · CM PROBE'],
@@ -91,6 +92,75 @@ function onPaneChange(which, view) {
     paneB.value = view
   }
 }
+// ── the filter BLOCK (plan S3/S4): layout generated, parasitics fed back,
+//    the whole thing downloadable as one characterized part ────────────────
+const blockResult = ref(null)
+const blockBusy = ref(false)
+const blockError = ref('')
+const blockRatedA = ref(10)
+async function buildBlock() {
+  blockBusy.value = true
+  blockError.value = ''
+  try {
+    const engine = await api()
+    const p = buildParams()
+    p.ratedCurrentA = Number(blockRatedA.value)
+    p.maxStages = 2
+    blockResult.value = engine.filterBlock(p)
+  } catch (e) {
+    blockError.value = String(e.message || e)
+    blockResult.value = null
+  } finally {
+    blockBusy.value = false
+  }
+}
+function downloadText(name, text, type = 'text/plain') {
+  const url = URL.createObjectURL(new Blob([text], { type }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+// minimal render of the generated board: pads + tracks + outline, straight
+// from the emitted text (what you see is what you download)
+function blockBoardShapes() {
+  const text = blockResult.value?.board?.kicadPcb
+  if (!text) return null
+  const segs = []
+  const pads = []
+  const edges = []
+  let ox = 0, oy = 0
+  for (const line of text.split('\n')) {
+    let m = line.match(/\(footprint [^\n]*\(at ([-\d.]+) ([-\d.]+)\)/)
+    if (m) { ox = +m[1]; oy = +m[2]; continue }
+    m = line.match(/\(pad "[^"]+" thru_hole circle \(at ([-\d.]+) ([-\d.]+)\) \(size ([\d.]+)/)
+    if (m) { pads.push({ x: ox + +m[1], y: oy + +m[2], r: +m[3] / 2 }); continue }
+    m = line.match(/\(segment \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(width ([\d.]+)/)
+    if (m) { segs.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4], w: +m[5] }); continue }
+    m = line.match(/\(gr_line \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(layer "Edge.Cuts"\)/)
+    if (m) edges.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4] })
+  }
+  const xs = edges.flatMap((e) => [e.x1, e.x2])
+  const ys = edges.flatMap((e) => [e.y1, e.y2])
+  return { segs, pads, edges,
+           x0: Math.min(...xs) - 1, y0: Math.min(...ys) - 1,
+           w: Math.max(...xs) - Math.min(...xs) + 2,
+           h: Math.max(...ys) - Math.min(...ys) + 2 }
+}
+function blockIlSeries() {
+  const c = blockResult.value?.curves
+  if (!c) return []
+  const zip = (ys) => c.fHz.map((f, i) => [f, ys[i]])
+  return [
+    { label: 'DM with layout', color: '#4d9fff', points: zip(c.dmDb) },
+    { label: 'DM components only', color: '#4d9fff', dash: '5 4', points: zip(c.dmIdealDb) },
+    { label: 'DM bypass floor', color: '#ff7a6e', dash: '2 3', points: zip(c.dmFloorDb) },
+    { label: 'CM with layout', color: '#58c79a', points: zip(c.cmDb) },
+    { label: 'CM components only', color: '#58c79a', dash: '5 4', points: zip(c.cmIdealDb) },
+  ]
+}
+
 function selectComponent(ref_) {
   selectedRef.value = ref_
   // clicking a schematic component surfaces its catalog in the OTHER pane
@@ -1457,6 +1527,89 @@ function downloadNetlist() {
             </template>
 
             <!-- LISN / test setup — reference view, works without a design -->
+            <!-- the filter BLOCK: generated layout + parasitics + downloads -->
+            <template v-else-if="pane === 'layout'">
+              <div class="view-fill" style="overflow-y: auto">
+                <p style="display:flex; align-items:center; gap:0.7rem; flex-wrap:wrap; margin:0 0 0.4rem">
+                  <label class="note">rated current
+                    <input v-model.number="blockRatedA" type="number" min="0.1" step="0.5"
+                           style="width:4.5rem" data-test="block-rated-a" /> A</label>
+                  <button data-test="build-block" :disabled="blockBusy" @click="buildBlock">
+                    {{ blockBusy ? 'ITERATING…' : 'BUILD FILTER BLOCK' }}</button>
+                  <span v-if="blockResult" class="chip" :class="blockResult.meets ? 'pass' : 'fail'"
+                        data-test="block-verdict">
+                    {{ blockResult.meets ? 'MEETS TARGET THROUGH ITS LAYOUT' : 'LAYOUT-LIMITED — TARGET NOT MET' }}
+                    · CM {{ blockResult.layoutAttenCmDb.toFixed(1) }} dB
+                    · DM {{ blockResult.layoutAttenDmDb.toFixed(1) }} dB</span>
+                  <span v-if="blockError" class="err" data-test="block-error">{{ blockError }}</span>
+                </p>
+                <div v-if="!blockResult && !blockError" class="pane-empty note">
+                  Set the requirement on the left, then BUILD FILTER BLOCK: the layout is generated
+                  (KiCad board, IEC-60664-shaped spacings, IPC-2221 copper), its parasitics are
+                  extracted and fed back, and spacing/stages iterate until the target is met —
+                  or the layout-limited shortfall is shown honestly.</div>
+                <template v-if="blockResult">
+                  <p class="section-label">Generated board —
+                    {{ blockResult.board.widthMm.toFixed(0) }} × {{ blockResult.board.heightMm.toFixed(0) }} mm,
+                    {{ blockResult.board.parts }} parts, {{ blockResult.design.stages }} stage(s),
+                    chain gap {{ blockResult.partGapMm.toFixed(1) }} mm
+                    <template v-if="blockResult.escalatedStages"> · escalated to 2 stages by the layout loop</template></p>
+                  <svg v-if="blockBoardShapes()" data-test="block-board-svg"
+                       :viewBox="`${blockBoardShapes().x0} ${blockBoardShapes().y0} ${blockBoardShapes().w} ${blockBoardShapes().h}`"
+                       style="width:100%; flex:0 0 200px; background:#101613; border-radius:6px">
+                    <line v-for="(e, i) in blockBoardShapes().edges" :key="'e' + i"
+                          :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" stroke="#5a6a62" stroke-width="0.3" />
+                    <line v-for="(sg, i) in blockBoardShapes().segs" :key="'s' + i"
+                          :x1="sg.x1" :y1="sg.y1" :x2="sg.x2" :y2="sg.y2"
+                          stroke="#e8955c" :stroke-width="sg.w" stroke-linecap="round" opacity="0.9" />
+                    <circle v-for="(pd, i) in blockBoardShapes().pads" :key="'p' + i"
+                            :cx="pd.x" :cy="pd.y" :r="pd.r" fill="#d8b36a" />
+                  </svg>
+                  <p class="section-label">What the layout adds (band: partials ±30 %, bypass M ±50 %,
+                    FastHenry-anchored)</p>
+                  <table class="data" data-test="block-parasitics">
+                    <tbody>
+                      <tr><td>dirty↔clean bypass mutual M</td>
+                        <td><b>{{ blockResult.parasitics.mDmNh.toFixed(2) }} nH</b></td>
+                        <td class="note">IL floor no component can beat — only spacing moves it</td></tr>
+                      <tr><td>X-cap connection ESL</td>
+                        <td><b>{{ blockResult.parasitics.xConnNh.toFixed(2) }} nH</b></td>
+                        <td class="note">in series with each X capacitor's own ESL</td></tr>
+                      <tr><td>Y-cap connection ESL</td>
+                        <td><b>{{ blockResult.parasitics.yConnNh.toFixed(2) }} nH</b></td>
+                        <td class="note">per Y capacitor</td></tr>
+                      <tr><td>shared PE spine</td>
+                        <td><b>{{ blockResult.parasitics.peSpineNh.toFixed(1) }} nH</b></td>
+                        <td class="note">common-impedance path of both Y currents</td></tr>
+                    </tbody>
+                  </table>
+                  <p class="section-label">Insertion loss — solid: with layout · dashed: components only ·
+                    dotted red: bypass floor</p>
+                  <LogChart :series="blockIlSeries()" y-label="dB" :height="240" data-test="block-il-chart" />
+                  <p class="section-label">Download the block</p>
+                  <p style="display:flex; gap:0.6rem; flex-wrap:wrap">
+                    <button class="ghost" data-test="dl-board"
+                            @click="downloadText('hertz-filter.kicad_pcb', blockResult.board.kicadPcb)">.kicad_pcb</button>
+                    <button class="ghost" data-test="dl-spice"
+                            @click="downloadText('hertz-filter-block.cir', blockResult.spice)">SPICE .subckt</button>
+                    <button class="ghost" data-test="dl-s2p-dm"
+                            @click="downloadText('hertz-filter-dm.s2p', blockResult.s2pDm)">.s2p (DM)</button>
+                    <button class="ghost" data-test="dl-s2p-cm"
+                            @click="downloadText('hertz-filter-cm.s2p', blockResult.s2pCm)">.s2p (CM)</button>
+                    <button class="ghost" data-test="dl-bom"
+                            @click="downloadText('hertz-filter-bom.csv', blockResult.bomCsv, 'text/csv')">BOM .csv</button>
+                    <button class="ghost" data-test="dl-report"
+                            @click="downloadText('hertz-filter-report.json', JSON.stringify(blockResult, null, 1), 'application/json')">report .json</button>
+                  </p>
+                  <p class="note">The board is MACHINE-GENERATED — review packages, creepage and safety
+                    approvals before fabrication (it says so on silk). Spacing floors are IEC-60664-shaped
+                    engineering floors, not a compliance statement. Open the .kicad_pcb in KiCad for
+                    fab outputs; drop it on <a href="https://faraday.openconverters.com" target="_blank"
+                    rel="noopener">Faraday</a> for the independent EMC review of exactly these bytes.</p>
+                </template>
+              </div>
+            </template>
+
             <template v-else-if="pane === 'lisn'">
               <LisnView />
             </template>

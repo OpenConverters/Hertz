@@ -128,12 +128,28 @@ inline LayoutParams layout_params_for(double ratedCurrentA) {
 // Generation
 // ---------------------------------------------------------------------------
 
+// one shunt part's connection into the rails: total stub length and width —
+// the series inductance the part's own ESL does not include
+struct StubRun {
+    std::string ref;
+    double lenMm = 0, wMm = 0;
+};
+
 struct GeneratedBoard {
     std::string kicadPcb;
     double boardWmm = 0, boardHmm = 0;
     double minLNGapmm = 0;   // measured on the emitted copper, not assumed
     double minPEGapmm = 0;
     int parts = 0;
+    // geometry summary for the layout-parasitic model (S2): the dirty-side
+    // and clean-side rail runs, the rail separation, and every shunt
+    // part's connection stubs — all in mm, all from the same numbers the
+    // copper was emitted with
+    double railSepMm = 0, traceWMm = 0;
+    double inX1 = 0, inX2 = 0;     // input rail pair span (J_IN .. choke 1)
+    double outX1 = 0, outX2 = 0;   // output rail pair span (last choke .. J_OUT)
+    double peSpineLenMm = 0;       // shared earth run, input lug to output lug
+    std::vector<StubRun> stubs;
 };
 
 namespace detail {
@@ -275,6 +291,8 @@ inline GeneratedBoard generate_filter_board(
     add_lug("J3", xIn, yPEb, nPE);
     x += lug.bodyW / 2.0 + p.partGapmm;
 
+    std::vector<StubRun> stubRuns;
+    double firstChokeInX = 0, lastChokeOutX = 0;
     Rail railL{xIn, nLIn, {}}, railN{xIn, nNIn, {}};
     Rail peTop{xPeLink, nPE, {}}, peBot{xPeLink, nPE, {}};
     peBot.joints.push_back(xIn);              // J3 sits on the bottom spine
@@ -295,6 +313,8 @@ inline GeneratedBoard generate_filter_board(
         const double sw = std::clamp(pkg.pad, 1.0, std::max(tw, 1.0));
         stub(cx, yTopRail, yTop, netTop, sw);
         stub(cx, yBotRail, yBot, netBot, sw);
+        stubRuns.push_back({ref, std::abs(yTop - yTopRail) +
+                                     std::abs(yBot - yBotRail), sw});
         if (railTop) railTop->joints.push_back(cx);
         if (railBot) railBot->joints.push_back(cx);
         x = cx + pkg.bodyW / 2.0 + p.partGapmm;
@@ -338,6 +358,8 @@ inline GeneratedBoard generate_filter_board(
         // ...and reopen them from its output pins
         stub(xout, yL, yTopPin, outL, tw);
         stub(xout, yN, yBotPin, outN, tw);
+        if (s == 0) firstChokeInX = xin;
+        lastChokeOutX = xout;
         railL = {xout, outL, {}};
         railN = {xout, outN, {}};
         x = ccx + cPkg.bodyW / 2.0 + p.partGapmm;
@@ -473,6 +495,14 @@ inline GeneratedBoard generate_filter_board(
     g.minLNGapmm = lnGap;
     g.minPEGapmm = peGapMeasured;
     g.parts = (int)parts.size();
+    g.railSepMm = 2.0 * railHalf;
+    g.traceWMm = tw;
+    g.inX1 = xIn;
+    g.inX2 = firstChokeInX;
+    g.outX1 = lastChokeOutX;
+    g.outX2 = xOut;
+    g.peSpineLenMm = xOut - xIn;
+    g.stubs = std::move(stubRuns);
     return g;
 }
 

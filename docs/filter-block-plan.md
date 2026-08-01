@@ -23,10 +23,10 @@ every capability with a stated error band, every silent limitation counted.
 
 | Stage | ABT | Status |
 |---|---|---|
-| S1 LayoutGen: parametric KiCad board generator | #442 | in progress |
-| S2 Faraday-in-the-loop: layout parasitics → predicted IL | #443 | open |
-| S3 Joint optimizer: layout params + BOM to target | #444 | open |
-| S4 One-block deliverable: downloads + characterization | #445 | open |
+| S1 LayoutGen: parametric KiCad board generator | #442 | **done** (KiCad 9: 0 DRC errors, 0 unconnected; Faraday-reviewed; 6 Catch2 pins) |
+| S2 Layout parasitics → predicted IL | #443 | **done** (Grover strips ±1 % vs FastHenry; pair M ±1 % with the closing-vertical term, band ±50 % stated; numeric-Neumann pinned) |
+| S3 Joint optimizer: layout params + BOM to target | #444 | **done** (deterministic ladder + stage escalation; meets/limited/refused all pinned) |
+| S4 One-block deliverable: downloads + characterization | #445 | **done** (board/SPICE/s2p×2/BOM/report; LAYOUT & BLOCK pane; e2e) |
 
 ## S1 — LayoutGen (#442)
 
@@ -62,10 +62,21 @@ tests). Map extracted parasitics onto the filter model:
 - X/Y-cap **connection ESL** (trace + via) shifting each capacitor's SRF.
 - shared-return **common impedance** between stages.
 
-Every derived curve carries its band: the closed-form coupling is documented
-~6.5 dB optimistic vs a 2D solve (ranking reliable, absolute conservative
-after correction); loop-L ±15 % vs FastHenry. Acceptance includes a
-FastHenry spot-check of M and one cap branch on a generated board.
+Every derived curve carries its band. FastHenry spot-check (recorded in
+#443): the Y-stub strip partial lands within 1 % (4.26 vs 4.30 nH); the
+pair bypass M required the loops' CLOSING-VERTICAL term — horizontal-only
+measured 2.2× low (1.26 vs 2.74 nH), with it the closed form is within 1 %
+of the solver for this template. The split is configuration-dependent, so
+the stated absolute band is ±50 % (floors ±4 dB); rankings within one
+template family are far tighter. The filament mutual is additionally pinned
+against a numeric Neumann double integral in Catch2.
+
+ARCHITECTURE NOTE (decided in S2): the optimizer's inner loop uses the
+ANALYTIC parasitics from the generator's own geometry summary (fast, exact
+to the template); Faraday remains the independent reviewer of the emitted
+text — the pane links every downloaded board to faraday.openconverters.com
+for the EMC review of exactly those bytes. Faraday's dangling-stub rule
+gained T-junction awareness from reviewing the first generated board.
 
 ## S3 — The joint iteration (#444)
 

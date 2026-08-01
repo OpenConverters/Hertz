@@ -29,6 +29,7 @@ export async function api() {
     limitPolyline: (standardId, detector, fMin, fMax, pointsPerDecade = 40) =>
       unwrap(mod.limitPolyline(standardId, detector, fMin, fMax, pointsPerDecade)),
     designFilter: (params) => unwrap(mod.designFilter(JSON.stringify(params))),
+    filterBlock: (params) => unwrap(mod.filterBlock(JSON.stringify(params))),
     filterSpiceNetlist: (design, lisnKind, mode = 'dm') => {
       const text = mod.filterSpiceNetlist(JSON.stringify(design), lisnKind, mode)
       if (text.startsWith('{')) unwrap(text)

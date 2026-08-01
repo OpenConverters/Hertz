@@ -16,6 +16,7 @@
 #include "hertz/CableMitigation.hpp"
 #include "hertz/CombDetection.hpp"
 #include "hertz/Detector.hpp"
+#include "hertz/FilterBlock.hpp"
 #include "hertz/FilterDesign.hpp"
 #include "hertz/Limits.hpp"
 #include "hertz/Lisn.hpp"
@@ -498,6 +499,77 @@ std::string cable_mitigation_js(const std::string& freqsJson, const std::string&
     });
 }
 
+
+// The filter BLOCK (plan S3/S4): joint layout+BOM optimization, layout-aware
+// curves and every export, in one call — the browser gets a characterized
+// part, not a calculator answer.
+std::string filter_block_js(const std::string& paramsJson) {
+    return guarded([&]() -> std::string {
+    json p = json::parse(paramsJson);
+    double lDm;
+    if (p.contains("lDmH")) {
+        lDm = p.at("lDmH").get<double>();
+    } else {
+        lDm = Hertz::leakage_inductance_from_impedance(
+            p.at("dmImpedanceOhm").get<double>(),
+            p.at("dmImpedanceFrequencyHz").get<double>());
+    }
+    auto fb = Hertz::layout::optimize_filter_block(
+        p.at("fSwHz").get<double>(), p.at("aReqCmDb").get<double>(),
+        p.at("aReqDmDb").get<double>(), p.at("cYPerLineF").get<double>(), lDm,
+        p.at("ratedCurrentA").get<double>(),
+        p.at("lCmCandidatesH").get<std::vector<double>>(),
+        p.at("cXCandidatesF").get<std::vector<double>>(),
+        p.value("maxStages", 2), p.value("capEslH", 5e-9),
+        p.value("capEsrOhm", 0.02));
+    auto curves = Hertz::layout::block_curves(fb.design, fb.par);
+    const auto& d = fb.design;
+    json out{
+        {"meets", fb.meets},
+        {"escalatedStages", fb.escalatedStages},
+        {"iterations", fb.iterations},
+        {"layoutAttenCmDb", fb.layoutAttenCmDb},
+        {"layoutAttenDmDb", fb.layoutAttenDmDb},
+        {"partGapMm", fb.params.partGapmm},
+        {"design",
+         {{"stages", d.stages},
+          {"fDesignCmHz", d.fDesignCmHz},
+          {"fDesignDmHz", d.fDesignDmHz},
+          {"lCmSelectedH", d.lCmSelectedH},
+          {"cXSelectedF", d.cXSelectedF},
+          {"cYPerLineF", d.cYPerLineF},
+          {"lDmH", d.lDmH},
+          {"nLines", d.nLines}}},
+        {"board",
+         {{"kicadPcb", fb.board.kicadPcb},
+          {"widthMm", fb.board.boardWmm},
+          {"heightMm", fb.board.boardHmm},
+          {"parts", fb.board.parts},
+          {"minLNGapMm", fb.board.minLNGapmm},
+          {"minPEGapMm", fb.board.minPEGapmm}}},
+        {"parasitics",
+         {{"mDmNh", fb.par.mDmNh},
+          {"xConnNh", fb.par.xConnNh},
+          {"yConnNh", fb.par.yConnNh},
+          {"peSpineNh", fb.par.peSpineNh},
+          {"band",
+           "partials ~+/-30%; bypass M ~+/-50% (FastHenry-anchored on the "
+           "template: stub 1%, pair M 1% with the closing-vertical term)"}}},
+        {"curves",
+         {{"fHz", curves.fHz},
+          {"dmDb", curves.dmDb},
+          {"dmIdealDb", curves.dmIdealDb},
+          {"cmDb", curves.cmDb},
+          {"cmIdealDb", curves.cmIdealDb},
+          {"dmFloorDb", curves.dmFloorDb}}},
+        {"spice", Hertz::layout::block_spice_subckt(fb.design, fb.par)},
+        {"s2pDm", Hertz::layout::touchstone_s2p(fb.design, fb.par, "dm")},
+        {"s2pCm", Hertz::layout::touchstone_s2p(fb.design, fb.par, "cm")},
+        {"bomCsv", Hertz::layout::block_bom_csv(fb.design)}};
+    return out.dump();
+});
+}
+
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(hertz) {
@@ -520,4 +592,5 @@ EMSCRIPTEN_BINDINGS(hertz) {
     emscripten::function("radiatedEstimate", &radiated_estimate_js);
     emscripten::function("radiatedCmTarget", &radiated_cm_target_js);
     emscripten::function("cableMitigation", &cable_mitigation_js);
+    emscripten::function("filterBlock", &filter_block_js);
 }

@@ -220,3 +220,160 @@ TEST_CASE("layoutgen: refuses what it cannot lay out yet — loudly", "[layout]"
         Hertz::layout::generate_filter_board(demo_design(1), -1.0),
         std::invalid_argument);
 }
+
+// ---------------------------------------------------------------------------
+// S2: layout parasitics (ABT #443)
+// ---------------------------------------------------------------------------
+#include "hertz/LayoutParasitics.hpp"
+
+TEST_CASE("parasitics: Grover strip and Neumann mutual reproduce hand values",
+          "[layout][parasitics]") {
+    // 10 mm x 1 mm strip: 0.2·10·(ln(20/1.035)+0.5+0.0231) = 6.97 nH
+    CHECK(std::abs(Hertz::layout::strip_partial_nh(10.0, 1.0) - 6.97) < 0.05);
+    // mutual is symmetric and decays with distance
+    const double near = Hertz::layout::filament_mutual_nh(0, 40, 60, 100, 2.0);
+    const double far = Hertz::layout::filament_mutual_nh(0, 40, 60, 100, 20.0);
+    CHECK(near > far);
+    CHECK(far > 0.0);
+    CHECK(std::abs(near -
+                   Hertz::layout::filament_mutual_nh(60, 100, 0, 40, 2.0)) < 1e-12);
+    // numeric Neumann double integral as the independent check
+    auto numeric = [](double a1, double a2, double b1, double b2, double d) {
+        const int N = 2000;
+        const double da = (a2 - a1) / N, db = (b2 - b1) / N;
+        double sum = 0.0;
+        for (int i = 0; i < N; ++i) {
+            const double xa = a1 + (i + 0.5) * da;
+            for (int j = 0; j < N; ++j) {
+                const double xb = b1 + (j + 0.5) * db;
+                sum += da * db / std::hypot(xa - xb, d);
+            }
+        }
+        return 0.1 * sum;  // nH
+    };
+    const double closed = Hertz::layout::filament_mutual_nh(0, 40, 60, 100, 2.0);
+    CHECK(std::abs(closed - numeric(0, 40, 60, 100, 2.0)) < 0.01 * closed + 1e-6);
+}
+
+TEST_CASE("parasitics: the generated board yields plausible, monotone values",
+          "[layout][parasitics]") {
+    auto g1 = Hertz::layout::generate_filter_board(demo_design(1), 10.0);
+    auto lp1 = Hertz::layout::layout_parasitics(g1);
+    // bypass mutual: sub-10 nH for a 120 mm board, strictly positive
+    CHECK(lp1.mDmNh > 0.0);
+    CHECK(lp1.mDmNh < 10.0);
+    // connection ESLs: single-digit nH, PE spine tens of nH
+    CHECK(lp1.xConnNh >= 0.0);
+    CHECK(lp1.yConnNh > 0.5);
+    CHECK(lp1.peSpineNh > 20.0);
+    // a 2-stage board separates the pairs further -> SMALLER bypass mutual
+    auto g2 = Hertz::layout::generate_filter_board(demo_design(2), 10.0);
+    auto lp2 = Hertz::layout::layout_parasitics(g2);
+    CHECK(lp2.mDmNh < lp1.mDmNh);
+}
+
+TEST_CASE("parasitics: the bypass floor caps the achievable IL and the "
+          "combined curve respects both limits",
+          "[layout][parasitics]") {
+    using namespace Hertz;
+    const double f = 30e6, m = 1.0;   // 1 nH at 30 MHz in a 100 ohm system
+    // floor = -20log10(2*pi*30e6*1e-9/100) = 54.5 dB
+    CHECK(std::abs(layout::bypass_floor_il_db(f, m) - 54.49) < 0.05);
+
+    // a strong ideal filter is cut down to the floor; a weak one is not
+    Abcd strong = lc_filter_abcd(f, 10e-3, 1e-6, 2);
+    Abcd weak = lc_filter_abcd(f, 1e-6, 10e-9, 1);
+    const Complex z50{50.0, 0.0};
+    const double ilStrong = layout::layout_aware_il_db(f, strong, m, z50, z50);
+    const double ilWeak = layout::layout_aware_il_db(f, weak, m, z50, z50);
+    CHECK(ilStrong < layout::bypass_floor_il_db(f, m) + 0.1);
+    CHECK(std::abs(ilWeak - insertion_loss_db(weak, z50, z50)) < 3.0);
+    // no coupling -> exactly the network's own IL
+    CHECK(std::abs(layout::layout_aware_il_db(f, strong, 0.0, z50, z50) -
+                   insertion_loss_db(strong, z50, z50)) < 1e-9);
+}
+
+// ---------------------------------------------------------------------------
+// S3/S4: the block optimizer and the exports (ABT #444/#445)
+// ---------------------------------------------------------------------------
+#include "hertz/FilterBlock.hpp"
+
+TEST_CASE("block: the optimizer meets the target deterministically and "
+          "escalation is real",
+          "[layout][block]") {
+    using namespace Hertz;
+    auto run = [&](double aCm, double aDm) {
+        return layout::optimize_filter_block(
+            150e3, aCm, aDm, 2.2e-9, 10e-6, 10.0,
+            {0.5e-3, 1e-3, 3.3e-3, 10e-3, 39e-3},
+            {100e-9, 470e-9, 1e-6, 2.2e-6, 4.7e-6});
+    };
+    auto fb = run(40.0, 30.0);
+    CHECK(fb.meets);
+    CHECK(fb.layoutAttenCmDb >= 40.0);
+    CHECK(fb.layoutAttenDmDb >= 30.0);
+    CHECK(fb.board.parts >= 11);
+    // deterministic: same spec, same board bytes
+    auto fb2 = run(40.0, 30.0);
+    CHECK(fb.board.kicadPcb == fb2.board.kicadPcb);
+    CHECK(fb.iterations == fb2.iterations);
+    // a much harder DM target forces the second stage
+    auto hard = run(40.0, 50.0);
+    CHECK(hard.escalatedStages);
+    // a target beyond the CATALOG refuses loudly — no board was possible
+    CHECK_THROWS_AS(run(40.0, 200.0), std::invalid_argument);
+    // a target beyond the LAYOUT (design feasible, bypass floor is not)
+    // comes back honest, never a silent success: huge leakage makes the DM
+    // design easy, but 105 dB at 150 kHz sits above the bypass floor even at maximum spacing
+    auto layoutLimited = Hertz::layout::optimize_filter_block(
+        150e3, 40.0, 105.0, 2.2e-9, 1e-3, 10.0,
+        {5e-3, 10e-3, 39e-3}, {100e-9, 470e-9, 1e-6});
+    CHECK(!layoutLimited.meets);
+    CHECK(layoutLimited.board.parts > 0);   // the closest board still ships
+}
+
+TEST_CASE("block: curves carry both limits and the exports are well-formed",
+          "[layout][block]") {
+    using namespace Hertz;
+    auto fb = layout::optimize_filter_block(
+        150e3, 40.0, 30.0, 2.2e-9, 10e-6, 10.0,
+        {0.5e-3, 1e-3, 3.3e-3, 10e-3, 39e-3},
+        {100e-9, 470e-9, 1e-6, 2.2e-6, 4.7e-6});
+    auto c = layout::block_curves(fb.design, fb.par);
+    REQUIRE(c.fHz.size() > 50);
+    // physically-true invariants only. The bypass floor bounds the DM curve
+    // EVERYWHERE (|T_total| >= |T_bypass|). "layout <= ideal" does NOT hold
+    // pointwise — extra branch ESL shifts the SRF down and locally IMPROVES
+    // shunting between the two resonances — so it is asserted only at the
+    // top of the band, where inductive branches make more ESL strictly
+    // worse.
+    for (size_t i = 0; i < c.fHz.size(); ++i) {
+        CHECK(c.dmDb[i] <= c.dmFloorDb[i] + 1e-6);
+        CHECK(std::isfinite(c.dmDb[i]));
+        CHECK(std::isfinite(c.cmDb[i]));
+    }
+    CHECK(c.dmDb.back() <= c.dmIdealDb.back() + 1e-6);
+    CHECK(c.cmDb.back() <= c.cmIdealDb.back() + 1e-6);
+
+    // s2p: header + one row per point, finite numbers
+    const std::string s2p = layout::touchstone_s2p(fb.design, fb.par, "dm");
+    CHECK_THAT(s2p, Catch::Matchers::ContainsSubstring("# HZ S RI R 50"));
+    CHECK_THAT(s2p, Catch::Matchers::ContainsSubstring("bypass M"));
+    CHECK_THROWS_AS(layout::touchstone_s2p(fb.design, fb.par, "xx"),
+                    std::invalid_argument);
+
+    // spice: coupled choke with a PHYSICAL k, the shared PE inductor, the
+    // bypass pair
+    const std::string sp = layout::block_spice_subckt(fb.design, fb.par);
+    CHECK_THAT(sp, Catch::Matchers::ContainsSubstring(".subckt HERTZ_FILTER_BLOCK"));
+    CHECK_THAT(sp, Catch::Matchers::ContainsSubstring("Kcm1 Lcm1a Lcm1b 0."));
+    CHECK_THAT(sp, Catch::Matchers::ContainsSubstring("Lpe pe_i PE"));
+    CHECK_THAT(sp, Catch::Matchers::ContainsSubstring("Kbyp Lbyp1 Lbyp2"));
+    CHECK_THAT(sp, Catch::Matchers::ContainsSubstring(".ends"));
+
+    // bom csv: one line per role
+    const std::string bom = layout::block_bom_csv(fb.design);
+    CHECK_THAT(bom, Catch::Matchers::ContainsSubstring("ref,qty,value"));
+    CHECK_THAT(bom, Catch::Matchers::ContainsSubstring("CM choke"));
+    CHECK_THAT(bom, Catch::Matchers::ContainsSubstring("Y2"));
+}
