@@ -112,7 +112,13 @@ inline LayoutParasitics layout_parasitics(const GeneratedBoard& g) {
     }
     if (nx) lp.xConnNh /= nx;   // per capacitor (stages use identical parts)
     if (ny) lp.yConnNh /= ny;
-    lp.peSpineNh = strip_partial_nh(g.peSpineLenMm, g.traceWMm);
+    // CM return inductance: with the solid B.Cu earth pour, both Y-caps drop
+    // straight into the plane, so the shared return is the SHORT local drop into a
+    // WIDE plane (earthReturnLenMm at ~4x trace width) — symmetric, low-inductance —
+    // not the long asymmetric top-spine run the three-sided trace ring imposed.
+    lp.peSpineNh = g.hasEarthPlane
+                       ? strip_partial_nh(g.earthReturnLenMm, std::max(g.traceWMm * 4.0, 4.0))
+                       : strip_partial_nh(g.peSpineLenMm, g.traceWMm);
     return lp;
 }
 

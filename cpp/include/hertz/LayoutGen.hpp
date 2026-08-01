@@ -119,7 +119,11 @@ struct LayoutParams {
 
 inline LayoutParams layout_params_for(double ratedCurrentA) {
     LayoutParams p;
-    p.traceWmm = trace_width_ipc2221_mm(ratedCurrentA);
+    // Power rails: size the copper at a CONSERVATIVE 20 K rise (not the 30 K
+    // datasheet-headline value) so the L/N traces carry the rated current with
+    // reliability margin, as a power-electronics board should — visibly heavier
+    // copper. The solid earth pour (emitted below) carries the return.
+    p.traceWmm = trace_width_ipc2221_mm(ratedCurrentA, 20.0);
     p.partGapmm = std::max(p.partGapmm, p.clearLNmm);
     return p;
 }
@@ -149,6 +153,12 @@ struct GeneratedBoard {
     double inX1 = 0, inX2 = 0;     // input rail pair span (J_IN .. choke 1)
     double outX1 = 0, outX2 = 0;   // output rail pair span (last choke .. J_OUT)
     double peSpineLenMm = 0;       // shared earth run, input lug to output lug
+    // A solid B.Cu earth pour is emitted: every Y-cap PE pad drops straight into
+    // the plane, so the CM return is the SHORT local drop (earthReturnLenMm) into a
+    // wide plane — symmetric for both Y-caps — NOT the long asymmetric top-spine
+    // detour the three-sided ring forced.
+    bool hasEarthPlane = false;
+    double earthReturnLenMm = 0;   // Y-cap pad -> earth plane, the real CM return
     std::vector<StubRun> stubs;
 };
 
@@ -473,6 +483,34 @@ inline GeneratedBoard generate_filter_board(
              ") (width " + detail::fmt(s.w) + ") (layer \"F.Cu\") (net " +
              std::to_string(s.net) + "))\n";
     }
+    // ---- solid EARTH GROUND PLANE (copper pour) on the bottom layer --------
+    // A filled B.Cu zone on the PE net over the whole board. This is what a real
+    // power-EMC filter board carries and it fixes three things the three-sided
+    // trace ring got wrong: (1) it is a lot of copper, (2) it gives EVERY Y-cap a
+    // SHORT, low-inductance, symmetric return to chassis (the plane, not a 240 mm
+    // trace detour around the board), killing the CM mode-conversion the ring
+    // caused, and (3) it is a real reference plane for the radiated story. Every
+    // PE thru-hole pad (input/output lugs, both Y-caps) drops straight into it.
+    {
+        const double zx1 = bx1, zy1 = by1, zx2 = bx2, zy2 = by2;
+        auto poly = [&](const std::string& tag) {
+            o += "    (" + tag + " (pts (xy " + detail::fmt(zx1) + " " + detail::fmt(zy1) +
+                 ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy1) +
+                 ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy2) +
+                 ") (xy " + detail::fmt(zx1) + " " + detail::fmt(zy2) + ")))\n";
+        };
+        o += "  (zone (net " + std::to_string(nPE) + ") (net_name \"PE\") (layer \"B.Cu\")\n";
+        o += "    (hatch edge 0.508) (connect_pads (clearance 0.5)) (min_thickness 0.25)\n";
+        o += "    (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))\n";
+        poly("polygon");
+        o += "    (filled_polygon (layer \"B.Cu\")\n";
+        // reuse the same rectangle as the fill (KiCad re-pours on load anyway)
+        o += "      (pts (xy " + detail::fmt(zx1) + " " + detail::fmt(zy1) +
+             ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy1) +
+             ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy2) +
+             ") (xy " + detail::fmt(zx1) + " " + detail::fmt(zy2) + ")))\n";
+        o += "  )\n";
+    }
     auto edge = [&](double ax, double ay, double bx, double by) {
         o += "  (gr_line (start " + detail::fmt(ax) + " " + detail::fmt(ay) +
              ") (end " + detail::fmt(bx) + " " + detail::fmt(by) +
@@ -502,6 +540,10 @@ inline GeneratedBoard generate_filter_board(
     g.outX1 = lastChokeOutX;
     g.outX2 = xOut;
     g.peSpineLenMm = xOut - xIn;
+    // the B.Cu earth pour: the CM return is now the short vertical drop from a rail
+    // into the plane (rail-to-PE-lug distance), the same for both Y-caps
+    g.hasEarthPlane = true;
+    g.earthReturnLenMm = peGap + railHalf;
     g.stubs = std::move(stubRuns);
     return g;
 }

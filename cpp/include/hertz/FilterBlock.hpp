@@ -112,7 +112,22 @@ inline FilterBlock optimize_filter_block(
             lastDesignRefusal = e.what();
             continue;
         }
-        for (double gap : gaps) {
+        bool catalogLimitedThisStage = false;
+        // The ideal (parasitic-free) attenuation is gap-INDEPENDENT. If the
+        // CATALOG itself cannot meet the target, a wider board does not help — so
+        // evaluate only the COMPACT board and let a higher stage count try, instead
+        // of returning a needlessly huge 20 mm fail-artifact board. Only sweep the
+        // spacing ladder when widening can actually cross the target (layout-limited).
+        {
+            const double cxE = d.cXDmFactor * d.cXSelectedF;
+            Abcd cmI = lc_filter_abcd(d.fDesignCmHz, d.lCmSelectedH, d.cYgF, stages, capEslH, capEsrOhm);
+            Abcd dmI = lc_filter_abcd(d.fDesignDmHz, d.lDmH, cxE, stages, capEslH, capEsrOhm);
+            catalogLimitedThisStage = insertion_loss_db(cmI, z50, z50) < aReqCmDb ||
+                                      insertion_loss_db(dmI, z50, z50) < aReqDmDb;
+        }
+        const std::vector<double> tryGaps =
+            catalogLimitedThisStage ? std::vector<double>{gaps.front()} : gaps;
+        for (double gap : tryGaps) {
             LayoutParams p = layout_params_for(ratedCurrentA);
             p.partGapmm = std::max(p.partGapmm, gap);
             GeneratedBoard g = generate_filter_board(d, ratedCurrentA, p);

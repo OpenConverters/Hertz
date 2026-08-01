@@ -129,6 +129,11 @@ TEST_CASE("layoutgen: a 1-stage board emits complete and balanced", "[layout]") 
     CHECK(g.parts == 11);   // 6 lugs, R1, CX1, CMC1, CY1, CY2
     CHECK(g.boardWmm > 50.0);
     CHECK(g.boardHmm > 20.0);
+    // a solid earth GROUND PLANE (copper pour) is emitted on the bottom layer,
+    // on the PE net — the CM return is the plane, not the old three-sided ring
+    for (const char* tok : {"(zone ", "\"B.Cu\"", "filled_polygon", "(fill yes"})
+        CHECK_THAT(b, Catch::Matchers::ContainsSubstring(tok));
+    CHECK(g.hasEarthPlane);
 }
 
 TEST_CASE("layoutgen: 2-stage adds the second X and choke on the mid nets",
@@ -262,10 +267,15 @@ TEST_CASE("parasitics: the generated board yields plausible, monotone values",
     // bypass mutual: sub-10 nH for a 120 mm board, strictly positive
     CHECK(lp1.mDmNh > 0.0);
     CHECK(lp1.mDmNh < 10.0);
-    // connection ESLs: single-digit nH, PE spine tens of nH
+    // connection ESLs: single-digit nH. The CM return is now the SHORT drop into
+    // the solid B.Cu earth pour (a plane), not the long top-spine trace, so it is
+    // an order of magnitude lower than the old three-sided ring (~7-8 nH here vs
+    // >20 nH before) — the whole point of adding the ground plane.
     CHECK(lp1.xConnNh >= 0.0);
     CHECK(lp1.yConnNh > 0.5);
-    CHECK(lp1.peSpineNh > 20.0);
+    CHECK(g1.hasEarthPlane);
+    CHECK(lp1.peSpineNh > 0.0);
+    CHECK(lp1.peSpineNh < 15.0);
     // a 2-stage board separates the pairs further -> SMALLER bypass mutual
     auto g2 = Hertz::layout::generate_filter_board(demo_design(2), 10.0);
     auto lp2 = Hertz::layout::layout_parasitics(g2);

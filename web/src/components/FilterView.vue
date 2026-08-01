@@ -170,12 +170,19 @@ const blockBoard = computed(() => {
     m = line.match(/\(gr_line \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(layer "Edge.Cuts"\)/)
     if (m) edges.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4] })
   }
+  // solid earth ground plane (the B.Cu copper pour) — its filled polygon
+  let plane = null
+  const zm = text.match(/\(filled_polygon \(layer "B\.Cu"\)\s*\(pts ((?:\(xy [-\d.]+ [-\d.]+\)\s*)+)\)/)
+  if (zm) {
+    plane = [...zm[1].matchAll(/\(xy ([-\d.]+) ([-\d.]+)\)/g)].map((m) => `${+m[1]},${+m[2]}`).join(' ')
+  }
   const xs = edges.flatMap((e) => [e.x1, e.x2])
   const ys = edges.flatMap((e) => [e.y1, e.y2])
   // classes actually present, for the legend
   const present = new Set([...segs, ...pads].map((s) => s.cls))
-  return { segs, pads, edges,
-           legend: NET_LEGEND.filter((n) => present.has(n.cls)),
+  const legend = NET_LEGEND.filter((n) => present.has(n.cls))
+  if (plane) legend.push({ cls: 'plane', label: 'Earth plane (B.Cu pour)', color: '#57c98b' })
+  return { segs, pads, edges, plane, legend,
            x0: Math.min(...xs) - 1, y0: Math.min(...ys) - 1,
            w: Math.max(...xs) - Math.min(...xs) + 2,
            h: Math.max(...ys) - Math.min(...ys) + 2 }
@@ -1634,6 +1641,9 @@ function downloadNetlist() {
                          :viewBox="`${blockBoard.x0} ${blockBoard.y0} ${blockBoard.w} ${blockBoard.h}`"
                          preserveAspectRatio="xMidYMid meet"
                          style="position:absolute; inset:0; display:block; width:100%; height:100%">
+                      <polygon v-if="blockBoard.plane" :points="blockBoard.plane"
+                               fill="#57c98b" opacity="0.16" stroke="#57c98b" stroke-width="0.2"
+                               stroke-opacity="0.4" />
                       <line v-for="(e, i) in blockBoard.edges" :key="'e' + i"
                             :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" stroke="#5a6a62" stroke-width="0.3" />
                       <line v-for="(sg, i) in blockBoard.segs" :key="'s' + i"
