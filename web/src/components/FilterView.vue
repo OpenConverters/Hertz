@@ -209,8 +209,11 @@ function deriveFromBindings() {
   bindingNote.value = 'sized per mode by the min-f_co rule — '
     + label('CM', cm, bindingSets.value.cm?.length ?? 0) + ' · '
     + label('DM', dm, bindingSets.value.dm?.length ?? 0) + ` · ${n}-stage`
+    + (predictionTag.value ?? '')
   return true
 }
+// set by applyHandoff before deriveFromBindings runs
+const predictionTag = ref('')
 
 // Any manual edit of the requirement fields leaves hand-off mode: the derived
 // per-mode design frequencies must never silently ride along under new numbers.
@@ -328,7 +331,13 @@ watch(() => store.handoff, (h) => { if (h) applyHandoff() })
 function applyHandoff() {
   if (store.handoff) {
     scanCtx.value = store.handoff.scan ?? null
+    // requirements seeded from a PREDICTION must say so — they carry the
+    // estimate's bands, and no LISN has confirmed them
+    const predicted = store.handoff.scan?.predicted
+      ? ' · from a FARADAY BOARD PREDICTION (DM ±10 dB, CM ±15 dB) — verify with a LISN'
+      : ''
     if (store.handoff.binding) {
+      predictionTag.value = predicted
       bindingSets.value = store.handoff.binding
       if (!deriveFromBindings()) { store.handoff = null; return }
     } else {
@@ -1538,7 +1547,10 @@ function downloadNetlist() {
                     {{ blockBusy ? 'ITERATING…' : 'BUILD FILTER BLOCK' }}</button>
                   <span v-if="blockResult" class="chip" :class="blockResult.meets ? 'pass' : 'fail'"
                         data-test="block-verdict">
-                    {{ blockResult.meets ? 'MEETS TARGET THROUGH ITS LAYOUT' : 'LAYOUT-LIMITED — TARGET NOT MET' }}
+                    {{ blockResult.meets ? 'MEETS TARGET THROUGH ITS LAYOUT'
+                       : blockResult.limitedBy === 'catalog'
+                         ? 'CATALOG-LIMITED — bind larger parts'
+                         : 'LAYOUT-LIMITED — spacing/shielding, not shopping' }}
                     · CM {{ blockResult.layoutAttenCmDb.toFixed(1) }} dB
                     · DM {{ blockResult.layoutAttenDmDb.toFixed(1) }} dB</span>
                   <span v-if="blockError" class="err" data-test="block-error">{{ blockError }}</span>

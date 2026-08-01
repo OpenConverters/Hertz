@@ -35,6 +35,15 @@ async function readHandoffFragment() {
       traces.push({ name: `Faraday prediction (${mode.toUpperCase()})`, mode,
                     frequenciesHz: freqs, levelsDbuv: levels })
     }
+    if (sets.cm.length === 0 && sets.dm.length === 0) {
+      // the PREDICTION already clears the limit everywhere: no filter to
+      // design — say so instead of opening an unseeded designer
+      handoffError.value = 'the Faraday prediction already meets CISPR 32 B ' +
+        'quasi-peak across the band (within its stated estimate bands) — no ' +
+        'line filter is required. Verify with a LISN before shipping.'
+      history.replaceState(null, '', location.pathname)
+      return
+    }
     store.handoff = {
       binding: sets,
       fSwHz: p.fSwHz,

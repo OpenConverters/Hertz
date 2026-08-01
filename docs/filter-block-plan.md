@@ -96,11 +96,26 @@ chain, BOM CSV, IL-report JSON with bands. Web: the "filter block" pane —
 schematic + board + predicted vs required IL + the parasitic budget. Gerber
 emission is deliberately out of scope: KiCad is the fabrication boundary.
 
+## The source chain (built 2026-08-01, after the four stages)
+
+The Faraday→Hertz predictive bridge is now LIVE: Faraday's emissions panel
+computes a pre-hardware CONDUCTED estimate (the exact trapezoid comb into
+the input-cap branch for DM, an ASSUMED C_stray for CM — bands ±10/±15 dB
+stated in the payload) and ships the per-mode dBuV spectra to
+hertz.openconverters.com in the URL FRAGMENT (never reaches a server).
+Hertz judges them against CISPR 32 B quasi-peak like any measured scan,
+seeds the binding sets with a visible "from a FARADAY BOARD PREDICTION"
+provenance note, tells the user outright when the prediction already
+passes, and the LAYOUT & BLOCK pane closes the loop with a generated PCB.
+An unmet target is DIAGNOSED: catalog-limited (bind larger parts) vs
+layout-limited (spacing/shielding) — the live demo chain surfaced a 0.1 dB
+catalog miss mislabeled as layout, which forced the distinction into the
+engine. Proven end-to-end on production with the MPPT demo board.
+
 ## Out of scope (recorded, not forgotten)
 
 - 3-phase templates (S1 covers the 2-wire pair first; the template
   generalizes, `x_capacitor_dm_factor` already does).
-- OMFEM choke digital twin (leakage L, EPC, wideband Z_CM) and the
-  Faraday→Hertz predictive source chain — separate proposals, they compose
-  with this plan but do not gate it.
+- OMFEM choke digital twin (leakage L, EPC, wideband Z_CM) — composes with
+  this plan, does not gate it.
 - Physical build validation (Tier 3) — explicitly deferred by the user.

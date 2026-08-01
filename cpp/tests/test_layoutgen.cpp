@@ -330,6 +330,19 @@ TEST_CASE("block: the optimizer meets the target deterministically and "
         {5e-3, 10e-3, 39e-3}, {100e-9, 470e-9, 1e-6});
     CHECK(!layoutLimited.meets);
     CHECK(layoutLimited.board.parts > 0);   // the closest board still ships
+    // ...and the DIAGNOSIS points at the right fix: the components alone
+    // would clear 105 dB, the bypass floor eats it -> layout, not catalog
+    CHECK(layoutLimited.limitedBy == "layout");
+    CHECK(layoutLimited.idealAttenDmDb >= 105.0);
+    // a DESIGNABLE filter whose parts still miss in-circuit (a 10-ohm-ESR
+    // capacitor floors every shunt branch) is CATALOG-limited: the fix is
+    // better parts, and no spacing will ever buy it back
+    auto catalogLimited = Hertz::layout::optimize_filter_block(
+        150e3, 40.0, 30.0, 2.2e-9, 10e-6, 10.0,
+        {0.5e-3, 1e-3, 3.3e-3, 10e-3, 39e-3},
+        {100e-9, 470e-9, 1e-6, 2.2e-6, 4.7e-6}, 2, 5e-9, 10.0);
+    CHECK(!catalogLimited.meets);
+    CHECK(catalogLimited.limitedBy == "catalog");
 }
 
 TEST_CASE("block: curves carry both limits and the exports are well-formed",

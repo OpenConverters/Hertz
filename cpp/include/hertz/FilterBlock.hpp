@@ -71,9 +71,17 @@ struct FilterBlock {
     GeneratedBoard board;
     LayoutParasitics par;
     double layoutAttenCmDb = 0, layoutAttenDmDb = 0;  // at f_design, 50/50
+    double idealAttenCmDb = 0, idealAttenDmDb = 0;    // components only
     bool meets = false;
     bool escalatedStages = false;
     int iterations = 0;
+    // when the target is NOT met, whose fault is it? "catalog" = even the
+    // components alone (no layout) miss it — bind larger parts; "layout" =
+    // the parts would make it but the board's parasitics eat the rest —
+    // spacing/shielding, not shopping. The live demo chain surfaced the
+    // difference: a 0.1 dB miss on the manual value ladder was labeled
+    // LAYOUT-LIMITED, which pointed the user at the wrong fix.
+    std::string limitedBy;    // "" when meets
 };
 
 inline FilterBlock optimize_filter_block(
@@ -118,6 +126,10 @@ inline FilterBlock optimize_filter_block(
             const double attDm = layout_aware_il_db(d.fDesignDmHz, dm,
                                                     lp.mDmNh, z50, z50);
             const double attCm = insertion_loss_db(cm, z50, z50);
+            Abcd dmIdeal = lc_filter_abcd(d.fDesignDmHz, d.lDmH, cxEff,
+                                          stages, capEslH, capEsrOhm);
+            Abcd cmIdeal = lc_filter_abcd(d.fDesignCmHz, d.lCmSelectedH,
+                                          d.cYgF, stages, capEslH, capEsrOhm);
             FilterBlock fb;
             fb.design = d;
             fb.params = p;
@@ -125,6 +137,8 @@ inline FilterBlock optimize_filter_block(
             fb.par = lp;
             fb.layoutAttenCmDb = attCm;
             fb.layoutAttenDmDb = attDm;
+            fb.idealAttenCmDb = insertion_loss_db(cmIdeal, z50, z50);
+            fb.idealAttenDmDb = insertion_loss_db(dmIdeal, z50, z50);
             fb.escalatedStages = stages > 1;
             fb.iterations = best.iterations + 1;
             const double shortfall = std::max(
@@ -151,8 +165,12 @@ inline FilterBlock optimize_filter_block(
             "no realizable design at any stage count: " + lastDesignRefusal);
     }
     // designs existed but none met the target THROUGH its layout: return
-    // the closest board, loudly not-meeting — the caller shows the
-    // shortfall instead of a silent success
+    // the closest board, loudly not-meeting — and DIAGNOSE the limiter so
+    // the caller points at the right fix
+    best.limitedBy = (best.idealAttenCmDb < aReqCmDb ||
+                      best.idealAttenDmDb < aReqDmDb)
+                         ? "catalog"
+                         : "layout";
     return best;
 }
 
