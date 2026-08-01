@@ -30,7 +30,7 @@ if(HERTZ_BUILD_TESTS)
         GIT_TAG v3.8.1)
     FetchContent_MakeAvailable(Catch2)
 
-    add_executable(test_hertz tests/test_hertz.cpp tests/test_comb_network.cpp)
+    add_executable(test_hertz tests/test_hertz.cpp tests/test_comb_network.cpp tests/test_layoutgen.cpp)
     add_executable(deck_dump tools/deck_dump.cpp)
     target_link_libraries(deck_dump PRIVATE hertz)
     target_link_libraries(test_hertz PRIVATE hertz Catch2::Catch2WithMain)
