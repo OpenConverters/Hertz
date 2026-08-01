@@ -112,3 +112,21 @@ test('a Faraday handoff seeds the designer and flows to a generated board',
     await expect(page.getByTestId('block-verdict')).toBeVisible({ timeout: 30000 })
     await expect(page.getByTestId('block-board-svg')).toBeVisible()
   })
+
+test('a PASSING Faraday prediction says "no filter required" — never an '
+     + 'unseeded designer in silence', async ({ page }) => {
+    const payload = { v: 1, source: 'faraday', fSwHz: 5e5, bands: {},
+      note: 'x', spectra: { dm: [[5e5, 20], [5e6, 15]],
+                            cm: [[5e5, 22], [5e6, 18]] } }
+    const frag = Buffer.from(JSON.stringify(payload)).toString('base64')
+    await page.goto('/#handoff=' + frag)
+    await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/,
+                                                            { timeout: 20_000 })
+    await expect(page.locator('[data-test="handoff-error"]'))
+      .toContainText('no line filter is required')
+    // and a garbage fragment reports itself instead of half-seeding
+    await page.goto('/#handoff=not-base64!!!')
+    await page.reload()
+    await expect(page.locator('[data-test="handoff-error"]'))
+      .toContainText('could not be read')
+  })
