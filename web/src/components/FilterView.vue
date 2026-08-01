@@ -124,9 +124,29 @@ function downloadText(name, text, type = 'text/plain') {
 }
 // minimal render of the generated board: pads + tracks + outline, straight
 // from the emitted text (what you see is what you download)
-function blockBoardShapes() {
+// Colour the preview by CONDUCTOR CLASS (line / neutral / protective-earth) so an
+// EMC eye can read the board — previously every trace was one orange and every pad
+// one tan, so L, N and PE were indistinguishable (the "PCB looks weird" report).
+const NET_LEGEND = [
+  { cls: 'L', label: 'Line (L)', color: '#e8955c' },
+  { cls: 'N', label: 'Neutral (N)', color: '#6ba9e8' },
+  { cls: 'PE', label: 'Protective earth', color: '#57c98b' },
+  { cls: 'other', label: 'Other', color: '#c98bd6' },
+]
+function netClass(name) {
+  if (!name) return 'other'
+  if (/^PE\b|earth|chassis|^GND|RTN/i.test(name)) return 'PE'
+  if (/^L/i.test(name)) return 'L'
+  if (/^N/i.test(name)) return 'N'
+  return 'other'
+}
+const NET_COLOR = Object.fromEntries(NET_LEGEND.map((n) => [n.cls, n.color]))
+const blockBoard = computed(() => {
   const text = blockResult.value?.board?.kicadPcb
   if (!text) return null
+  // net number -> name, from the (net N "name") declarations
+  const netName = {}
+  for (const m of text.matchAll(/\(net (\d+) "([^"]*)"\)/g)) netName[+m[1]] = m[2]
   const segs = []
   const pads = []
   const edges = []
@@ -135,19 +155,31 @@ function blockBoardShapes() {
     let m = line.match(/\(footprint [^\n]*\(at ([-\d.]+) ([-\d.]+)\)/)
     if (m) { ox = +m[1]; oy = +m[2]; continue }
     m = line.match(/\(pad "[^"]+" thru_hole circle \(at ([-\d.]+) ([-\d.]+)\) \(size ([\d.]+)/)
-    if (m) { pads.push({ x: ox + +m[1], y: oy + +m[2], r: +m[3] / 2 }); continue }
-    m = line.match(/\(segment \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(width ([\d.]+)/)
-    if (m) { segs.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4], w: +m[5] }); continue }
+    if (m) {
+      const nm = line.match(/\(net \d+ "([^"]*)"\)/)
+      const cls = netClass(nm ? nm[1] : '')
+      pads.push({ x: ox + +m[1], y: oy + +m[2], r: +m[3] / 2, cls, color: NET_COLOR[cls] })
+      continue
+    }
+    m = line.match(/\(segment \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(width ([\d.]+)\)(?:[^)]*\))* \(net (\d+)\)/)
+    if (m) {
+      const cls = netClass(netName[+m[6]])
+      segs.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4], w: +m[5], cls, color: NET_COLOR[cls] })
+      continue
+    }
     m = line.match(/\(gr_line \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(layer "Edge.Cuts"\)/)
     if (m) edges.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4] })
   }
   const xs = edges.flatMap((e) => [e.x1, e.x2])
   const ys = edges.flatMap((e) => [e.y1, e.y2])
+  // classes actually present, for the legend
+  const present = new Set([...segs, ...pads].map((s) => s.cls))
   return { segs, pads, edges,
+           legend: NET_LEGEND.filter((n) => present.has(n.cls)),
            x0: Math.min(...xs) - 1, y0: Math.min(...ys) - 1,
            w: Math.max(...xs) - Math.min(...xs) + 2,
            h: Math.max(...ys) - Math.min(...ys) + 2 }
-}
+})
 function blockIlSeries() {
   const c = blockResult.value?.curves
   if (!c) return []
@@ -1596,17 +1628,26 @@ function downloadNetlist() {
                     {{ blockResult.board.parts }} parts, {{ blockResult.design.stages }} stage(s),
                     chain gap {{ blockResult.partGapMm.toFixed(1) }} mm
                     <template v-if="blockResult.escalatedStages"> · escalated to 2 stages by the layout loop</template></p>
-                  <svg v-if="blockBoardShapes()" data-test="block-board-svg"
-                       :viewBox="`${blockBoardShapes().x0} ${blockBoardShapes().y0} ${blockBoardShapes().w} ${blockBoardShapes().h}`"
-                       style="width:100%; flex:0 0 200px; background:#101613; border-radius:6px">
-                    <line v-for="(e, i) in blockBoardShapes().edges" :key="'e' + i"
-                          :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" stroke="#5a6a62" stroke-width="0.3" />
-                    <line v-for="(sg, i) in blockBoardShapes().segs" :key="'s' + i"
-                          :x1="sg.x1" :y1="sg.y1" :x2="sg.x2" :y2="sg.y2"
-                          stroke="#e8955c" :stroke-width="sg.w" stroke-linecap="round" opacity="0.9" />
-                    <circle v-for="(pd, i) in blockBoardShapes().pads" :key="'p' + i"
-                            :cx="pd.x" :cy="pd.y" :r="pd.r" fill="#d8b36a" />
-                  </svg>
+                  <div v-if="blockBoard" class="board-frame"
+                       :style="{ paddingTop: `${Math.min(blockBoard.h / blockBoard.w * 100, 70)}%` }">
+                    <svg data-test="block-board-svg"
+                         :viewBox="`${blockBoard.x0} ${blockBoard.y0} ${blockBoard.w} ${blockBoard.h}`"
+                         preserveAspectRatio="xMidYMid meet"
+                         style="position:absolute; inset:0; display:block; width:100%; height:100%">
+                      <line v-for="(e, i) in blockBoard.edges" :key="'e' + i"
+                            :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" stroke="#5a6a62" stroke-width="0.3" />
+                      <line v-for="(sg, i) in blockBoard.segs" :key="'s' + i"
+                            :x1="sg.x1" :y1="sg.y1" :x2="sg.x2" :y2="sg.y2"
+                            :stroke="sg.color" :stroke-width="sg.w" stroke-linecap="round" opacity="0.9" />
+                      <circle v-for="(pd, i) in blockBoard.pads" :key="'p' + i"
+                              :cx="pd.x" :cy="pd.y" :r="pd.r" :fill="pd.color" stroke="#101613" stroke-width="0.15" />
+                    </svg>
+                  </div>
+                  <div v-if="blockBoard" class="board-legend" data-test="board-legend">
+                    <span v-for="n in blockBoard.legend" :key="n.cls" class="board-legend-item">
+                      <span class="board-legend-swatch" :style="{ background: n.color }"></span>{{ n.label }}
+                    </span>
+                  </div>
                   <p class="section-label">What the layout adds (band: partials ±30 %, bypass M ±50 %,
                     FastHenry-anchored)</p>
                   <table class="data" data-test="block-parasitics">

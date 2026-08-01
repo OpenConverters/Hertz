@@ -222,6 +222,18 @@ pre.code {
 }
 .req-import-title { color: var(--ink-dim); font-size: 0.78rem; margin-bottom: 0.1rem; }
 .req-import-line b { display: inline-block; min-width: 2.2rem; }
+.board-frame {
+  position: relative; width: 100%; background: #101613; border-radius: 6px;
+  overflow: hidden;
+}
+.board-legend {
+  display: flex; flex-wrap: wrap; gap: 0.15rem 0.9rem;
+  margin-top: 0.35rem; font-size: 0.72rem; color: var(--ink-dim);
+}
+.board-legend-item { display: inline-flex; align-items: center; gap: 0.3rem; }
+.board-legend-swatch {
+  display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 2px;
+}
 .footnote {
   color: var(--ink-dim); font-size: 0.75rem; border-top: 1px solid var(--line-soft);
   margin-top: 1.4rem; padding-top: 0.6rem;

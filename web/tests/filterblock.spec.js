@@ -111,6 +111,12 @@ test('a Faraday handoff seeds the designer and flows to a generated board',
     await page.getByTestId('build-block').click()
     await expect(page.getByTestId('block-verdict')).toBeVisible({ timeout: 30000 })
     await expect(page.getByTestId('block-board-svg')).toBeVisible()
+    // the preview is coloured BY CONDUCTOR CLASS (L / N / PE) — a net-aware legend
+    // and at least two distinct trace colours (was one flat orange = "looks weird")
+    await expect(page.getByTestId('board-legend')).toBeVisible()
+    const strokes = await page.getByTestId('block-board-svg').locator('line').evaluateAll(
+      (ls) => [...new Set(ls.map((l) => l.getAttribute('stroke')).filter((s) => s && s !== '#5a6a62'))])
+    expect(strokes.length).toBeGreaterThan(1)
   })
 
 test('a PASSING Faraday prediction says "no filter required" — never an '
