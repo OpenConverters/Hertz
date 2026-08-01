@@ -301,6 +301,10 @@ inline LimitLine cispr32_radiated(char emissionClass, double distanceM) {
         throw std::invalid_argument("CISPR 32 radiated class must be A or B");
     }
     if (distanceM == 3.0) {
+        // CISPR 32 TABULATES the 3 m limits as exactly +10 dB over 10 m (Class B:
+        // 40/47 dBuV/m at 3 m vs 30/37 at 10 m). This is the standard's own value,
+        // NOT a loose inverse-distance approximation (20*log10(10/3)=10.46 would be
+        // off-standard) — an EMC review flagged this and was mistaken; keep +10.
         base += 10.0;
     } else if (distanceM != 10.0) {
         throw std::invalid_argument("CISPR 32 radiated limits are specified at 10 m or 3 m");

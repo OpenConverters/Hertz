@@ -212,7 +212,12 @@ inline ReceiverReading measure(const std::vector<double>& x, double fsHz, const 
         throw std::invalid_argument("signal yields fewer than two analysis frames");
     }
     double dt = static_cast<double>(plan.hop) / fsHz;
-    double needed = SETTLE_METER_TAUS * std::max(band.tauMeterS, band.tauDischargeS / 2.0);
+    // Settle to the SLOWER of the meter and the FULL discharge time constant: the
+    // quasi-peak/average meter must fully charge-and-hold before it is read, or a
+    // pulsed/intermittent capture is sampled mid-rise and reads LOW (a false PASS).
+    // (Was tauDischargeS/2 — an unjustified halving that biased pulsed readings
+    // optimistic.)
+    double needed = SETTLE_METER_TAUS * std::max(band.tauMeterS, band.tauDischargeS);
     size_t repetitions = std::max<size_t>(
         1, static_cast<size_t>(std::ceil(needed / (static_cast<double>(frames) * dt))));
 
