@@ -743,6 +743,27 @@ test('filter: a failing-scan handoff shows every binding point as a requirement 
   expect(markers).toBeGreaterThan(10)
 })
 
+test('filter: the imported requirement point-set is summarised in the REQUIREMENT panel and detaches only on a committed edit (user report)', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('demo')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await page.getByTestId('design-fix').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  await page.getByTestId('sec-req').click()   // open the REQUIREMENT accordion section
+  // the imported set now appears IN THE REQUIREMENT PANEL, not only as chart dots
+  const imp = page.getByTestId('req-import')
+  await expect(imp).toBeVisible()
+  await expect(imp).toContainText(/points/)
+  // still attached to the scan
+  await expect(page.getByTestId('binding-note')).toContainText('min-f_co')
+  // committing an edit to a target detaches, and says so (no silent vanish)
+  await page.getByTestId('areq-cm').fill('42')
+  await page.getByTestId('areq-cm').blur()
+  await expect(page.getByTestId('binding-note')).toContainText('detached from the imported scan')
+  await expect(page.getByTestId('req-import')).toHaveCount(0)
+})
+
 test('filter: the predicted post-filter residual judges the demo scan (ABT #289/#291)', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })

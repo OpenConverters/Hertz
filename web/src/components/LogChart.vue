@@ -27,6 +27,10 @@ const domain = computed(() => {
   }
   props.series.forEach((s) => s.points.forEach(scanPoint))
   props.refRuns.forEach((r) => r.runs.forEach((run) => run.forEach(scanPoint)))
+  // Violation/requirement markers must be inside the domain too, else they are
+  // silently clipped by #plotarea — an imported requirement point above the IL
+  // curve's own dB range would vanish (Hertz set-of-points-on-requirements bug).
+  props.violations.forEach(scanPoint)
   // a log axis cannot draw f <= 0, and a non-finite domain would loop the
   // tick generator forever (-Infinity + 1 === -Infinity) — refuse to render
   if (!Number.isFinite(fMin) || fMin <= 0 || !Number.isFinite(vMin) || !Number.isFinite(vMax)) return null

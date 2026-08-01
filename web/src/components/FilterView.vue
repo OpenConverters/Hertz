@@ -219,10 +219,15 @@ const predictionTag = ref('')
 // per-mode design frequencies must never silently ride along under new numbers.
 function clearBinding() {
   if (!bindingSets.value) return
+  const nCm = bindingSets.value.cm?.length ?? 0
+  const nDm = bindingSets.value.dm?.length ?? 0
   bindingSets.value = null
-  bindingNote.value = ''
   fCritCmHz.value = null
   fCritDmHz.value = null
+  // Don't vanish silently: say what was detached so a manual nudge doesn't look
+  // like the imported requirement was lost without a trace.
+  bindingNote.value = `detached from the imported scan (${nCm} CM + ${nDm} DM points) — `
+    + 'now designing to the CM/DM targets you entered; re-run the hand-off to restore the set'
 }
 
 watch(stages, () => {
@@ -687,6 +692,22 @@ const requirementMarkers = () => {
   ]
 }
 
+// A persistent, readable summary of the imported requirement point-set, so it is
+// visible in the REQUIREMENT panel itself — not only as dots on the IL chart.
+// (Hertz set-of-points-on-requirements bug: users could not see the imported set.)
+const bindingSummary = computed(() => {
+  if (!bindingSets.value) return null
+  const summarize = (pts) => {
+    if (!pts || !pts.length) return null
+    let peak = pts[0]
+    for (const p of pts) if (p[1] > peak[1]) peak = p
+    return { n: pts.length, peakDb: Math.ceil(peak[1]), peakHz: peak[0] }
+  }
+  const cm = summarize(bindingSets.value.cm)
+  const dm = summarize(bindingSets.value.dm)
+  return (cm || dm) ? { cm, dm } : null
+})
+
 const schematicLabels = () => {
   const labels = {}
   for (const c of filterComponents(design.value.stages, nLines.value)) {
@@ -1093,19 +1114,28 @@ function downloadNetlist() {
         </select></label>
       <div class="row">
         <label class="field"><span>Switching frequency (kHz)</span>
-          <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @input="clearBinding" /></label>
+          <input v-model.number="fSwKhz" type="number" min="1" data-test="fsw" @change="clearBinding" /></label>
         <label class="field"><span>Stages</span>
           <select v-model.number="stages" data-test="stages"><option :value="1">1 (40 dB/dec)</option><option :value="2">2 (80 dB/dec)</option></select></label>
       </div>
       <div class="row">
         <label class="field"><span>CM attenuation (dB)</span>
-          <input v-model.number="aReqCm" type="number" data-test="areq-cm" @input="clearBinding" /></label>
+          <input v-model.number="aReqCm" type="number" data-test="areq-cm" @change="clearBinding" /></label>
         <label class="field"><span>DM attenuation (dB)</span>
-          <input v-model.number="aReqDm" type="number" data-test="areq-dm" @input="clearBinding" /></label>
+          <input v-model.number="aReqDm" type="number" data-test="areq-dm" @change="clearBinding" /></label>
       </div>
       <p class="note">From a failed scan: <em>Design the fix</em> (Spectrum) or <em>Design filter for
         these modes</em> (the MEASURE · SCOPE CAPTURE pane) fill this section. Below 150 kHz the
         design moves to the first harmonic inside the measured band (ANP015).</p>
+      <div v-if="bindingSummary" class="req-import" data-test="req-import">
+        <span class="req-import-title">Imported requirement — the failing scan, point by point:</span>
+        <span v-if="bindingSummary.cm" class="req-import-line"><b style="color:var(--s-1)">CM</b>
+          {{ bindingSummary.cm.n }} points · peak {{ bindingSummary.cm.peakDb }} dB @ {{ fmtHz(bindingSummary.cm.peakHz) }}</span>
+        <span v-if="bindingSummary.dm" class="req-import-line"><b style="color:var(--s-2)">DM</b>
+          {{ bindingSummary.dm.n }} points · peak {{ bindingSummary.dm.peakDb }} dB @ {{ fmtHz(bindingSummary.dm.peakHz) }}</span>
+        <span class="note">All points drive the design and show on the Insertion-Loss chart. Editing a
+          target below designs to your value and detaches this set.</span>
+      </div>
       <p v-if="bindingNote" class="note" data-test="binding-note">{{ bindingNote }}</p>
       <button class="ghost cont" data-test="cont-req" @click="openSection = 'comp'">CONTINUE ▸ COMPONENTS</button>
       </div>
@@ -1543,7 +1573,7 @@ function downloadNetlist() {
                   <label class="note">rated current
                     <input v-model.number="blockRatedA" type="number" min="0.1" step="0.5"
                            style="width:4.5rem" data-test="block-rated-a" /> A</label>
-                  <button data-test="build-block" :disabled="blockBusy" @click="buildBlock">
+                  <button class="act" data-test="build-block" :disabled="blockBusy" @click="buildBlock">
                     {{ blockBusy ? 'ITERATING…' : 'BUILD FILTER BLOCK' }}</button>
                   <span v-if="blockResult" class="chip" :class="blockResult.meets ? 'pass' : 'fail'"
                         data-test="block-verdict">
