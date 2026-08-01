@@ -73,3 +73,42 @@ test('an unreachable target reports honestly, never a silent success',
   await expect(page.getByTestId('block-error')).toContainText('no realizable design',
                                                               { timeout: 30000 })
 })
+
+test('a Faraday handoff seeds the designer and flows to a generated board',
+  async ({ page }) => {
+    // The full pre-hardware chain: Faraday's PREDICTED spectra arrive in the
+    // URL fragment, get judged against CISPR 32 B like any scan, seed the
+    // binding sets — and one click later the filter has its own PCB.
+    const payload = {
+      v: 1, source: 'faraday', fSwHz: 500e3,
+      bands: { dmDb: 10, cmDb: 15 },
+      note: 'pre-hardware SEEDING estimate for the e2e',
+      spectra: {
+        // a failing comb: well above the CISPR 32 B QP line (~56-60 dBuV)
+        dm: [[5e5, 95], [1.5e6, 90], [5e6, 82], [15e6, 74]],
+        cm: [[5e5, 98], [1.5e6, 92], [5e6, 85], [15e6, 78]],
+      },
+    }
+    const frag = Buffer.from(JSON.stringify(payload)).toString('base64')
+    await page.goto('/#handoff=' + frag)
+    await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/,
+                                                            { timeout: 20_000 })
+    // the reader consumed the fragment and jumped to the filter bench
+    await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+    await expect(page).not.toHaveURL(/handoff/)
+
+    // the binding sets seeded real per-mode requirements
+    const acm = page.getByTestId('areq-cm')
+    await expect(acm).not.toHaveValue('40')     // not the default
+    const acmVal = Number(await acm.inputValue())
+    expect(acmVal).toBeGreaterThan(20)
+
+    // manual candidate ladders (no parts catalog in e2e), then the block
+    await page.getByTestId('sec-comp').click()
+    await page.getByTestId('lcm-source').selectOption('manual')
+    await page.getByTestId('cx-source').selectOption('manual')
+    await page.getByTestId('pane-select-b').selectOption('layout')
+    await page.getByTestId('build-block').click()
+    await expect(page.getByTestId('block-verdict')).toBeVisible({ timeout: 30000 })
+    await expect(page.getByTestId('block-board-svg')).toBeVisible()
+  })

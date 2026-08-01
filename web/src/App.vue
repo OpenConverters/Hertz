@@ -2,10 +2,52 @@
 import { onMounted, ref } from 'vue'
 import SpectrumView from './components/SpectrumView.vue'
 import FilterView from './components/FilterView.vue'
-import { loadEngine } from './engine.js'
+import { api, loadEngine } from './engine.js'
 import { store } from './store.js'
 
 const engineState = ref('loading')
+const handoffError = ref('')
+
+// #handoff=<base64 JSON>: a PREDICTED per-mode spectrum arriving from
+// Faraday's conducted estimate (faraday.openconverters.com). The data rides
+// in the URL fragment, which never reaches any server. It is judged against
+// the limit exactly like a measured scan and seeds the filter designer as
+// binding sets — with its stated estimate bands carried into the note.
+async function readHandoffFragment() {
+  const m = location.hash.match(/^#handoff=(.+)$/)
+  if (!m) return
+  try {
+    const p = JSON.parse(decodeURIComponent(escape(atob(m[1]))))
+    if (p.v !== 1 || !p.spectra?.dm || !p.spectra?.cm) {
+      throw new Error('unrecognized handoff payload')
+    }
+    const engine = await api()
+    const sets = { cm: [], dm: [] }
+    const traces = []
+    for (const mode of ['cm', 'dm']) {
+      const pts = p.spectra[mode]
+      const freqs = pts.map((q) => q[0])
+      const levels = pts.map((q) => q[1])
+      const analysis = engine.limitAnalysis('cispr32_class_b', 'quasi_peak', freqs, levels, 10)
+      analysis.marginsDb.forEach((margin, k) => {
+        if (margin !== null && margin < 10) sets[mode].push([freqs[k], 10 - margin])
+      })
+      traces.push({ name: `Faraday prediction (${mode.toUpperCase()})`, mode,
+                    frequenciesHz: freqs, levelsDbuv: levels })
+    }
+    store.handoff = {
+      binding: sets,
+      fSwHz: p.fSwHz,
+      scan: { standardId: 'cispr32_class_b', detector: 'quasi_peak', traces,
+              predicted: true, note: p.note },
+    }
+    store.mode = 'filter'
+    history.replaceState(null, '', location.pathname)   // consume the fragment
+  } catch (e) {
+    handoffError.value = 'handoff from Faraday could not be read: ' +
+      String(e.message || e)
+  }
+}
 
 onMounted(async () => {
   try {
@@ -15,6 +57,7 @@ onMounted(async () => {
     engineState.value = 'fault'
     console.error('Hertz engine failed to load:', e)
   }
+  await readHandoffFragment()
 })
 
 // The nav IS the workflow: measure (analyzer scan or scope capture), then
@@ -50,6 +93,8 @@ const measureModes = [
               data-test="mode-filter" @click="store.mode = 'filter'">FILTER</button>
     </nav>
 
+    <p v-if="handoffError" class="footnote" style="color: var(--fault, #ff8a8a)"
+       data-test="handoff-error">{{ handoffError }}</p>
     <SpectrumView v-if="store.mode === 'spectrum'" />
     <FilterView v-else />
 
