@@ -545,7 +545,8 @@ inline GeneratedBoard generate_filter_board(
     edge(bx2, by2, bx1, by2);
     edge(bx1, by2, bx1, by1);
     o += "  (gr_text \"HERTZ generated filter — REVIEW BEFORE FABRICATION: "
-         "verify packages, creepage and safety approvals\" (at " +
+         "verify packages, creepage, safety approvals; run Edit > Fill All Zones "
+         "(B.Cu earth pour ships unfilled)\" (at " +
          detail::fmt((bx1 + bx2) / 2.0) + " " + detail::fmt(by2 - 1.2) +
          ") (layer \"F.SilkS\") (effects (font (size 1 1) (thickness 0.15))))\n";
     o += ")\n";

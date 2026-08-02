@@ -376,6 +376,7 @@ pre.code {
   .report-sheet .rep-disclaimer { font-size: 9pt; border: 1.5px solid #333; padding: 4pt 8pt;
     margin: 0.15cm 0 0; }
   .report-sheet .rep-pass { color: #0a7a33; font-weight: 700; }
+  .report-sheet .rep-warn { color: #a86400; font-weight: 700; }
   .report-sheet .rep-fail { color: #b41c1c; font-weight: 700; }
   .report-sheet pre { font-size: 7pt; white-space: pre-wrap; border: 1px solid #ddd; padding: 4pt; }
   .report-sheet .rep-meta { color: #555; font-size: 8.5pt; margin: 0.1cm 0; }

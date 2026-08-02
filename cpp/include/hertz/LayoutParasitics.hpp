@@ -147,4 +147,38 @@ inline double layout_aware_il_db(double fHz, const Abcd& network, double mNh,
     return -20.0 * std::log10(tFilter + tBypass);
 }
 
+// Nominal CM-choke inter-winding (parasitic) capacitance. A real common-mode
+// choke's windings couple through a few pF, and THAT — not the board layout — is
+// what caps CM attenuation: above the choke's self-resonance the winding EPC
+// shunts the CM inductance, so CM IL plateaus (real 1-2 stage CM chokes flatten
+// around 50-70 dB). 3 pF is a typical single-section value; it is an ASSUMPTION,
+// not a per-part number, and is stated as such in the UI.
+inline constexpr double CM_CHOKE_EPC_F = 3e-12;
+
+// CM insertion loss floored by BOTH the rail-run layout mutual (mNh, inductive,
+// rises with f) AND the choke winding EPC (capacitive, its bypass also rises with
+// f) — so the ideal LC notch can no longer read an unphysical ~140-240 dB; it
+// plateaus where a real CM choke does.
+inline double cm_layout_il_db(double fHz, const Abcd& network, double mNh,
+                              double cwF, Complex zSource, Complex zLoad) {
+    const double ilDb = insertion_loss_db(network, zSource, zLoad);
+    const double tFilter = std::pow(10.0, -ilDb / 20.0);
+    const double zSys = std::abs(zSource + zLoad);
+    const double w = 2.0 * std::numbers::pi * fHz;
+    const double tBypassL = mNh > 0.0 ? w * mNh * 1e-9 / zSys : 0.0;  // layout
+    const double tBypassC = cwF > 0.0 ? w * cwF * zSys : 0.0;         // choke EPC
+    return -20.0 * std::log10(tFilter + tBypassL + tBypassC);
+}
+
+// The pure CM bypass CEILING (perfect filter, tFilter -> 0): the IL the CM path
+// cannot exceed given the layout mutual + choke EPC. This is the plateau the CM
+// curve approaches.
+inline double cm_bypass_floor_il_db(double fHz, double mNh, double cwF, double zSysOhm) {
+    const double w = 2.0 * std::numbers::pi * fHz;
+    const double tBypassL = mNh > 0.0 ? w * mNh * 1e-9 / zSysOhm : 0.0;
+    const double tBypassC = cwF > 0.0 ? w * cwF * zSysOhm : 0.0;
+    const double t = tBypassL + tBypassC;
+    return t > 0.0 ? -20.0 * std::log10(t) : 300.0;
+}
+
 }  // namespace Hertz::layout

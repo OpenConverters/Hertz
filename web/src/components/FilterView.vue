@@ -194,10 +194,10 @@ function blockIlSeries() {
   if (!c) return []
   const zip = (ys) => c.fHz.map((f, i) => [f, ys[i]])
   return [
-    { label: 'DM with layout', color: '#4d9fff', points: zip(c.dmDb) },
+    { label: 'DM with layout (50 Ω)', color: '#4d9fff', points: zip(c.dmDb) },
     { label: 'DM components only', color: '#4d9fff', dash: '5 4', points: zip(c.dmIdealDb) },
     { label: 'DM bypass floor', color: '#ff7a6e', dash: '2 3', points: zip(c.dmFloorDb) },
-    { label: 'CM with layout', color: '#58c79a', points: zip(c.cmDb) },
+    { label: 'CM with layout (50 Ω)', color: '#58c79a', points: zip(c.cmDb) },
     { label: 'CM components only', color: '#58c79a', dash: '5 4', points: zip(c.cmIdealDb) },
     ...(c.cmFloorDb ? [{ label: 'CM bypass floor', color: '#ffb36e', dash: '2 3', points: zip(c.cmFloorDb) }] : []),
   ]
@@ -732,6 +732,19 @@ const requirementMarkers = () => {
     { f: design.value.fDesignCmHz, v: Number(aReqCm.value), color: 'var(--s-1)' },
     { f: design.value.fDesignDmHz, v: Number(aReqDm.value), color: 'var(--s-2)' },
   ]
+}
+
+// One honest verdict per mode, shared by the on-screen strip AND the printed
+// report, so the report can never over-promise where the screen is careful:
+//   PASS        — clears the requirement even at the CISPR-17 WORST case (robust)
+//   CONDITIONAL — clears the nominal LISN termination but not the worst case
+//                 (compliant at the defined test impedance; not field-robust)
+//   FAIL        — misses even the nominal LISN
+function modeVerdict(standardDb, worstDb, reqDb) {
+  const r = Number(reqDb)
+  if (standardDb < r) return { label: 'FAIL', cls: 'fail', rep: 'rep-fail' }
+  if (worstDb < r) return { label: 'CONDITIONAL', cls: 'warn', rep: 'rep-warn' }
+  return { label: 'PASS', cls: 'pass', rep: 'rep-pass' }
 }
 
 // A persistent, readable summary of the imported requirement point-set, so it is
@@ -1290,10 +1303,12 @@ function downloadNetlist() {
                 data-test="wc-verdict-dm" title="At the CISPR LISN / nominal 100 Ω DM termination — the compliance-measurement condition. Field robustness is the worst-case chip.">
             DM {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }} <span class="chip-scope">@ LISN</span></span>
           <span v-if="worstCaseAt" class="chip"
-                :class="Math.min(worstCaseAt.cm.worst, worstCaseAt.dm.worst) >= Math.max(Number(aReqCm), Number(aReqDm)) ? 'pass' : 'warn'"
+                :class="(worstCaseAt.cm.worst >= Number(aReqCm) && worstCaseAt.dm.worst >= Number(aReqDm)) ? 'pass'
+                        : (worstCaseAt.cm.worst < Number(aReqCm) - 10 || worstCaseAt.dm.worst < Number(aReqDm) - 10) ? 'fail' : 'warn'"
                 data-test="wc-verdict-worst"
-                title="CISPR 17 WORST-CASE source/load (0.1/100 Ω) — mains impedance is unknown, so this is the field-robustness bound. If it fails, the design meets the limit only at the nominal LISN.">
-            WORST-CASE CM {{ fmtDb(worstCaseAt.cm.worst) }} · DM {{ fmtDb(worstCaseAt.dm.worst) }} dB</span>
+                title="CISPR 17 WORST-CASE source/load (0.1/100 Ω) — mains impedance is unknown, so this is the field-robustness bound. Each mode is judged against ITS OWN requirement.">
+            WORST-CASE CM {{ fmtDb(worstCaseAt.cm.worst) }} {{ worstCaseAt.cm.worst >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }} ·
+            DM {{ fmtDb(worstCaseAt.dm.worst) }} {{ worstCaseAt.dm.worst >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
           <span v-if="interaction" class="chip" :class="interaction.marginDb >= 12 ? 'pass' : interaction.marginDb >= 6 ? 'warn' : 'fail'"
                 data-test="middlebrook-margin">STABILITY {{ fmtDb(interaction.marginDb) }} dB</span>
           <span v-if="design.leakageCurrentA !== undefined" class="chip"
@@ -1688,6 +1703,9 @@ function downloadNetlist() {
                   </table>
                   <p class="section-label">Insertion loss — solid: with layout · dashed: components only ·
                     dotted red: bypass floor</p>
+                  <p class="note">This block is a generic <b>50 Ω 2-port</b> analysis (its own reference), so its
+                    "MEETS TARGET" answers a slightly different question than the verdict strip, which uses the
+                    CISPR references (25 Ω CM / 100 Ω DM). Use the strip/report for the compliance verdict.</p>
                   <LogChart :series="blockIlSeries()" y-label="dB" :height="240" data-test="block-il-chart" />
                   <p class="section-label">Download the block</p>
                   <p style="display:flex; gap:0.6rem; flex-wrap:wrap">
@@ -1771,16 +1789,16 @@ function downloadNetlist() {
           <tbody>
             <tr v-if="worstCaseAt">
               <td>CM in-circuit attenuation at f<sub>design</sub></td>
-              <td :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'rep-pass' : 'rep-fail'">
-                {{ worstCaseAt.cm.standard >= Number(aReqCm) ? 'PASS' : 'FAIL' }}</td>
-              <td>{{ fmtDb(worstCaseAt.cm.standard) }} dB ({{ fmtDb(worstCaseAt.cm.worst) }} dB CISPR 17 worst case)</td>
-              <td>≥ {{ fmtDb(Number(aReqCm), 0) }} dB</td></tr>
+              <td :class="modeVerdict(worstCaseAt.cm.standard, worstCaseAt.cm.worst, aReqCm).rep">
+                {{ modeVerdict(worstCaseAt.cm.standard, worstCaseAt.cm.worst, aReqCm).label }}</td>
+              <td>{{ fmtDb(worstCaseAt.cm.standard) }} dB @ LISN · {{ fmtDb(worstCaseAt.cm.worst) }} dB worst case (CISPR 17)</td>
+              <td>≥ {{ fmtDb(Number(aReqCm), 0) }} dB (worst case for a robust PASS)</td></tr>
             <tr v-if="worstCaseAt">
               <td>DM in-circuit attenuation at f<sub>design</sub></td>
-              <td :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'rep-pass' : 'rep-fail'">
-                {{ worstCaseAt.dm.standard >= Number(aReqDm) ? 'PASS' : 'FAIL' }}</td>
-              <td>{{ fmtDb(worstCaseAt.dm.standard) }} dB ({{ fmtDb(worstCaseAt.dm.worst) }} dB CISPR 17 worst case)</td>
-              <td>≥ {{ fmtDb(Number(aReqDm), 0) }} dB</td></tr>
+              <td :class="modeVerdict(worstCaseAt.dm.standard, worstCaseAt.dm.worst, aReqDm).rep">
+                {{ modeVerdict(worstCaseAt.dm.standard, worstCaseAt.dm.worst, aReqDm).label }}</td>
+              <td>{{ fmtDb(worstCaseAt.dm.standard) }} dB @ LISN · {{ fmtDb(worstCaseAt.dm.worst) }} dB worst case (CISPR 17)</td>
+              <td>≥ {{ fmtDb(Number(aReqDm), 0) }} dB (worst case for a robust PASS)</td></tr>
             <tr v-if="interaction">
               <td>Input-filter stability (Middlebrook)</td>
               <td :class="interaction.marginDb >= 6 ? 'rep-pass' : 'rep-fail'">
