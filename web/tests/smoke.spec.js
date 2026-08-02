@@ -41,6 +41,36 @@ test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer'
   expect(consoleErrors).toEqual([])
 })
 
+test('spectrum: a scan failing UP HIGH seeds the switching RATE, not the design corner '
+     + '(user report 2026-08-02)', async ({ page }) => {
+  // Regression: the demo comb passes fsw≈300 only because its fundamental IS the
+  // worst offender, so the design corner ≈ the switching rate. A real CISPR 25
+  // DUT that fails in the tens of MHz breaks that coincidence — the old code dumped
+  // the min design corner (~27 MHz) into the "Switching frequency" field, which is
+  // physically absurd as an f_sw. The field must carry the DETECTED comb rate.
+  const consoleErrors = []
+  page.on('pageerror', (e) => consoleErrors.push(String(e)))
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+
+  await page.getByTestId('scan-example').selectOption('baltic-cmdm')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  // the spectrum view detected a real converter switching rate (hundreds of kHz)
+  const detected = await page.getByTestId('fsw-detected').textContent()
+  expect(detected).toMatch(/kHz/)
+  const detectedKhz = parseFloat(detected)
+  expect(detectedKhz).toBeGreaterThan(50)
+  expect(detectedKhz).toBeLessThan(2000)          // a switching rate, not a 27 MHz corner
+
+  await page.getByTestId('design-fix').click()
+  await expect(page.getByTestId('mode-filter')).toHaveClass(/active/)
+  const fsw = parseFloat(await page.getByTestId('fsw').inputValue())
+  // the seeded switching frequency is the DETECTED comb, not the design corner
+  expect(Math.abs(fsw - detectedKhz)).toBeLessThan(2)
+  expect(fsw).toBeLessThan(2000)                  // never the tens-of-MHz design corner
+  expect(consoleErrors).toEqual([])
+})
+
 test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })

@@ -259,7 +259,9 @@ function deriveFromBindings() {
   aReqDm.value = dm ? Math.ceil(dm[1]) : 0
   fCritCmHz.value = cm ? cm[0] : dm[0]
   fCritDmHz.value = dm ? dm[0] : cm[0]
-  fSwKhz.value = Math.round(Math.min(fCritCmHz.value, fCritDmHz.value)) / 1e3
+  // NOTE: fSwKhz (the switching frequency) is deliberately NOT set here — it is
+  // the converter's switching rate, seeded from the detected comb in applyHandoff,
+  // not the min design corner. The sizing uses fCritCmHz/fCritDmHz directly.
   const label = (mode, best, points) => best
     ? `${mode} ${Math.ceil(best[1])} dB @ ${(best[0] / 1e3).toFixed(0)} kHz (${points} pts)`
     : `${mode} silent`
@@ -398,6 +400,12 @@ watch(() => store.handoff, (h) => { if (h) applyHandoff() })
 function applyHandoff() {
   if (store.handoff) {
     scanCtx.value = store.handoff.scan ?? null
+    // The switching frequency is the CONVERTER'S switching rate — the comb
+    // fundamental the scan detected — NOT the filter's design corner. Seed it
+    // for EITHER hand-off shape (binding or bands). deriveFromBindings must not
+    // derive it from fCrit: for a CISPR 25 DUT failing up at 27 MHz that put
+    // "27000 kHz" in this field, which is physically absurd as an f_sw.
+    if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
     // requirements seeded from a PREDICTION must say so — they carry the
     // estimate's bands, and no LISN has confirmed them
     const predicted = store.handoff.scan?.predicted
@@ -410,7 +418,6 @@ function applyHandoff() {
     } else {
       aReqCm.value = store.handoff.aReqCmDb ?? store.handoff.aReqDb
       aReqDm.value = store.handoff.aReqDmDb ?? store.handoff.aReqDb
-      if (store.handoff.fSwHz) fSwKhz.value = Math.round(store.handoff.fSwHz / 1e3)
     }
     store.handoff = null
     // deliberately NOT computing: the hand-off fills the cards, the user walks
@@ -635,34 +642,41 @@ async function runDesign(makeParams, { keepBindings }) {
       // the EFFECTIVE X capacitance (delta: 1.5·C per line pair).
       const cmRefZ = 50 / (d.nLines ?? 2)
       const cXEff = d.cXSelectedF * (d.cXDmFactor ?? 1)
-      // chokeEpcF (3 pF, matches the C++ CM_CHOKE_EPC_F): the CM curve is capped by
+      // chokeEpcF (3 pF, matches the C++ CM_CHOKE_EPC_F): the CM path is capped by
       // the choke's inter-winding capacitance so it plateaus realistically instead of
       // spiking to the ideal LC notch's unphysical hundreds of dB — the same ceiling
-      // the LAYOUT & BLOCK chart uses. (At f_design, below the ceiling, this changes
-      // nothing, so the verdict stays honest; it only tames the notch on the curve.)
+      // the LAYOUT & BLOCK chart uses. It applies to the DISPLAYED curve AND to the
+      // f_design verdict/escalation below (via CM_EPC_F): for aggressive CM targets
+      // (>=~55 dB) the ceiling DOES bite at f_design, so the chip, the escalator and
+      // the plotted curve must all read the capped value or they disagree (they did).
+      const CM_EPC_F = 3e-12
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
         stages: d.stages, referenceImpedanceOhm: cmRefZ, capEslH: params.eslCmH,
-        chokeEpcF: 3e-12, ...span })
+        chokeEpcF: CM_EPC_F, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: cXEff,
         stages: d.stages, referenceImpedanceOhm: 100, capEslH: params.eslDmH, ...span })
       // the chip is a hard pass/fail input: evaluate it AT f_design via a
-      // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off)
-      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz, eslH) => {
+      // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off).
+      // chokeEpcF defaults to 0 (DM); the CM call passes CM_EPC_F so the verdict
+      // matches the capped CM curve.
+      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz, eslH, chokeEpcF = 0) => {
         const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: d.stages,
           referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
-          pointsPerDecade: 20000, capEslH: eslH })
+          pointsPerDecade: 20000, capEslH: eslH, chokeEpcF })
         const mid = Math.floor(il.frequenciesHz.length / 2)
         return { standard: il.standardDb[mid], worst: il.worstCaseDb[mid] }
       }
-      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, cmRefZ, d.fDesignCmHz, params.eslCmH),
+      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, cmRefZ, d.fDesignCmHz, params.eslCmH, CM_EPC_F),
                                 dm: exactAt(d.lDmH, cXEff, 100, d.fDesignDmHz, params.eslDmH) } }
     }
     // in-circuit IL at exactly f_design — the same criterion the verdict chip
-    // scores, so the escalation target and the verdict can never disagree
-    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages, eslH) => {
+    // scores, so the escalation target and the verdict can never disagree. The CM
+    // call passes chokeEpcF (3 pF) so escalation stops at a part the CAPPED curve
+    // actually meets, not one the ideal LC promises and the real choke can't.
+    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages, eslH, chokeEpcF = 0) => {
       const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: nStages,
         referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
-        pointsPerDecade: 20000, capEslH: eslH })
+        pointsPerDecade: 20000, capEslH: eslH, chokeEpcF })
       return il.standardDb[Math.floor(il.frequenciesHz.length / 2)]
     }
     let attempt = evaluate(params)
@@ -680,7 +694,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(v, attempt.d.cYgF, 50 / (attempt.d.nLines ?? 2), attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH) >= Number(params.aReqCmDb))
+            ilAtDesign(v, attempt.d.cYgF, 50 / (attempt.d.nLines ?? 2), attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH, 3e-12) >= Number(params.aReqCmDb))
           next.lCmCandidatesH = pass !== undefined
             ? params.lCmCandidatesH.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -1340,7 +1354,7 @@ function downloadNetlist() {
       <div v-if="design" class="fstrip panel-hi">
         <div class="fstrip-row">
           <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'"
-                data-test="wc-verdict-cm" title="At the CISPR LISN / nominal 25 Ω CM termination — the compliance-measurement condition. Field robustness is the worst-case chip.">
+                data-test="wc-verdict-cm" title="At the CISPR LISN / nominal 25 Ω CM termination — the compliance-measurement condition. Includes the 3 pF choke inter-winding (EPC) ceiling, so this reads the SAME value as the plotted CM curve at f_design. Field robustness is the worst-case chip.">
             CM {{ fmtDb(worstCaseAt.cm.standard) }} dB {{ worstCaseAt.cm.standard >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }} <span class="chip-scope">@ LISN</span></span>
           <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'pass' : 'fail'"
                 data-test="wc-verdict-dm" title="At the CISPR LISN / nominal 100 Ω DM termination — the compliance-measurement condition. Field robustness is the worst-case chip.">
@@ -1562,9 +1576,12 @@ function downloadNetlist() {
                   25/100 Ω chip quantities. Δ > 1 dB means the engines model DIFFERENT circuits and is
                   flagged, never averaged away. First run downloads the ~11 MB engine.</p>
                 <p class="note">If the dashed worst-case curve still clears your requirement at the design
-                  frequency, termination uncertainty cannot eat the margin. Ideal-element curves ignore
-                  self-resonance and winding capacitance — above a few MHz a real single-stage filter
-                  plateaus at 50–70 dB; bind a part with a measured curve (dotted) for the honest picture.</p>
+                  frequency, termination uncertainty cannot eat the margin. The solid CM curve is CAPPED by
+                  the choke's 3 pF inter-winding capacitance (EPC) — the same ceiling the CM verdict chip and
+                  the choke escalation now use, so all three agree. For an aggressive CM target (≥~55 dB) that
+                  ceiling can bite right at f<sub>design</sub>, not only above a few MHz; a real single-stage
+                  filter plateaus around 50–70 dB. Bind a part with a measured curve (dotted) for the part's
+                  own honest EPC, in place of the 3 pF assumption.</p>
                 <p v-if="measured" class="note" data-test="measured-note">
                   Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
                   (manufacturer data via the TAS catalog) — shown only over the measured span.

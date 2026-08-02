@@ -309,7 +309,8 @@ async function designTheFix() {
         if (margin !== null && margin < 16) sets[order[i]].push([t.frequenciesHz[k], 16 - margin])
       })
     })
-    store.handoff = { binding: sets, scan: scanContext(judged, order) }
+    store.handoff = { binding: sets, scan: scanContext(judged, order),
+                      fSwHz: comb.value?.found ? comb.value.fSwHz : undefined }
     store.mode = 'filter'
     return
   }
@@ -328,7 +329,8 @@ async function designTheFix() {
     })
   }
   store.handoff = { binding: { cm: binding, dm: binding },
-                    scan: scanContext(judged, judged.map(() => 'line')) }
+                    scan: scanContext(judged, judged.map(() => 'line')),
+                    fSwHz: comb.value?.found ? comb.value.fSwHz : undefined }
   store.mode = 'filter'
 }
 
