@@ -117,12 +117,18 @@ inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capa
         double std_ = insertion_loss_db(network, reference, reference);
         double worst_ = insertion_loss_worst_case_db(network);
         if (chokeEpcF > 0.0) {
-            // cap by the EPC bypass: |T| = |T_filter| + |T_epc|, T_epc = w·Cw·zSys
+            // cap by the EPC bypass: |T| = |T_filter| + |T_epc|, T_epc = w·Cw·(Zs+Zl).
+            // The bypass transmission scales with the SYSTEM impedance the terminations
+            // present, so it DIFFERS per curve: the standard curve uses both-ends
+            // reference (Zs+Zl = 2·ref); the worst-case curve uses the CISPR-17 worst
+            // terminations (0.1 Ω + 100 Ω) that insertion_loss_worst_case_db evaluates
+            // at. Using 2·ref for BOTH left the worst-case ceiling ~6 dB optimistic
+            // where it binds (the advisory robustness tier), so split them.
             constexpr double TWO_PI = 6.283185307179586;
-            const double zSys = 2.0 * referenceImpedanceOhm;
-            const double tEpc = TWO_PI * f * chokeEpcF * zSys;
-            std_ = -20.0 * std::log10(std::pow(10.0, -std_ / 20.0) + tEpc);
-            worst_ = -20.0 * std::log10(std::pow(10.0, -worst_ / 20.0) + tEpc);
+            const double tEpcStd = TWO_PI * f * chokeEpcF * (2.0 * referenceImpedanceOhm);
+            const double tEpcWorst = TWO_PI * f * chokeEpcF * (0.1 + 100.0);
+            std_ = -20.0 * std::log10(std::pow(10.0, -std_ / 20.0) + tEpcStd);
+            worst_ = -20.0 * std::log10(std::pow(10.0, -worst_ / 20.0) + tEpcWorst);
         }
         curves.standardDb.push_back(std_);
         curves.worstCaseDb.push_back(worst_);
