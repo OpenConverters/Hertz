@@ -694,6 +694,9 @@ async function runDesign(makeParams, { keepBindings }) {
     } catch (netlistError) {
       netlist.value = '* netlist unavailable: ' + netlistError.message
     }
+    // the design is done — collapse the input accordion so the verdict + result
+    // cards have the room. A section header reopens it to change something.
+    openSection.value = null
   } catch (e) {
     error.value = e.message
   }
@@ -1300,10 +1303,9 @@ function downloadNetlist() {
       </div>
 
       <div v-if="error" class="err" data-test="error">{{ error }}</div>
-    </aside>
 
-    <!-- ── workspace: verdict strip + two switchable panes ────────────────── -->
-    <main class="fworkspace">
+      <!-- verdict strip + PRINT REPORT live in the LEFT column, below the inputs,
+           so the whole right column is the two result cards -->
       <div v-if="design" class="fstrip panel-hi">
         <div class="fstrip-row">
           <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'"
@@ -1355,7 +1357,10 @@ function downloadNetlist() {
         <p v-if="asBuiltNote" class="note" data-test="as-built-note" style="margin: 0.25rem 0 0; color: var(--amber)">
           {{ asBuiltNote }}</p>
       </div>
+    </aside>
 
+    <!-- ── workspace: the two result cards, using the full right column ─── -->
+    <main class="fworkspace">
       <div class="fpane-grid">
         <section v-for="(pane, idx) in [paneA, paneB]" :key="idx" class="fpane panel">
           <div class="pane-head pane-tabs">
