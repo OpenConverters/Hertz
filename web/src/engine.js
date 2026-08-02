@@ -5,7 +5,14 @@ let modulePromise = null
 
 export function loadEngine() {
   if (!modulePromise) {
-    modulePromise = import(/* @vite-ignore */ new URL('hertz.js', window.location.origin + '/').href)
+    // Load the engine glue relative to the DEPLOY BASE, not the origin root. A
+    // /new/ (or any sub-path) build must load ITS OWN /new/hertz.js — hardcoding
+    // origin + '/' made every base silently run the ROOT engine, so a stale root
+    // wasm (or a newer engine shipped only under /new/) was invisible: the A/B
+    // build ran the wrong engine. Emscripten then locates hertz.wasm relative to
+    // this glue URL, so /new/hertz.js fetches /new/hertz.wasm automatically.
+    const base = import.meta.env.BASE_URL || '/'
+    modulePromise = import(/* @vite-ignore */ new URL('hertz.js', window.location.origin + base).href)
       .then((m) => m.default())
   }
   return modulePromise

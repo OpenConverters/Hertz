@@ -1045,7 +1045,9 @@ const roundTripBusy = ref(false)
 let khEnginePromise = null
 function kirchhoffEngine() {
   if (!khEnginePromise) {
-    khEnginePromise = import(/* @vite-ignore */ new URL('/kirchhoff.js', window.location.origin).href)
+    // base-relative, same reason as engine.js: /new/ must load /new/kirchhoff.js
+    const base = import.meta.env.BASE_URL || '/'
+    khEnginePromise = import(/* @vite-ignore */ new URL(base + 'kirchhoff.js', window.location.origin).href)
       .then((m) => m.default())
   }
   return khEnginePromise
