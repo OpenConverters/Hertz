@@ -189,6 +189,7 @@ button.ghost:hover { border-color: var(--phos); }
 .readout .cell span.chip { color: var(--bg-deep); }
 .chip.fail { color: var(--bg-deep); background: var(--fault); }
 .chip.warn { color: var(--bg-deep); background: var(--amber); }
+.chip-scope { font-size: 0.72em; opacity: 0.75; letter-spacing: 0.06em; font-weight: 600; }
 
 /* ── tables ────────────────────────────────────────────────────────────── */
 table.data { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 0.83rem; }

@@ -170,9 +170,11 @@ const blockBoard = computed(() => {
     m = line.match(/\(gr_line \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) \(layer "Edge.Cuts"\)/)
     if (m) edges.push({ x1: +m[1], y1: +m[2], x2: +m[3], y2: +m[4] })
   }
-  // solid earth ground plane (the B.Cu copper pour) — its filled polygon
+  // solid earth ground plane (the B.Cu copper pour) — the zone OUTLINE polygon.
+  // The zone is emitted unfilled (KiCad re-pours with per-pad antipads), so we draw
+  // its outline as the plane indicator behind the traces.
   let plane = null
-  const zm = text.match(/\(filled_polygon \(layer "B\.Cu"\)\s*\(pts ((?:\(xy [-\d.]+ [-\d.]+\)\s*)+)\)/)
+  const zm = text.match(/\(zone [^]*?\(polygon\s*\(pts ((?:\(xy [-\d.]+ [-\d.]+\)\s*)+)\)/)
   if (zm) {
     plane = [...zm[1].matchAll(/\(xy ([-\d.]+) ([-\d.]+)\)/g)].map((m) => `${+m[1]},${+m[2]}`).join(' ')
   }
@@ -1280,10 +1282,17 @@ function downloadNetlist() {
     <main class="fworkspace">
       <div v-if="design" class="fstrip panel-hi">
         <div class="fstrip-row">
-          <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'" data-test="wc-verdict-cm">
-            CM {{ fmtDb(worstCaseAt.cm.standard) }} dB {{ worstCaseAt.cm.standard >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }}</span>
-          <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'pass' : 'fail'" data-test="wc-verdict-dm">
-            DM {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }}</span>
+          <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.cm.standard >= Number(aReqCm) ? 'pass' : 'fail'"
+                data-test="wc-verdict-cm" title="At the CISPR LISN / nominal 25 Ω CM termination — the compliance-measurement condition. Field robustness is the worst-case chip.">
+            CM {{ fmtDb(worstCaseAt.cm.standard) }} dB {{ worstCaseAt.cm.standard >= Number(aReqCm) ? '≥' : '<' }} {{ fmtDb(Number(aReqCm), 0) }} <span class="chip-scope">@ LISN</span></span>
+          <span v-if="worstCaseAt" class="chip" :class="worstCaseAt.dm.standard >= Number(aReqDm) ? 'pass' : 'fail'"
+                data-test="wc-verdict-dm" title="At the CISPR LISN / nominal 100 Ω DM termination — the compliance-measurement condition. Field robustness is the worst-case chip.">
+            DM {{ fmtDb(worstCaseAt.dm.standard) }} dB {{ worstCaseAt.dm.standard >= Number(aReqDm) ? '≥' : '<' }} {{ fmtDb(Number(aReqDm), 0) }} <span class="chip-scope">@ LISN</span></span>
+          <span v-if="worstCaseAt" class="chip"
+                :class="Math.min(worstCaseAt.cm.worst, worstCaseAt.dm.worst) >= Math.max(Number(aReqCm), Number(aReqDm)) ? 'pass' : 'warn'"
+                data-test="wc-verdict-worst"
+                title="CISPR 17 WORST-CASE source/load (0.1/100 Ω) — mains impedance is unknown, so this is the field-robustness bound. If it fails, the design meets the limit only at the nominal LISN.">
+            WORST-CASE CM {{ fmtDb(worstCaseAt.cm.worst) }} · DM {{ fmtDb(worstCaseAt.dm.worst) }} dB</span>
           <span v-if="interaction" class="chip" :class="interaction.marginDb >= 12 ? 'pass' : interaction.marginDb >= 6 ? 'warn' : 'fail'"
                 data-test="middlebrook-margin">STABILITY {{ fmtDb(interaction.marginDb) }} dB</span>
           <span v-if="design.leakageCurrentA !== undefined" class="chip"

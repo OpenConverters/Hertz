@@ -129,19 +129,26 @@ TEST_CASE("layoutgen: a 1-stage board emits complete and balanced", "[layout]") 
     CHECK(g.parts == 11);   // 6 lugs, R1, CX1, CMC1, CY1, CY2
     CHECK(g.boardWmm > 50.0);
     CHECK(g.boardHmm > 20.0);
-    // a solid earth GROUND PLANE (copper pour) is emitted on the bottom layer,
-    // on the PE net — the CM return is the plane, not the old three-sided ring
-    for (const char* tok : {"(zone ", "\"B.Cu\"", "filled_polygon", "(fill yes"})
+    // an earth GROUND PLANE zone (copper pour) is emitted on B.Cu on the PE net.
+    // It is UNFILLED (KiCad re-pours with per-pad antipads) so it never stores a
+    // solid rectangle over the live L/N pads — a short. The antipad clearance is
+    // held at the line-PE creepage floor.
+    for (const char* tok : {"(zone ", "\"B.Cu\"", "(fill yes", "(connect_pads (clearance"})
         CHECK_THAT(b, Catch::Matchers::ContainsSubstring(tok));
+    // NOT a stored solid fill (that would short L/N to earth)
+    CHECK_THAT(b, !Catch::Matchers::ContainsSubstring("filled_polygon"));
     CHECK(g.hasEarthPlane);
 }
 
 TEST_CASE("layoutgen: 2-stage adds the second X and choke on the mid nets",
           "[layout]") {
     auto g = Hertz::layout::generate_filter_board(demo_design(2), 10.0);
-    for (const char* tok : {"\"CMC2\"", "\"CX2\"", "\"L_M1\"", "\"N_M1\""})
+    for (const char* tok : {"\"CMC2\"", "\"CX2\"", "\"L_M1\"", "\"N_M1\"",
+                            "\"CY3\"", "\"CY4\""})   // a Y pair PER STAGE now
         CHECK_THAT(g.kicadPcb, Catch::Matchers::ContainsSubstring(tok));
-    CHECK(g.parts == 13);
+    // 6 lugs + R1 + (CX,CMC,CY,CY)x2 = 15: one X and one Y PAIR per stage, matching
+    // the N-section CM cascade the verdict scores (was 13 with a single Y pair)
+    CHECK(g.parts == 15);
 }
 
 TEST_CASE("layoutgen: copper spacing MEASURED off the emitted text meets the "
@@ -333,17 +340,17 @@ TEST_CASE("block: the optimizer meets the target deterministically and "
     // a target beyond the CATALOG refuses loudly — no board was possible
     CHECK_THROWS_AS(run(40.0, 200.0), std::invalid_argument);
     // a target beyond the LAYOUT (design feasible, bypass floor is not)
-    // comes back honest, never a silent success: huge leakage makes the DM
-    // design easy, but 105 dB at 150 kHz sits above the bypass floor even at maximum spacing
+    // comes back honest, never a silent success: a large-X catalog makes 110 dB DM
+    // DESIGNABLE, but the DM bypass floor sits below it even at maximum spacing
     auto layoutLimited = Hertz::layout::optimize_filter_block(
-        150e3, 40.0, 105.0, 2.2e-9, 1e-3, 10.0,
-        {5e-3, 10e-3, 39e-3}, {100e-9, 470e-9, 1e-6});
+        150e3, 40.0, 110.0, 2.2e-9, 1e-3, 10.0,
+        {5e-3, 10e-3, 39e-3}, {100e-9, 470e-9, 1e-6, 4.7e-6, 10e-6});
     CHECK(!layoutLimited.meets);
     CHECK(layoutLimited.board.parts > 0);   // the closest board still ships
     // ...and the DIAGNOSIS points at the right fix: the components alone
-    // would clear 105 dB, the bypass floor eats it -> layout, not catalog
+    // would clear 110 dB, the bypass floor eats it -> layout, not catalog
     CHECK(layoutLimited.limitedBy == "layout");
-    CHECK(layoutLimited.idealAttenDmDb >= 105.0);
+    CHECK(layoutLimited.idealAttenDmDb >= 110.0);
     // a DESIGNABLE filter whose parts still miss in-circuit (a 10-ohm-ESR
     // capacitor floors every shunt branch) is CATALOG-limited: the fix is
     // better parts, and no spacing will ever buy it back

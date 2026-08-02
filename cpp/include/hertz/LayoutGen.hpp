@@ -331,22 +331,27 @@ inline GeneratedBoard generate_filter_board(
         return cx;
     };
 
-    // ---- per stage: X (+ discharge R on stage 1) then the choke ----
-    // Rails are SERIES paths: each stage's rail run ends at the choke input
-    // pins and resumes, on the next net, at its output pins.
+    // ---- per stage: choke, then X and Y on the choke OUTPUT ----
+    // This is the SAME topology the schematic, the CIAS brick and the CM/DM
+    // insertion-loss model use — in -> CMC -> [X + Y] per stage (filterNets()):
+    // the X-cap on the choke output, and ONE Y pair PER STAGE. The fabricated
+    // board is therefore the exact filter that was verified and exported, so its
+    // CM performance (N shunt Y sections) matches the N-section verdict — not the
+    // single-Y-pair board of before. Rails are SERIES paths: each stage's run
+    // ends at the choke input pins and resumes, on the next net, at its output.
     int chokeIdx = 0;
+    double lastCyTopX = xPeLink;   // the top PE spine must reach the last L-side Y
     for (int s = 0; s < d.stages; ++s) {
         const int inL = s == 0 ? nLIn : nLMid;
         const int inN = s == 0 ? nNIn : nNMid;
         const int outL = (d.stages == 2 && s == 0) ? nLMid : nLOut;
         const int outN = (d.stages == 2 && s == 0) ? nNMid : nNOut;
 
+        // discharge bleeder across the input terminals (stage 1 only)
         if (s == 0) {
             add_vertical("R1", "discharge", rPkg, inL, inN, yL, yN, &railL,
                          &railN);
         }
-        add_vertical("CX" + std::to_string(s + 1), "X2", xPkg, inL, inN, yL,
-                     yN, &railL, &railN);
 
         // choke: pins 1/2 on the L row, 3/4 on the N row
         ++chokeIdx;
@@ -373,14 +378,20 @@ inline GeneratedBoard generate_filter_board(
         railL = {xout, outL, {}};
         railN = {xout, outN, {}};
         x = ccx + cPkg.bodyW / 2.0 + p.partGapmm;
-    }
 
-    // ---- Y pair on the load side: L_OUT to the TOP spine, N_OUT to the
-    // BOTTOM spine (that is why the earth ring exists — no crossings) ----
-    const double cxCy1 =
-        add_vertical("CY1", "Y2", yPkg, nPE, nLOut, yPEt, yL, &peTop, &railL);
-    x -= p.partGapmm;  // CY1/CY2 share a column footprint-width apart
-    add_vertical("CY2", "Y2", yPkg, nNOut, nPE, yN, yPEb, &railN, &peBot);
+        // X across the choke OUTPUT rails
+        add_vertical("CX" + std::to_string(s + 1), "X2", xPkg, outL, outN, yL,
+                     yN, &railL, &railN);
+
+        // Y pair on the choke OUTPUT: L_out -> top spine, N_out -> bottom spine
+        // (the earth ring exists so the two Y returns never cross the rails).
+        const int cyk = 2 * s + 1;
+        lastCyTopX = add_vertical("CY" + std::to_string(cyk), "Y2", yPkg, nPE,
+                                  outL, yPEt, yL, &peTop, &railL);
+        x -= p.partGapmm;   // the N-side Y shares the column
+        add_vertical("CY" + std::to_string(cyk + 1), "Y2", yPkg, outN, nPE, yN,
+                     yPEb, &railN, &peBot);
+    }
 
     // ---- output lugs ----
     const double xOut = x + lug.bodyW / 2.0;
@@ -397,7 +408,7 @@ inline GeneratedBoard generate_filter_board(
     // board edge left 118 mm of open PE stub, a quarter-wave resonator by
     // Faraday's own review of the first emitted board ----
     const double xRight = xOut + lug.bodyW / 2.0 + p.edgeMarginmm;
-    close_rail(peTop, cxCy1, yPEt, tw);
+    close_rail(peTop, lastCyTopX, yPEt, tw);
     close_rail(peBot, xOut, yPEb, tw);
     stub(xPeLink, yPEt, yPEb, nPE, tw);       // the left-edge link
 
@@ -484,28 +495,26 @@ inline GeneratedBoard generate_filter_board(
              std::to_string(s.net) + "))\n";
     }
     // ---- solid EARTH GROUND PLANE (copper pour) on the bottom layer --------
-    // A filled B.Cu zone on the PE net over the whole board. This is what a real
-    // power-EMC filter board carries and it fixes three things the three-sided
-    // trace ring got wrong: (1) it is a lot of copper, (2) it gives EVERY Y-cap a
-    // SHORT, low-inductance, symmetric return to chassis (the plane, not a 240 mm
-    // trace detour around the board), killing the CM mode-conversion the ring
-    // caused, and (3) it is a real reference plane for the radiated story. Every
-    // PE thru-hole pad (input/output lugs, both Y-caps) drops straight into it.
+    // A B.Cu zone on the PE net over the whole board: a lot of copper, a SHORT
+    // symmetric return for both Y-caps' thru-hole PE pads (not the old 240 mm ring
+    // detour), and a reference plane for the radiated story.
+    //
+    // Emitted UNFILLED (outline + fill rules only, no stored filled_polygon). A
+    // hand-authored solid rectangle would sit ON every live L/N thru-hole pad — a
+    // dead short of line/neutral to protective earth. KiCad recomputes the fill
+    // with the correct per-pad antipads (connect_pads clearance below, held at the
+    // line-PE creepage floor so the pour keeps mains creepage from every live pad)
+    // on load / DRC / plot; PE pads connect, L/N pads are cut clear. Unfilled is
+    // the safe representation for a REVIEW-BEFORE-FABRICATION board.
     {
         const double zx1 = bx1, zy1 = by1, zx2 = bx2, zy2 = by2;
-        auto poly = [&](const std::string& tag) {
-            o += "    (" + tag + " (pts (xy " + detail::fmt(zx1) + " " + detail::fmt(zy1) +
-                 ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy1) +
-                 ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy2) +
-                 ") (xy " + detail::fmt(zx1) + " " + detail::fmt(zy2) + ")))\n";
-        };
         o += "  (zone (net " + std::to_string(nPE) + ") (net_name \"PE\") (layer \"B.Cu\")\n";
-        o += "    (hatch edge 0.508) (connect_pads (clearance 0.5)) (min_thickness 0.25)\n";
-        o += "    (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))\n";
-        poly("polygon");
-        o += "    (filled_polygon (layer \"B.Cu\")\n";
-        // reuse the same rectangle as the fill (KiCad re-pours on load anyway)
-        o += "      (pts (xy " + detail::fmt(zx1) + " " + detail::fmt(zy1) +
+        o += "    (hatch edge 0.508)\n";
+        // clearance to OTHER-net (L/N) pads = the line-PE creepage floor, so the
+        // earth pour's antipads never violate mains creepage
+        o += "    (connect_pads (clearance " + detail::fmt(p.clearPEmm) + "))\n";
+        o += "    (min_thickness 0.25) (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))\n";
+        o += "    (polygon (pts (xy " + detail::fmt(zx1) + " " + detail::fmt(zy1) +
              ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy1) +
              ") (xy " + detail::fmt(zx2) + " " + detail::fmt(zy2) +
              ") (xy " + detail::fmt(zx1) + " " + detail::fmt(zy2) + ")))\n";

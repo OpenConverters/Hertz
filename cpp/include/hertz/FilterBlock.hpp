@@ -255,7 +255,7 @@ inline std::string block_spice_subckt(const LineFilterDesign& d,
             "CM choke cannot carry the assumed leakage (k out of (0,1)) — "
             "the design should have refused this earlier");
     }
-    char b[240];
+    char b[512];
     std::string o =
         "* Hertz filter block — components AND layout parasitics\n"
         "* bands: connection/spine partials ~+/-30%, bypass M ~+/-50%\n"
@@ -264,22 +264,17 @@ inline std::string block_spice_subckt(const LineFilterDesign& d,
                   "Kbyp Lbyp1 Lbyp2 0.9999\n",
                   std::max(lp.mDmNh, 1e-3), std::max(lp.mDmNh, 1e-3));
     o += b;
+    // in -> CMC -> [X + Y] PER STAGE — the exact topology of the schematic, the
+    // CIAS brick, the board and the N-section CM/DM verdict, so all five artifacts
+    // are one filter (X on the choke output, one Y pair per stage into the shared
+    // PE node — not the old X-on-input / single-Y-pair deck).
     std::string inL = "l1", inN = "N_IN";
     for (int s = 1; s <= d.stages; ++s) {
         const std::string suf = std::to_string(s);
         const bool last = s == d.stages;
         const std::string outL = last ? "l_pre" : "l" + suf + "b";
         const std::string outN = last ? "N_OUT" : "n" + suf + "b";
-        // X cap with its ESR and its FULL series inductance (own ESL + stubs)
-        std::snprintf(b, sizeof b,
-                      "Cx%s %s x%sa %.6gu\nLx%s x%sa x%sb %.4gn\n"
-                      "Rx%s x%sb %s %.4g\n",
-                      suf.c_str(), inL.c_str(), suf.c_str(),
-                      d.cXSelectedF * 1e6, suf.c_str(), suf.c_str(),
-                      suf.c_str(), capEslH * 1e9 + lp.xConnNh, suf.c_str(),
-                      suf.c_str(), inN.c_str(), capEsrOhm);
-        o += b;
-        // the choke: coupled pair
+        // the choke: coupled pair, input -> output
         std::snprintf(b, sizeof b,
                       "Lcm%sa %s %s %.6gm\nLcm%sb %s %s %.6gm\n"
                       "Kcm%s Lcm%sa Lcm%sb %.6f\n",
@@ -288,18 +283,32 @@ inline std::string block_spice_subckt(const LineFilterDesign& d,
                       outN.c_str(), d.lCmSelectedH * 1e3, suf.c_str(),
                       suf.c_str(), suf.c_str(), k);
         o += b;
+        // X cap on the choke OUTPUT (ESR + full series inductance: own ESL + stubs)
+        std::snprintf(b, sizeof b,
+                      "Cx%s %s x%sa %.6gu\nLx%s x%sa x%sb %.4gn\n"
+                      "Rx%s x%sb %s %.4g\n",
+                      suf.c_str(), outL.c_str(), suf.c_str(),
+                      d.cXSelectedF * 1e6, suf.c_str(), suf.c_str(),
+                      suf.c_str(), capEslH * 1e9 + lp.xConnNh, suf.c_str(),
+                      suf.c_str(), outN.c_str(), capEsrOhm);
+        o += b;
+        // Y pair on the choke OUTPUT, both into the shared PE node (one pair/stage)
+        std::snprintf(b, sizeof b,
+                      "Cy%sL %s y%sLa %.6gn\nLy%sL y%sLa pe_i %.4gn\n"
+                      "Cy%sN %s y%sNa %.6gn\nLy%sN y%sNa pe_i %.4gn\n",
+                      suf.c_str(), outL.c_str(), suf.c_str(),
+                      d.cYPerLineF * 1e9, suf.c_str(), suf.c_str(),
+                      capEslH * 1e9 + lp.yConnNh,
+                      suf.c_str(), outN.c_str(), suf.c_str(),
+                      d.cYPerLineF * 1e9, suf.c_str(), suf.c_str(),
+                      capEslH * 1e9 + lp.yConnNh);
+        o += b;
         inL = outL;
         inN = outN;
     }
-    // Y pair at the load side; the shared PE spine is ONE inductor both
-    // branches traverse — that is the common-impedance point
-    std::snprintf(b, sizeof b,
-                  "Cy1 l_pre y1a %.6gn\nLy1 y1a pe_i %.4gn\n"
-                  "Cy2 N_OUT y2a %.6gn\nLy2 y2a pe_i %.4gn\n"
-                  "Lpe pe_i PE %.4gn\n",
-                  d.cYPerLineF * 1e9, capEslH * 1e9 + lp.yConnNh,
-                  d.cYPerLineF * 1e9, capEslH * 1e9 + lp.yConnNh,
-                  lp.peSpineNh);
+    // the shared PE return (the earth plane): ONE inductor every Y branch
+    // traverses — the common-impedance point
+    std::snprintf(b, sizeof b, "Lpe pe_i PE %.4gn\n", lp.peSpineNh);
     o += b;
     o += ".ends HERTZ_FILTER_BLOCK\n";
     return o;
@@ -321,11 +330,13 @@ inline std::string block_bom_csv(const LineFilterDesign& d) {
                   "CMC1..CMC%d,%d,%.3g mH CM choke,%.0fx%.0f mm,CM series\n",
                   d.stages, d.stages, d.lCmSelectedH * 1e3, cp.bodyW, cp.bodyH);
     o += b;
-    std::snprintf(b, sizeof b, "CY1..CY2,2,%.3g nF Y2,pitch %.1f mm,CM shunt\n",
-                  d.cYPerLineF * 1e9, yp.pitch);
+    // one Y PAIR per stage (matches the board and the N-section CM verdict)
+    std::snprintf(b, sizeof b, "CY1..CY%d,%d,%.3g nF Y2,pitch %.1f mm,CM shunt\n",
+                  2 * d.stages, 2 * d.stages, d.cYPerLineF * 1e9, yp.pitch);
     o += b;
-    o += "R1,1,X-cap discharge (size per max_discharge_resistance),axial 10mm,"
-         "safety\nJ1..J6,6,M3 ring lug,8x8 mm,terminals\n";
+    o += "R1,1,X-cap discharge (size per max_discharge_resistance; a series PAIR "
+         "is preferred for open-fault safety),axial 10mm,safety\n"
+         "J1..J6,6,M3 ring lug,8x8 mm,terminals\n";
     return o;
 }
 
