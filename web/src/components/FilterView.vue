@@ -43,6 +43,13 @@ const topology = ref('mains')   // 'mains' (1φ) | 'dc' (CISPR 25) | '3ph' (3-wi
 const nLines = computed(() => topologyLines(topology.value))
 const eslXnH = ref(20)          // X-cap ESL (#290) — film-box typical; override from datasheet
 const eslYnH = ref(10)          // per-Y-cap ESL; the parallel pair halves it
+// Shunt-cap ESR (mΩ). Without it a shunt branch is a PERFECT SHORT at its
+// self-resonance, so the ideal IL spikes unphysically there (the DM analogue of
+// the CM notch — CM is bounded by the choke EPC cap, DM had nothing). 20 mΩ =
+// 0.02 Ω matches the LAYOUT & BLOCK model, so the IL pane and the block pane read
+// the same curve. Override from the datasheet ESR.
+const esrXmOhm = ref(20)        // X-cap ESR (DM branch)
+const esrYmOhm = ref(20)        // Y-cap ESR (CM branch)
 const lineCurrentA = ref(0)     // operating current for saturation screening (0 = off)
 const gridVrms = ref(230)
 const gridHz = ref(50)
@@ -560,6 +567,10 @@ function buildParams(overrides = {}) {
     // bank in parallel, dividing its ESL by n
     eslCmH: (Number(eslYnH.value) / nLines.value) * 1e-9,
     eslDmH: Number(eslXnH.value) * 1e-9,
+    // ESR bounds each shunt branch at its self-resonance (mΩ -> Ω). The CM
+    // Y-bank is n in parallel, so its effective ESR divides by n, mirroring ESL.
+    esrCmOhm: (Number(esrYmOhm.value) / nLines.value) / 1e3,
+    esrDmOhm: Number(esrXmOhm.value) / 1e3,
     lCmCandidatesH: lCmSource.value === 'catalog'
       ? catalogCandidates() : parseList(lCandidatesMh.value, 1e-3),
     cXCandidatesF: cxSource.value === 'catalog'
@@ -652,31 +663,32 @@ async function runDesign(makeParams, { keepBindings }) {
       const CM_EPC_F = 3e-12
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
         stages: d.stages, referenceImpedanceOhm: cmRefZ, capEslH: params.eslCmH,
-        chokeEpcF: CM_EPC_F, ...span })
+        capEsrOhm: params.esrCmOhm, chokeEpcF: CM_EPC_F, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: cXEff,
-        stages: d.stages, referenceImpedanceOhm: 100, capEslH: params.eslDmH, ...span })
+        stages: d.stages, referenceImpedanceOhm: 100, capEslH: params.eslDmH,
+        capEsrOhm: params.esrDmOhm, ...span })
       // the chip is a hard pass/fail input: evaluate it AT f_design via a
       // micro-span, not at the nearest 30-per-decade grid point (<=1.35 dB off).
       // chokeEpcF defaults to 0 (DM); the CM call passes CM_EPC_F so the verdict
-      // matches the capped CM curve.
-      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz, eslH, chokeEpcF = 0) => {
+      // matches the capped CM curve. capEsrOhm bounds the shunt SRF for both.
+      const exactAt = (inductanceH, capacitanceF, refZ, fDesignHz, eslH, esrOhm, chokeEpcF = 0) => {
         const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: d.stages,
           referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
-          pointsPerDecade: 20000, capEslH: eslH, chokeEpcF })
+          pointsPerDecade: 20000, capEslH: eslH, capEsrOhm: esrOhm, chokeEpcF })
         const mid = Math.floor(il.frequenciesHz.length / 2)
         return { standard: il.standardDb[mid], worst: il.worstCaseDb[mid] }
       }
-      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, cmRefZ, d.fDesignCmHz, params.eslCmH, CM_EPC_F),
-                                dm: exactAt(d.lDmH, cXEff, 100, d.fDesignDmHz, params.eslDmH) } }
+      return { d, cm, dm, at: { cm: exactAt(d.lCmSelectedH, d.cYgF, cmRefZ, d.fDesignCmHz, params.eslCmH, params.esrCmOhm, CM_EPC_F),
+                                dm: exactAt(d.lDmH, cXEff, 100, d.fDesignDmHz, params.eslDmH, params.esrDmOhm) } }
     }
     // in-circuit IL at exactly f_design — the same criterion the verdict chip
     // scores, so the escalation target and the verdict can never disagree. The CM
     // call passes chokeEpcF (3 pF) so escalation stops at a part the CAPPED curve
     // actually meets, not one the ideal LC promises and the real choke can't.
-    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages, eslH, chokeEpcF = 0) => {
+    const ilAtDesign = (inductanceH, capacitanceF, refZ, fDesignHz, nStages, eslH, esrOhm, chokeEpcF = 0) => {
       const il = engine.insertionLossCurves({ inductanceH, capacitanceF, stages: nStages,
         referenceImpedanceOhm: refZ, fMinHz: fDesignHz * 0.9995, fMaxHz: fDesignHz * 1.0005,
-        pointsPerDecade: 20000, capEslH: eslH, chokeEpcF })
+        pointsPerDecade: 20000, capEslH: eslH, capEsrOhm: esrOhm, chokeEpcF })
       return il.standardDb[Math.floor(il.frequenciesHz.length / 2)]
     }
     let attempt = evaluate(params)
@@ -694,7 +706,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.lCmCandidatesH.filter((v) => v > attempt.d.lCmSelectedH).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(v, attempt.d.cYgF, 50 / (attempt.d.nLines ?? 2), attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH, 3e-12) >= Number(params.aReqCmDb))
+            ilAtDesign(v, attempt.d.cYgF, 50 / (attempt.d.nLines ?? 2), attempt.d.fDesignCmHz, attempt.d.stages, params.eslCmH, params.esrCmOhm, 3e-12) >= Number(params.aReqCmDb))
           next.lCmCandidatesH = pass !== undefined
             ? params.lCmCandidatesH.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -704,7 +716,7 @@ async function runDesign(makeParams, { keepBindings }) {
         const larger = params.cXCandidatesF.filter((v) => v > attempt.d.cXSelectedF).sort((a, b) => a - b)
         if (larger.length) {
           const pass = larger.find((v) =>
-            ilAtDesign(attempt.d.lDmH, v * (attempt.d.cXDmFactor ?? 1), 100, attempt.d.fDesignDmHz, attempt.d.stages, params.eslDmH) >= Number(params.aReqDmDb))
+            ilAtDesign(attempt.d.lDmH, v * (attempt.d.cXDmFactor ?? 1), 100, attempt.d.fDesignDmHz, attempt.d.stages, params.eslDmH, params.esrDmOhm) >= Number(params.aReqDmDb))
           next.cXCandidatesF = pass !== undefined
             ? params.cXCandidatesF.filter((v) => v >= pass) : [larger[larger.length - 1]]
           changed = true
@@ -1307,6 +1319,10 @@ function downloadNetlist() {
           <input v-model.number="eslXnH" type="number" min="0" data-test="esl-x" /></label>
         <label class="field"><span title="Per-Y-capacitor series inductance; the parallel pair halves it in the CM path. Disc/film Y2 typically 5–15 nH.">Y-cap ESL (nH) ⓘ</span>
           <input v-model.number="eslYnH" type="number" min="0" data-test="esl-y" /></label>
+        <label class="field"><span title="X-capacitor ESR (mΩ). At the cap's self-resonance the shunt branch is otherwise a perfect short, spiking the ideal DM IL unphysically; ESR bounds that peak. 20 mΩ matches the LAYOUT & BLOCK model, so the IL pane and block pane agree. Film X2 typically 5–30 mΩ; take it from the datasheet.">X-cap ESR (mΩ) ⓘ</span>
+          <input v-model.number="esrXmOhm" type="number" min="0" data-test="esr-x" /></label>
+        <label class="field"><span title="Per-Y-capacitor ESR (mΩ); the parallel pair divides it in the CM path. The choke EPC cap already bounds the CM curve, so this mainly tames the Y-branch self-resonance. Disc/film Y2 typically 10–40 mΩ.">Y-cap ESR (mΩ) ⓘ</span>
+          <input v-model.number="esrYmOhm" type="number" min="0" data-test="esr-y" /></label>
       </div>
       <button class="ghost cont" data-test="cont-comp" @click="openSection = 'grid'">CONTINUE ▸ GRID &amp; SAFETY</button>
       </div>
@@ -1582,8 +1598,10 @@ function downloadNetlist() {
                   the choke's 3 pF inter-winding capacitance (EPC) — the same ceiling the CM verdict chip and
                   the choke escalation now use, so all three agree. For an aggressive CM target (≥~55 dB) that
                   ceiling can bite right at f<sub>design</sub>, not only above a few MHz; a real single-stage
-                  filter plateaus around 50–70 dB. Bind a part with a measured curve (dotted) for the part's
-                  own honest EPC, in place of the 3 pF assumption.</p>
+                  filter plateaus around 50–70 dB. The solid DM curve is bounded at the X-cap self-resonance
+                  by its ESR (20 mΩ default, same as the LAYOUT &amp; BLOCK model) instead of spiking to a
+                  short — set the real ESR/EPC under Advanced, or bind a part with a measured curve (dotted)
+                  for the part's own honest parasitics in place of these assumptions.</p>
                 <p v-if="measured" class="note" data-test="measured-note">
                   Dotted: predicted with the <strong>measured impedance curve</strong> of {{ measured.mpn }}
                   (manufacturer data via the TAS catalog) — shown only over the measured span.

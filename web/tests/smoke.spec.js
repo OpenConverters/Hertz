@@ -71,6 +71,63 @@ test('spectrum: a scan failing UP HIGH seeds the switching RATE, not the design 
   expect(consoleErrors).toEqual([])
 })
 
+test('filter: the DM insertion-loss curve is ESR-bounded at the X-cap self-resonance '
+     + '(round-8 adversary — no unphysical spike, agrees with the block)', async ({ page }) => {
+  // Regression: the main-flow DM curve modelled the X-cap with zero ESR, so at its
+  // self-resonance the shunt branch was a perfect short and the ideal DM IL spiked
+  // ~97 dB (grid-dependent), where the LAYOUT & BLOCK curve (ESR 0.02) shows ~72.
+  // The X-cap ESR knob (default 20 mΩ, matching the block) must bound that peak.
+  await page.goto('/')
+  await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
+  await page.getByTestId('scan-example').selectOption('demo')
+  await expect(page.getByTestId('verdict')).toHaveText('FAIL')
+  await page.getByTestId('design-fix').click()
+  await page.getByTestId('sec-grid').click()
+  await page.getByTestId('compute').click()
+  await page.getByTestId('il-chart').waitFor()
+
+  // the ESR knob exists and defaults to the block's 20 mΩ (components section
+  // auto-collapses after a design, so reopen it to reach Advanced)
+  await page.getByTestId('sec-comp').click()
+  await page.getByTestId('toggle-advanced').click()
+  await expect(page.getByTestId('esr-x')).toHaveValue('20')
+
+  // read the DM solid in-circuit curve's PEAK dB straight off the SVG: pair the
+  // numeric y-axis tick labels (pixel<->dB) and invert the DM path's topmost point
+  const dmPeakDb = () => page.evaluate(() => {
+    const svg = document.querySelector('[data-test=il-chart] svg')
+    const ticks = [...svg.querySelectorAll('text[text-anchor=end]')]
+      .map((t) => ({ db: parseFloat(t.textContent), px: parseFloat(t.getAttribute('y')) - 4 }))
+      .filter((t) => Number.isFinite(t.db) && Number.isFinite(t.px))
+    if (ticks.length < 2) throw new Error('no y-axis ticks to calibrate')
+    const lo = ticks.reduce((a, b) => (a.px > b.px ? a : b))   // bottom pixel = min dB
+    const hi = ticks.reduce((a, b) => (a.px < b.px ? a : b))   // top pixel = max dB
+    const dbAt = (px) => lo.db + (px - lo.px) * (hi.db - lo.db) / (hi.px - lo.px)
+    const dm = [...svg.querySelectorAll('path')].find((p) =>   // solid DM: var(--s-2), no dash
+      p.getAttribute('stroke') === 'var(--s-2)' && p.getAttribute('stroke-dasharray') === 'none')
+    if (!dm) throw new Error('DM in-circuit path not found')
+    const ys = [...dm.getAttribute('d').matchAll(/[ML]\s*[\d.]+\s+([\d.]+)/g)].map((m) => parseFloat(m[1]))
+    return dbAt(Math.min(...ys))                               // topmost pixel = peak dB
+  })
+
+  const boundedPeak = await dmPeakDb()                          // ESR = 20 mΩ (default)
+  // drop the X-cap ESR to 0 and recompute: the shunt branch becomes a perfect
+  // short at its self-resonance and the DM peak jumps. This DIRECTLY guards that
+  // capEsrOhm is wired into the DM curve — remove it and both reads match.
+  await page.getByTestId('esr-x').fill('0')
+  await page.getByTestId('sec-grid').click()          // DESIGN FILTER lives in the grid section
+  await page.getByTestId('compute').click()
+  await page.getByTestId('il-chart').waitFor()
+  const zeroEsrPeak = await dmPeakDb()
+
+  // eslint-disable-next-line no-console
+  console.log('DM peak — ESR 20mΩ:', boundedPeak.toFixed(1), 'dB · ESR 0:', zeroEsrPeak.toFixed(1), 'dB')
+  // ESR meaningfully bounds the SRF spike: removing it raises the peak (wiring proof)
+  expect(zeroEsrPeak).toBeGreaterThan(boundedPeak + 3)
+  // ...and the default (bounded) peak is physically sane for a single stage
+  expect(boundedPeak).toBeLessThan(85)
+})
+
 test('filter: ANP015 worked example reproduces 3.3 mH', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
