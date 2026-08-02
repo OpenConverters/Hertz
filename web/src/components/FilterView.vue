@@ -305,6 +305,9 @@ function saturationWarn(p) {
 }
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
+// expert knobs (cap ESLs, Middlebrook inputs) hide behind this by default so the
+// common path is Topology -> f_sw -> stages -> CM/DM dB -> DESIGN
+const showAdvanced = ref(false)
 const pIn = ref(25)
 const interaction = ref(null)
 const lCmSource = ref('catalog')     // real parts by default; 'manual' opts out
@@ -1246,7 +1249,9 @@ function downloadNetlist() {
       <label v-else class="field"><span>Manufacturer</span>
         <select v-model="cxMfr" data-test="cx-mfr"><option value="">all manufacturers</option>
           <option v-for="m in cxManufacturers()" :key="m" :value="m">{{ m }}</option></select></label>
-      <div class="row">
+      <button type="button" class="adv-toggle" data-test="toggle-advanced"
+              @click="showAdvanced = !showAdvanced">{{ showAdvanced ? '▾' : '▸' }} Advanced (parasitics)</button>
+      <div v-show="showAdvanced" class="row" data-test="advanced-esl">
         <label class="field"><span title="Series inductance of the X capacitor (leads + body). Above the cap's self-resonance 1/(2π√(ESL·C)) the branch turns inductive and the real filter stops improving — film-box X2 typically 15–30 nH; take it from the datasheet.">X-cap ESL (nH) ⓘ</span>
           <input v-model.number="eslXnH" type="number" min="0" data-test="esl-x" /></label>
         <label class="field"><span title="Per-Y-capacitor series inductance; the parallel pair halves it in the CM path. Disc/film Y2 typically 5–15 nH.">Y-cap ESL (nH) ⓘ</span>
@@ -1278,14 +1283,18 @@ function downloadNetlist() {
       <p v-if="topology === 'dc'" class="note">DC/chassis topology: no touch-current budget and no
         discharge bleeder — C_Y is chosen by chassis-leakage and resonance practice, and the SPICE
         deck embeds the 5 µH CISPR 25 network.</p>
-      <div class="row">
-        <label class="field"><span>Converter V<sub>in</sub> min (V)</span>
-          <input v-model.number="vInMin" type="number" @input="vInMinDirty = true" @change="compute" /></label>
-        <label class="field"><span>Input power (W)</span>
-          <input v-model.number="pIn" type="number" @change="compute" /></label>
+      <button type="button" class="adv-toggle" data-test="toggle-advanced-mb"
+              @click="showAdvanced = !showAdvanced">{{ showAdvanced ? '▾' : '▸' }} Advanced (converter stability)</button>
+      <div v-show="showAdvanced" data-test="advanced-mb">
+        <div class="row">
+          <label class="field"><span>Converter V<sub>in</sub> min (V)</span>
+            <input v-model.number="vInMin" type="number" @input="vInMinDirty = true" @change="compute" /></label>
+          <label class="field"><span>Input power (W)</span>
+            <input v-model.number="pIn" type="number" @change="compute" /></label>
+        </div>
+        <p class="note">V<sub>in</sub>/P feed the Middlebrook stability check (a converter-stability
+          concern, not an EMI limit); the touch tier bounds C_Y and scores the touch verdict.</p>
       </div>
-      <p class="note">V<sub>in</sub>/P feed the Middlebrook stability check; the tier bounds C_Y
-        and scores the touch-current verdict.</p>
       <button class="act cont" data-test="compute" @click="compute">DESIGN FILTER</button>
       </div>
 

@@ -148,6 +148,12 @@ button.ghost {
   border-radius: 4px; padding: 0.45rem 1rem; cursor: pointer;
 }
 button.ghost:hover { border-color: var(--phos); }
+.adv-toggle {
+  display: block; margin: 0.5rem 0 0.2rem; padding: 0.15rem 0;
+  background: none; border: none; cursor: pointer;
+  color: var(--ink-dim); font-size: 0.8rem; letter-spacing: 0.05em; text-align: left;
+}
+.adv-toggle:hover { color: var(--phos); }
 
 /* ── drop zone ─────────────────────────────────────────────────────────── */
 .drop {
