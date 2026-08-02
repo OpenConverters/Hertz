@@ -1,19 +1,18 @@
 <script setup>
-// ANP015 line-filter designer, laid out as a Kirchhoff-style workbench: a
-// compact input rail on the left (requirement → components → grid & safety),
-// a verdict strip plus TWO independently switchable output panes on the right
-// (schematic, catalog parts, BOM, insertion loss, sizing tables, netlist).
-// The whole bench fits the viewport — panes scroll inside themselves.
+// ANP015 line-filter designer, a Kirchhoff-style workbench. LEFT column: the input
+// rail (requirement → components → grid & safety) that AUTO-COLLAPSES once a filter
+// is designed, with the verdict strip + PRINT REPORT below it. RIGHT column: two
+// ROLE-FIXED output panes as tab strips — DESIGN (schematic / catalog parts / BOM)
+// and VERIFY (insertion loss / predicted / netlist / layout & block / sizing) — so
+// the results get the full width. Panes scroll inside themselves.
 import { computed, onMounted, ref, watch } from 'vue'
-// The receiver and CM-current screens were folded in here as INPUTS, as two more
-// entries in the pane switcher. As standalone destinations they were screens you
-// visited to admire a number; what earns their keep is turning a scope capture /
-// current probe into a filter requirement, which only makes sense next to the
-// designer. They go in PANES, not above the bench: .fbench is a horizontal flex
-// row (rail | workspace) inside a viewport-tall, no-page-scroll layout, so an
-// extra child there becomes a third COLUMN and squeezes the workspace until the
-// panes overlap — panes also give them the v-if laziness a closed <details>
-// does not (a collapsed <details> still mounts and runs its component).
+// The scope-capture (receiver) and CM-current (radiated) screens are INPUT on-ramps,
+// NOT standalone destinations and NOT output panes: each only turns a measurement
+// into a filter requirement, which only makes sense next to the designer. They are
+// opened from a "Measure it →" affordance in the REQUIREMENT section (LISN, the
+// test-setup reference, alongside) and shown in the right pane as an input to the
+// design. Panes give them v-if laziness a closed <details> does not (a collapsed
+// <details> still mounts and runs its component).
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
 import ReceiverPanel from './ReceiverView.vue'
@@ -65,8 +64,8 @@ const scanCtx = ref(null)       // the measured scan carried by the hand-off (#2
 
 // ── output panes: two ROLE-FIXED panes, each a short tab strip (not a free
 // 11-way select on both). Left = DESIGN (what the filter IS), right = VERIFY
-// (does it work). The MEASURE tools and the LISN reference are top-nav
-// destinations now, not options buried here.
+// (does it work). The MEASURE on-ramps are opened from the REQUIREMENT section
+// (below) and shown in the right pane as inputs — they are NOT output-pane tabs.
 const DESIGN_PANES = [
   ['schematic', 'SCHEMATIC'],
   ['parts', 'CATALOG PARTS'],
@@ -321,9 +320,11 @@ function saturationWarn(p) {
 }
 const vInMin = ref(207)
 const vInMinDirty = ref(false)
-// expert knobs (cap ESLs, Middlebrook inputs) hide behind this by default so the
-// common path is Topology -> f_sw -> stages -> CM/DM dB -> DESIGN
-const showAdvanced = ref(false)
+// expert knobs hide behind these by default so the common path is
+// Topology -> f_sw -> stages -> CM/DM dB -> DESIGN. Independent per section so
+// opening the parasitics disclosure does not also open the stability one.
+const showAdvanced = ref(false)     // cap ESLs (COMPONENTS)
+const showAdvancedMb = ref(false)   // Middlebrook Vin/Pin (GRID & SAFETY)
 const pIn = ref(25)
 const interaction = ref(null)
 const lCmSource = ref('catalog')     // real parts by default; 'manual' opts out
@@ -634,8 +635,14 @@ async function runDesign(makeParams, { keepBindings }) {
       // the EFFECTIVE X capacitance (delta: 1.5·C per line pair).
       const cmRefZ = 50 / (d.nLines ?? 2)
       const cXEff = d.cXSelectedF * (d.cXDmFactor ?? 1)
+      // chokeEpcF (3 pF, matches the C++ CM_CHOKE_EPC_F): the CM curve is capped by
+      // the choke's inter-winding capacitance so it plateaus realistically instead of
+      // spiking to the ideal LC notch's unphysical hundreds of dB — the same ceiling
+      // the LAYOUT & BLOCK chart uses. (At f_design, below the ceiling, this changes
+      // nothing, so the verdict stays honest; it only tames the notch on the curve.)
       const cm = engine.insertionLossCurves({ inductanceH: d.lCmSelectedH, capacitanceF: d.cYgF,
-        stages: d.stages, referenceImpedanceOhm: cmRefZ, capEslH: params.eslCmH, ...span })
+        stages: d.stages, referenceImpedanceOhm: cmRefZ, capEslH: params.eslCmH,
+        chokeEpcF: 3e-12, ...span })
       const dm = engine.insertionLossCurves({ inductanceH: d.lDmH, capacitanceF: cXEff,
         stages: d.stages, referenceImpedanceOhm: 100, capEslH: params.eslDmH, ...span })
       // the chip is a hard pass/fail input: evaluate it AT f_design via a
@@ -1312,8 +1319,8 @@ function downloadNetlist() {
         discharge bleeder — C_Y is chosen by chassis-leakage and resonance practice, and the SPICE
         deck embeds the 5 µH CISPR 25 network.</p>
       <button type="button" class="adv-toggle" data-test="toggle-advanced-mb"
-              @click="showAdvanced = !showAdvanced">{{ showAdvanced ? '▾' : '▸' }} Advanced (converter stability)</button>
-      <div v-show="showAdvanced" data-test="advanced-mb">
+              @click="showAdvancedMb = !showAdvancedMb">{{ showAdvancedMb ? '▾' : '▸' }} Advanced (converter stability)</button>
+      <div v-show="showAdvancedMb" data-test="advanced-mb">
         <div class="row">
           <label class="field"><span>Converter V<sub>in</sub> min (V)</span>
             <input v-model.number="vInMin" type="number" @input="vInMinDirty = true" @change="compute" /></label>

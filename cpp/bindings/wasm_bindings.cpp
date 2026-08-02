@@ -403,7 +403,8 @@ std::string insertion_loss_curves_js(const std::string& paramsJson) {
             params.at("stages").get<int>(), params.at("referenceImpedanceOhm").get<double>(),
             params.at("fMinHz").get<double>(), params.at("fMaxHz").get<double>(),
             params.value("pointsPerDecade", 40),
-            params.value("capEslH", 0.0), params.value("capEsrOhm", 0.0));
+            params.value("capEslH", 0.0), params.value("capEsrOhm", 0.0),
+            params.value("chokeEpcF", 0.0));
         return json{{"frequenciesHz", curves.frequenciesHz},
                     {"standardDb", curves.standardDb},
                     {"worstCaseDb", curves.worstCaseDb}}.dump();

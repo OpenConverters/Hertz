@@ -84,11 +84,17 @@ struct InsertionLossCurves {
 
 // referenceImpedanceOhm: 25 Ω for the CM path (two 50 Ω LISN arms in parallel),
 // 100 Ω for the DM path (the two arms in series), 50 Ω for data-sheet style.
+// chokeEpcF > 0 bounds the CM curve by the choke's inter-winding (EPC) capacitance:
+// above self-resonance that parasitic shunts the CM inductance, so real CM IL
+// plateaus instead of reaching the ideal LC notch's unphysical hundreds of dB. Pass
+// it for a CM curve; leave 0 for DM. Kept consistent with FilterBlock's block CM
+// ceiling (LayoutParasitics::cm_layout_il_db, same 3 pF nominal).
 inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capacitanceF,
                                                  int stages, double referenceImpedanceOhm,
                                                  double fMinHz, double fMaxHz,
                                                  int pointsPerDecade = 40,
-                                                 double capEslH = 0.0, double capEsrOhm = 0.0) {
+                                                 double capEslH = 0.0, double capEsrOhm = 0.0,
+                                                 double chokeEpcF = 0.0) {
     if (!(0.0 < fMinHz && fMinHz < fMaxHz) || pointsPerDecade < 2) {
         throw std::invalid_argument("bad frequency range");
     }
@@ -108,8 +114,18 @@ inline InsertionLossCurves insertion_loss_curves(double inductanceH, double capa
         double f = std::pow(10.0, logMin + (logMax - logMin) * i / steps);
         Abcd network = lc_filter_abcd(f, inductanceH, capacitanceF, stages, capEslH, capEsrOhm);
         curves.frequenciesHz.push_back(f);
-        curves.standardDb.push_back(insertion_loss_db(network, reference, reference));
-        curves.worstCaseDb.push_back(insertion_loss_worst_case_db(network));
+        double std_ = insertion_loss_db(network, reference, reference);
+        double worst_ = insertion_loss_worst_case_db(network);
+        if (chokeEpcF > 0.0) {
+            // cap by the EPC bypass: |T| = |T_filter| + |T_epc|, T_epc = w·Cw·zSys
+            constexpr double TWO_PI = 6.283185307179586;
+            const double zSys = 2.0 * referenceImpedanceOhm;
+            const double tEpc = TWO_PI * f * chokeEpcF * zSys;
+            std_ = -20.0 * std::log10(std::pow(10.0, -std_ / 20.0) + tEpc);
+            worst_ = -20.0 * std::log10(std::pow(10.0, -worst_ / 20.0) + tEpc);
+        }
+        curves.standardDb.push_back(std_);
+        curves.worstCaseDb.push_back(worst_);
     }
     return curves;
 }

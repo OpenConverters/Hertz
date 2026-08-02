@@ -150,9 +150,11 @@ inline double layout_aware_il_db(double fHz, const Abcd& network, double mNh,
 // Nominal CM-choke inter-winding (parasitic) capacitance. A real common-mode
 // choke's windings couple through a few pF, and THAT — not the board layout — is
 // what caps CM attenuation: above the choke's self-resonance the winding EPC
-// shunts the CM inductance, so CM IL plateaus (real 1-2 stage CM chokes flatten
-// around 50-70 dB). 3 pF is a typical single-section value; it is an ASSUMPTION,
-// not a per-part number, and is stated as such in the UI.
+// shunts the CM inductance, so CM IL follows a DECLINING ceiling instead of the
+// ideal notch (with 3 pF, ~71 dB at 150 kHz falling to ~25 dB at 30 MHz — a real
+// 1-2 stage CM path tops out in this band, not the hundreds of dB the ideal LC
+// shows). 3 pF is a typical single-section value; it is an ASSUMPTION, not a
+// per-part number, and is stated as such in the UI.
 inline constexpr double CM_CHOKE_EPC_F = 3e-12;
 
 // CM insertion loss floored by BOTH the rail-run layout mutual (mNh, inductive,
