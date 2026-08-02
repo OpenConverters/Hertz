@@ -2,6 +2,9 @@
 import { onMounted, ref } from 'vue'
 import SpectrumView from './components/SpectrumView.vue'
 import FilterView from './components/FilterView.vue'
+import ReceiverView from './components/ReceiverView.vue'
+import RadiatedView from './components/RadiatedView.vue'
+import LisnView from './components/LisnView.vue'
 import { api, loadEngine } from './engine.js'
 import { store } from './store.js'
 
@@ -69,16 +72,15 @@ onMounted(async () => {
   await readHandoffFragment()
 })
 
-// The nav IS the workflow: measure (analyzer scan or scope capture), then
-// design. The LISN lives inside the Filter bench — it is the filter's test
-// setup, not a separate destination.
-// RECEIVER and RADIATED (EST.) were removed as standalone destinations: as
-// independent screens they answered questions nobody arrives with. Both survive
-// as MEASURE panes in the Filter bench, where a scope capture / current probe
-// becomes a filter requirement — an input to the design, not a screen of its own
-// (that is also where the cable-mitigation ferrite picker now lives).
+// The nav IS the workflow: MEASURE (analyzer scan, scope capture, or CM current
+// probe) → DESIGN (filter). The MEASURE tools are first-class destinations, not
+// options buried in the designer's pane dropdown — each produces a requirement
+// that hands off to the filter bench. LISN is the test-setup reference, in MEASURE.
 const measureModes = [
   { id: 'spectrum', label: 'SPECTRUM' },
+  { id: 'scope', label: 'SCOPE CAPTURE' },
+  { id: 'probe', label: 'CM PROBE' },
+  { id: 'lisn', label: 'TEST SETUP (LISN)' },
 ]
 </script>
 
@@ -105,6 +107,9 @@ const measureModes = [
     <p v-if="handoffError" class="footnote" style="color: var(--fault, #ff8a8a)"
        data-test="handoff-error">{{ handoffError }}</p>
     <SpectrumView v-if="store.mode === 'spectrum'" />
+    <ReceiverView v-else-if="store.mode === 'scope'" />
+    <RadiatedView v-else-if="store.mode === 'probe'" />
+    <LisnView v-else-if="store.mode === 'lisn'" />
     <FilterView v-else />
 
     <p class="footnote">

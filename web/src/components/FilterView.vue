@@ -14,11 +14,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 // extra child there becomes a third COLUMN and squeezes the workspace until the
 // panes overlap — panes also give them the v-if laziness a closed <details>
 // does not (a collapsed <details> still mounts and runs its component).
-import ReceiverPanel from './ReceiverView.vue'
-import RadiatedPanel from './RadiatedView.vue'
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
-import LisnView from './LisnView.vue'
 import { api } from '../engine.js'
 import { buildFilterCias, filterComponents, topologyLines } from '../ciasFilter.js'
 import { trackEvent } from '../telemetry.js'
@@ -63,20 +60,24 @@ const fCritCmHz = ref(null)     // per-mode critical design frequency from the b
 const fCritDmHz = ref(null)
 const scanCtx = ref(null)       // the measured scan carried by the hand-off (#289/#291)
 
-// ── output panes (Kirchhoff pattern: two, independently switchable) ──────────
-const PANE_VIEWS = [
+// ── output panes: two ROLE-FIXED panes, each a short tab strip (not a free
+// 11-way select on both). Left = DESIGN (what the filter IS), right = VERIFY
+// (does it work). The MEASURE tools and the LISN reference are top-nav
+// destinations now, not options buried here.
+const DESIGN_PANES = [
   ['schematic', 'SCHEMATIC'],
   ['parts', 'CATALOG PARTS'],
   ['bom', 'BOM & EXPORT'],
-  ['il', 'INSERTION LOSS'],
-  ['values', 'SIZING & SAFETY'],
-  ['netlist', 'SPICE NETLIST'],
-  ['result', 'PREDICTED RESULT'],
-  ['layout', 'LAYOUT & BLOCK'],
-  ['lisn', 'TEST SETUP (LISN)'],
-  ['measure-scope', 'MEASURE · SCOPE CAPTURE'],
-  ['measure-probe', 'MEASURE · CM PROBE'],
 ]
+const VERIFY_PANES = [
+  ['il', 'INSERTION LOSS'],
+  ['result', 'PREDICTED RESULT'],
+  ['netlist', 'SPICE NETLIST'],
+  ['layout', 'LAYOUT & BLOCK'],
+  ['values', 'SIZING & SAFETY'],
+]
+const PANE_VIEWS = [...DESIGN_PANES, ...VERIFY_PANES]   // combined label lookup
+const paneRole = (which) => (which === 'a' ? DESIGN_PANES : VERIFY_PANES)
 const paneA = ref('schematic')
 const paneB = ref('il')
 const openSection = ref('req')   // KH-style accordion: one input stage open at a time
@@ -1357,8 +1358,15 @@ function downloadNetlist() {
 
       <div class="fpane-grid">
         <section v-for="(pane, idx) in [paneA, paneB]" :key="idx" class="fpane panel">
-          <div class="pane-head">
-            <select class="pane-select" :data-test="'pane-select-' + (idx ? 'b' : 'a')" :value="pane"
+          <div class="pane-head pane-tabs">
+            <span class="pane-role">{{ idx ? 'VERIFY' : 'DESIGN' }}</span>
+            <button v-for="[id, label] in paneRole(idx ? 'b' : 'a')" :key="id" type="button"
+                    class="pane-tab" :class="{ active: pane === id }"
+                    :data-test="'pane-tab-' + (idx ? 'b' : 'a') + '-' + id"
+                    @click="onPaneChange(idx ? 'b' : 'a', id)">{{ label }}</button>
+            <!-- hidden select keeps the pane switchable for automation; onPaneChange
+                 de-duplicates so the same view never occupies both panes -->
+            <select class="pane-select-hidden" :data-test="'pane-select-' + (idx ? 'b' : 'a')" :value="pane"
                     @change="onPaneChange(idx ? 'b' : 'a', $event.target.value)">
               <option v-for="[id, label] in PANE_VIEWS" :key="id" :value="id">{{ label }}</option>
             </select>
@@ -1739,21 +1747,8 @@ function downloadNetlist() {
                 </template>
               </div>
             </template>
-
-            <template v-else-if="pane === 'lisn'">
-              <LisnView />
-            </template>
-
-            <!-- measurement on-ramps: a scope capture / current probe turned into
-                 a filter requirement, in a pane next to the designer they feed.
-                 v-else-if keeps them unmounted until selected — neither does any
-                 work (catalog fetches, engine calls) while another pane is up. -->
-            <template v-else-if="pane === 'measure-scope'">
-              <ReceiverPanel />
-            </template>
-            <template v-else-if="pane === 'measure-probe'">
-              <RadiatedPanel />
-            </template>
+            <!-- LISN and the MEASURE tools (scope capture, CM probe) are top-nav
+                 destinations now, not panes here. -->
           </div>
         </section>
       </div>
