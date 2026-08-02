@@ -199,6 +199,7 @@ function blockIlSeries() {
     { label: 'DM bypass floor', color: '#ff7a6e', dash: '2 3', points: zip(c.dmFloorDb) },
     { label: 'CM with layout', color: '#58c79a', points: zip(c.cmDb) },
     { label: 'CM components only', color: '#58c79a', dash: '5 4', points: zip(c.cmIdealDb) },
+    ...(c.cmFloorDb ? [{ label: 'CM bypass floor', color: '#ffb36e', dash: '2 3', points: zip(c.cmFloorDb) }] : []),
   ]
 }
 

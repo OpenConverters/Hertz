@@ -2,12 +2,14 @@
 // LayoutGen — the filter's PCB, generated (filter-block plan S1, ABT #442).
 //
 // A line filter is not a general layout problem: it is a canonical chain —
-// terminals → X (+ discharge R) → CM choke → [X → choke] → Y pair →
-// terminals, with a protective-earth spine — so this is a parametric
-// TEMPLATE, not an auto-router. Hertz emits both the footprints and the
-// netlist, so pin consistency holds by construction; the physical package of
-// the actually-ordered part must still be reviewed before fabrication, and
-// the board carries that warning on silk.
+// terminals → discharge R → per stage [CM choke → X → Y pair] → terminals, with
+// a protective-earth spine over a solid earth pour — so this is a parametric
+// TEMPLATE, not an auto-router. The per-stage X/Y sit on the choke OUTPUT, the
+// same topology the schematic, CIAS brick, SPICE deck and CM/DM IL verdict use,
+// so the board IS the filter that was verified. Hertz emits both the footprints
+// and the netlist, so pin consistency holds by construction; the physical
+// package of the actually-ordered part must still be reviewed before
+// fabrication, and the board carries that warning on silk.
 //
 // Layout scheme (single-phase / DC pair, the nLines == 2 template):
 //
@@ -25,7 +27,7 @@
 //
 // Electrical sizing is built in, not decorative:
 //   * trace widths from the rated current (IPC-2221 external-layer
-//     approximation, 35 um Cu, 30 K rise);
+//     approximation, 35 um Cu, conservative 20 K rise);
 //   * L–N and line–PE spacing floors shaped by IEC 60664-1 for 250 VAC,
 //     pollution degree 2 (conservative defaults, overridable) — these are
 //     engineering floors, NEVER a compliance claim;
@@ -476,6 +478,19 @@ inline GeneratedBoard generate_filter_board(
              detail::fmt(-pt.bodyH / 2.0 - 1.0) + ") (layer \"F.SilkS\"))\n";
         o += "    (fp_text value \"" + pt.value + "\" (at 0 " +
              detail::fmt(pt.bodyH / 2.0 + 1.0) + ") (layer \"F.Fab\"))\n";
+        // CM-choke PHASING DOT on silk at pin 1: winding sense is the difference
+        // between a common-mode choke and a differential one that saturates. Pin
+        // numbers alone are not visible on the bench; mark the dot next to pin 1.
+        if (pt.ref.rfind("CMC", 0) == 0 && !pt.pads.empty()) {
+            const auto& p1 = pt.pads.front();
+            const double dx = p1.x - pt.cx, dy = p1.y - pt.cy;
+            const double off = p1.pad / 2.0 + 0.6;
+            o += "    (fp_circle (center " + detail::fmt(dx - off) + " " + detail::fmt(dy) +
+                 ") (end " + detail::fmt(dx - off + 0.35) + " " + detail::fmt(dy) +
+                 ") (layer \"F.SilkS\") (width 0.4) (fill solid))\n";
+            o += "    (fp_text user \"pin1\" (at " + detail::fmt(dx - off) + " " +
+                 detail::fmt(dy - 1.0) + ") (layer \"F.SilkS\") (effects (font (size 0.6 0.6) (thickness 0.1))))\n";
+        }
         for (const auto& pd : pt.pads) {
             o += "    (pad \"" + pd.pin + "\" thru_hole circle (at " +
                  detail::fmt(pd.x - pt.cx) + " " + detail::fmt(pd.y - pt.cy) +

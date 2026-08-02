@@ -24,7 +24,7 @@ struct BlockCurves {
     std::vector<double> fHz;
     std::vector<double> dmDb, dmIdealDb;   // with layout / components-only
     std::vector<double> cmDb, cmIdealDb;
-    std::vector<double> dmFloorDb;         // the bypass floor
+    std::vector<double> dmFloorDb, cmFloorDb;   // the bypass floors (DM, CM)
 };
 
 inline BlockCurves block_curves(const LineFilterDesign& d,
@@ -55,8 +55,11 @@ inline BlockCurves block_curves(const LineFilterDesign& d,
         c.dmIdealDb.push_back(insertion_loss_db(dmIdeal, z50, z50));
         c.dmDb.push_back(layout_aware_il_db(f, dm, lp.mDmNh, z50, z50));
         c.cmIdealDb.push_back(insertion_loss_db(cmIdeal, z50, z50));
-        c.cmDb.push_back(insertion_loss_db(cm, z50, z50));
+        // CM gets the layout bypass floor too (was plain insertion_loss_db, which
+        // read an unphysical ~140 dB at the LC notch); the rail-run mutual bounds it.
+        c.cmDb.push_back(layout_aware_il_db(f, cm, lp.mDmNh, z50, z50));
         c.dmFloorDb.push_back(bypass_floor_il_db(f, lp.mDmNh));
+        c.cmFloorDb.push_back(bypass_floor_il_db(f, lp.mDmNh));
     }
     return c;
 }
@@ -140,7 +143,13 @@ inline FilterBlock optimize_filter_block(
                 capEslH + (lp.yConnNh + lp.peSpineNh) * 1e-9, capEsrOhm);
             const double attDm = layout_aware_il_db(d.fDesignDmHz, dm,
                                                     lp.mDmNh, z50, z50);
-            const double attCm = insertion_loss_db(cm, z50, z50);
+            // CM gets a layout bypass floor too — without one the ideal LC notch
+            // reads an unphysical ~140 dB. The same rail-run mutual couples input to
+            // output around the choke for CM (the traces are the same copper); it
+            // caps the achievable CM IL, so the verdict is bounded like DM. (The
+            // choke's own inter-winding EPC is a further, separate bound.)
+            const double attCm = layout_aware_il_db(d.fDesignCmHz, cm,
+                                                    lp.mDmNh, z50, z50);
             Abcd dmIdeal = lc_filter_abcd(d.fDesignDmHz, d.lDmH, cxEff,
                                           stages, capEslH, capEsrOhm);
             Abcd cmIdeal = lc_filter_abcd(d.fDesignCmHz, d.lCmSelectedH,
