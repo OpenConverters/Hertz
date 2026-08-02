@@ -33,6 +33,8 @@ test('the block iterates to a meeting layout and offers every format', async ({ 
   await expect(par).toContainText('bypass mutual')
   await expect(par).toContainText('PE spine')
   await expect(page.getByTestId('block-il-chart')).toBeVisible()
+  // the block IL chart actually RENDERS (had blanked to 'No data yet' on a tuple/object bug)
+  await expect(page.locator('[data-test=block-il-chart] svg').first()).toBeVisible()
 
   // downloads: board, spice, s2p x2, bom, report — capture one and check
   // the bytes are the real artifact

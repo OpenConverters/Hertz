@@ -297,6 +297,10 @@ pre.code {
 .pane-tab:hover { color: var(--phos); border-color: var(--phos-deep); }
 .pane-tab.active { color: var(--bg-deep); background: var(--phos); border-color: var(--phos); }
 .pane-select-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.measure-onramp {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem;
+  margin: 0.5rem 0 0.2rem;
+}
 .pane-body { flex: 1; min-height: 0; overflow-y: auto; }
 .pane-body .view-fill { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .pane-body .view-fill .screen { flex: 1; min-height: 0; }

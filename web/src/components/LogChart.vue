@@ -22,6 +22,9 @@ const hover = ref(null)
 const domain = computed(() => {
   let fMin = Infinity, fMax = -Infinity, vMin = Infinity, vMax = -Infinity
   const scanPoint = (p) => {
+    // a single non-finite sample (an LC-notch +Inf, a NaN) must NOT null the whole
+    // domain and blank the chart — skip it and let the finite points set the range
+    if (!Number.isFinite(p.f) || !Number.isFinite(p.v)) return
     fMin = Math.min(fMin, p.f); fMax = Math.max(fMax, p.f)
     vMin = Math.min(vMin, p.v); vMax = Math.max(vMax, p.v)
   }
@@ -66,7 +69,11 @@ const yTicks = computed(() => {
   return ticks
 })
 
-const path = (points) => {
+const path = (raw) => {
+  // drop non-finite samples (LC-notch +Inf, NaN) so one bad point can't break the
+  // SVG path with an "L x Infinity"
+  const points = raw.filter((p) => Number.isFinite(p.f) && Number.isFinite(p.v))
+  if (points.length === 0) return ''
   // a single-point run has no line geometry — draw a short tick so an
   // isolated sample stays visible instead of silently vanishing
   if (points.length === 1) {

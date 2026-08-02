@@ -2,9 +2,6 @@
 import { onMounted, ref } from 'vue'
 import SpectrumView from './components/SpectrumView.vue'
 import FilterView from './components/FilterView.vue'
-import ReceiverView from './components/ReceiverView.vue'
-import RadiatedView from './components/RadiatedView.vue'
-import LisnView from './components/LisnView.vue'
 import { api, loadEngine } from './engine.js'
 import { store } from './store.js'
 
@@ -72,15 +69,15 @@ onMounted(async () => {
   await readHandoffFragment()
 })
 
-// The nav IS the workflow: MEASURE (analyzer scan, scope capture, or CM current
-// probe) → DESIGN (filter). The MEASURE tools are first-class destinations, not
-// options buried in the designer's pane dropdown — each produces a requirement
-// that hands off to the filter bench. LISN is the test-setup reference, in MEASURE.
+// The nav IS the workflow: MEASURE (an analyzer scan) → DESIGN (the filter).
+// A scope capture, a CM current probe and the LISN test-setup are NOT standalone
+// destinations — each only produces (or references) an INPUT to the filter design,
+// so they live inside the Filter bench as on-ramps to the requirement, reached
+// from the REQUIREMENT section. Landing on a bare "scope capture" screen with no
+// filter context would answer a question nobody arrives with — that is why they
+// are not nav siblings of SPECTRUM/FILTER.
 const measureModes = [
   { id: 'spectrum', label: 'SPECTRUM' },
-  { id: 'scope', label: 'SCOPE CAPTURE' },
-  { id: 'probe', label: 'CM PROBE' },
-  { id: 'lisn', label: 'TEST SETUP (LISN)' },
 ]
 </script>
 
@@ -107,9 +104,6 @@ const measureModes = [
     <p v-if="handoffError" class="footnote" style="color: var(--fault, #ff8a8a)"
        data-test="handoff-error">{{ handoffError }}</p>
     <SpectrumView v-if="store.mode === 'spectrum'" />
-    <ReceiverView v-else-if="store.mode === 'scope'" />
-    <RadiatedView v-else-if="store.mode === 'probe'" />
-    <LisnView v-else-if="store.mode === 'lisn'" />
     <FilterView v-else />
 
     <p class="footnote">

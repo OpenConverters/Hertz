@@ -16,6 +16,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 // does not (a collapsed <details> still mounts and runs its component).
 import LogChart from './LogChart.vue'
 import FilterSchematic from './FilterSchematic.vue'
+import ReceiverPanel from './ReceiverView.vue'
+import RadiatedPanel from './RadiatedView.vue'
+import LisnView from './LisnView.vue'
 import { api } from '../engine.js'
 import { buildFilterCias, filterComponents, topologyLines } from '../ciasFilter.js'
 import { trackEvent } from '../telemetry.js'
@@ -76,8 +79,18 @@ const VERIFY_PANES = [
   ['layout', 'LAYOUT & BLOCK'],
   ['values', 'SIZING & SAFETY'],
 ]
-const PANE_VIEWS = [...DESIGN_PANES, ...VERIFY_PANES]   // combined label lookup
+// MEASURE on-ramps: NOT output panes and NOT top-nav destinations — they only
+// produce a filter REQUIREMENT, so they are opened from the requirement section
+// and shown in the right pane as a measurement input to the design.
+const MEASURE_PANES = [
+  ['measure-scope', 'SCOPE CAPTURE'],
+  ['measure-probe', 'CM PROBE'],
+  ['lisn', 'TEST SETUP (LISN)'],
+]
+const PANE_VIEWS = [...DESIGN_PANES, ...VERIFY_PANES, ...MEASURE_PANES]   // label lookup
 const paneRole = (which) => (which === 'a' ? DESIGN_PANES : VERIFY_PANES)
+// open a measurement on-ramp in the right (verify) pane, from the requirement flow
+function openMeasure(view) { onPaneChange('b', view) }
 const paneA = ref('schematic')
 const paneB = ref('il')
 const openSection = ref('req')   // KH-style accordion: one input stage open at a time
@@ -193,7 +206,9 @@ const blockBoard = computed(() => {
 function blockIlSeries() {
   const c = blockResult.value?.curves
   if (!c) return []
-  const zip = (ys) => c.fHz.map((f, i) => [f, ys[i]])
+  // LogChart reads {f, v} objects, not [f, v] tuples — a tuple makes every point
+  // read undefined and the whole chart blanks to "No data yet"
+  const zip = (ys) => c.fHz.map((f, i) => ({ f, v: ys[i] }))
   return [
     { label: 'DM with layout (50 Ω)', color: '#4d9fff', points: zip(c.dmDb) },
     { label: 'DM components only', color: '#4d9fff', dash: '5 4', points: zip(c.dmIdealDb) },
@@ -1186,9 +1201,18 @@ function downloadNetlist() {
         <label class="field"><span>DM attenuation (dB)</span>
           <input v-model.number="aReqDm" type="number" data-test="areq-dm" @change="clearBinding" /></label>
       </div>
-      <p class="note">From a failed scan: <em>Design the fix</em> (Spectrum) or <em>Design filter for
-        these modes</em> (the MEASURE · SCOPE CAPTURE pane) fill this section. Below 150 kHz the
-        design moves to the first harmonic inside the measured band (ANP015).</p>
+      <p class="note">From a failed scan: <em>Design the fix</em> (Spectrum) or <em>Measure it</em>
+        below fill this section. Below 150 kHz the design moves to the first harmonic inside the
+        measured band (ANP015).</p>
+      <div class="measure-onramp" data-test="measure-onramp">
+        <span class="req-import-title">Measure it →</span>
+        <button type="button" class="pane-tab" data-test="measure-open-scope"
+                @click="openMeasure('measure-scope')">SCOPE CAPTURE</button>
+        <button type="button" class="pane-tab" data-test="measure-open-probe"
+                @click="openMeasure('measure-probe')">CM PROBE</button>
+        <button type="button" class="pane-tab" data-test="measure-open-lisn"
+                @click="openMeasure('lisn')">TEST SETUP (LISN)</button>
+      </div>
       <div v-if="bindingSummary" class="req-import" data-test="req-import">
         <span class="req-import-title">Imported requirement — the failing scan, point by point:</span>
         <span v-if="bindingSummary.cm" class="req-import-line"><b style="color:var(--s-1)">CM</b>
@@ -1654,7 +1678,10 @@ function downloadNetlist() {
             <!-- LISN / test setup — reference view, works without a design -->
             <!-- the filter BLOCK: generated layout + parasitics + downloads -->
             <template v-else-if="pane === 'layout'">
-              <div class="view-fill" style="overflow-y: auto">
+              <!-- NOT .view-fill: this pane STACKS many blocks (board, parasitics,
+                   chart, downloads); .view-fill would give the LogChart flex:1 and
+                   let it grow over the downloads. Plain scroll instead. -->
+              <div style="overflow-y: auto; height: 100%; min-height: 0">
                 <p style="display:flex; align-items:center; gap:0.7rem; flex-wrap:wrap; margin:0 0 0.4rem">
                   <label class="note">rated current
                     <input v-model.number="blockRatedA" type="number" min="0.1" step="0.5"
@@ -1752,8 +1779,14 @@ function downloadNetlist() {
                 </template>
               </div>
             </template>
-            <!-- LISN and the MEASURE tools (scope capture, CM probe) are top-nav
-                 destinations now, not panes here. -->
+
+            <!-- MEASURE on-ramps: a scope capture / CM current probe / LISN
+                 reference, opened from the REQUIREMENT section, shown here as an
+                 INPUT to the design (they hand off to the requirement). Not
+                 standalone destinations, not output views. -->
+            <template v-else-if="pane === 'measure-scope'"><ReceiverPanel /></template>
+            <template v-else-if="pane === 'measure-probe'"><RadiatedPanel /></template>
+            <template v-else-if="pane === 'lisn'"><LisnView /></template>
           </div>
         </section>
       </div>

@@ -5,9 +5,11 @@ import { test, expect } from '@playwright/test'
 // filter requirement. Opening one in pane A leaves pane B on its default ('il'),
 // so the pane still holds exactly one file input and one band select.
 async function openMeasurePane(page, which) {
-  // MEASURE tools are top-nav destinations now (scope capture, CM probe)
-  const mode = which === 'measure-scope' ? 'scope' : which === 'measure-probe' ? 'probe' : which
-  await page.getByTestId('mode-' + mode).click()
+  // MEASURE on-ramps are opened from the REQUIREMENT section of the filter bench
+  await page.getByTestId('mode-filter').click()
+  const btn = which === 'measure-scope' ? 'measure-open-scope'
+            : which === 'measure-probe' ? 'measure-open-probe' : 'measure-open-lisn'
+  await page.getByTestId(btn).click()
 }
 
 test('spectrum: demo scan fails CISPR 32 B and hands off to the filter designer', async ({ page }) => {
@@ -65,7 +67,8 @@ test('receiver: demo signal separates the three detectors', async ({ page }) => 
 test('lisn: the test-setup pane works without a design and exports the subckt', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('engine-led')).toHaveText(/engine ready/, { timeout: 20_000 })
-  await page.getByTestId('mode-lisn').click()
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('measure-open-lisn').click()
   await expect(page.getByTestId('subckt')).toContainText('L1 eut mains 5e-05')
 })
 

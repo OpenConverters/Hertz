@@ -4,8 +4,9 @@ import { test, expect } from '@playwright/test'
 // its CM-attenuation target and cable-ferrite pick are inputs to the design, so
 // they live beside it rather than on a destination of their own.
 async function openProbePane(page) {
-  // the CM probe is a top-nav MEASURE destination now
-  await page.getByTestId('mode-probe').click()
+  // the CM probe is a MEASURE on-ramp opened from the requirement section
+  await page.getByTestId('mode-filter').click()
+  await page.getByTestId('measure-open-probe').click()
 }
 
 // Ferrite catalog fixtures (shape of scripts/export_ferrites.py output): a main
